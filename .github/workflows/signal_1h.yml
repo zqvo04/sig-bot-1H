@@ -1,0 +1,73 @@
+# .github/workflows/signal_1h.yml
+# 1h 봇 전용 워크플로우
+#
+# [15m 봇과 구분]
+# - 파일명:   signal_1h.yml   (15m: signal.yml 또는 signal_15m.yml)
+# - Cron:    5 * * * *       (15m: */15 * * * *)
+# - 봉 길이:  1h              (15m: 15m)
+# - 쿨다운:   240분           (15m: 60분)
+#
+# [타이밍 설계]
+# 1h 캔들 마감: :00  →  GHA 스케줄: :05  →  실제 실행: :05~:08
+# 캔들 마감 후 지연: ~6-8분 (봉 길이 대비 10~13%) ← 허용 범위
+# 정산 시간(00:05/08:05/16:05) = 펀딩 정산 후 5분 → 노이즈 흡수 완료
+#
+# [Secrets 필요 (Settings → Secrets → Actions)]
+# OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE
+# TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# (15m 봇과 동일 Secrets 공유 가능)
+
+name: 1H Signal Bot
+
+on:
+  schedule:
+    - cron: '5 * * * *'   # 매시 5분 (UTC) — 1h 봉 마감 후 딜레이 흡수
+  workflow_dispatch:        # 수동 실행 (테스트/디버그용)
+
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8      # 심볼당 최대 8분 — 초과 시 자동 취소
+
+    strategy:
+      matrix:
+        symbol:
+          - "BTC/USDT"
+          - "ETH/USDT"
+          - "HYPE/USDT"
+      fail-fast: false        # 한 심볼 실패해도 나머지 실행 유지
+      max-parallel: 3         # 3개 심볼 동시 병렬 실행
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create state dir
+        run: mkdir -p /tmp/bot_state
+
+      - name: Run 1H Signal Bot — ${{ matrix.symbol }}
+        env:
+          OKX_API_KEY:        ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET:     ${{ secrets.OKX_API_SECRET }}
+          OKX_PASSPHRASE:     ${{ secrets.OKX_PASSPHRASE }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          SINGLE_SYMBOL:      ${{ matrix.symbol }}
+        run: python src/main.py
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.symbol }}-${{ github.run_id }}
+          path: logs/
+          retention-days: 3
