@@ -1,0 +1,46 @@
+# ── Python ────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ── 가상환경 ──────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── 시크릿 / 환경변수 (절대 커밋 금지) ──────────
+.env
+.env.*
+secrets.json
+*.key
+*.pem
+
+# ── 봇 로그 (API 응답·가격·신호 내용 포함) ───────
+logs/
+*.log
+
+# ── 로컬 테스트 상태파일 ─────────────────────────
+# /tmp/bot_state/ 는 /tmp 경로라 repo 밖이므로 무관
+# 혹시 로컬에서 경로를 변경한 경우 대비
+bot_state/
+signal_state.json
+
+# ── IDE / OS ──────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── pytest / coverage ─────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
