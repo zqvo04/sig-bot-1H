@@ -788,8 +788,19 @@ def analyze_daily_bias(df_1d):
 # ══════════════════════════════════════════════
 # 전체 분석 통합
 # ══════════════════════════════════════════════
+# ── run_full_analysis() 수정분 (기존 1h Bot v1.0 대비) ──────────
+# 아래 내용으로 기존 run_full_analysis 전체를 교체
 
 def run_full_analysis(symbol, collected_data):
+    """
+    [1h Bot v2.0] 전체 분석 통합
+    entry=1h, mid=4h, macro=1d
+
+    [v2.0 추가]
+    - bb_4h + regime_4h: 4h 메타 레짐 (①)
+    - daily_bias:        일봉 바이어스 (②)
+    - bos_choch_4h:      4h BOS/CHoCH  (③)
+    """
     import datetime
     logger.info(f"{chr(8213)*50}")
     logger.info(f"🔬 분석: {symbol}")
@@ -801,34 +812,32 @@ def run_full_analysis(symbol, collected_data):
     taker_raw    = collected_data.get("taker_volume", {})
     liq_raw      = collected_data.get("liquidations", {})
 
-    df_15m = ohlcv.get("15m")
-    df_1h  = ohlcv.get("1h")
-    df_4h  = ohlcv.get("4h")
+    df_1h = ohlcv.get("1h")
+    df_4h = ohlcv.get("4h")
+    df_1d = ohlcv.get("1d")
 
-    rsi     = analyze_mtf_rsi(df_15m, df_1h, df_4h)
-    bb      = analyze_bollinger_bands(df_15m)
-    adx_15m = calculate_adx(df_15m)
+    # ── 1h 기반 분석 (entry TF) ──────────────────────────────
+    rsi     = analyze_mtf_rsi(df_1h, df_4h, df_1d)
+    bb      = analyze_bollinger_bands(df_1h)
     adx_1h  = calculate_adx(df_1h)
+    adx_4h  = calculate_adx(df_4h)
     funding = analyze_funding_rate(funding_data)
-    regime  = classify_market_regime(df_15m, adx_15m, bb)
+    regime  = classify_market_regime(df_1h, adx_1h, bb)
     regime_name = regime.get("regime", "UNKNOWN")
 
     ls_ratio = analyze_long_short_ratio(ls_raw, regime_name)
     taker    = analyze_taker_volume(taker_raw)
-    liq      = analyze_liquidations(liq_raw, df_15m)
+    liq      = analyze_liquidations(liq_raw, df_1h)
+    vol      = check_volume_confirmation(df_1h, df_4h=df_4h)
+    atr      = get_atr_state(df_1h)
 
-    # [v3.5] df_1h 전달 → 1h 120개 평균/4 baseline 사용
-    vol = check_volume_confirmation(df_15m, df_1h=df_1h)
+    candle_pattern = analyze_candle_pattern(df_1h)
+    market_struct  = analyze_market_structure(df_1h)
+    vol_price_div  = analyze_vol_price_divergence(df_1h)
 
-    atr = get_atr_state(df_15m)
-
-    candle_pattern = analyze_candle_pattern(df_15m)
-    market_struct  = analyze_market_structure(df_15m)
-    vol_price_div  = analyze_vol_price_divergence(df_15m)
-
-    fvg       = detect_fvg(df_15m)
-    bos_choch = detect_bos_choch(df_15m)
-    fibonacci = check_fibonacci_levels(df_15m)
+    fvg          = detect_fvg(df_1h)
+    bos_choch    = detect_bos_choch(df_1h, lookback=60, n=3)   # 1h BOS
+    fibonacci    = check_fibonacci_levels(df_1h)
 
     ema_long  = calculate_ema_multiplier(ohlcv, "long",  regime_name)
     ema_short = calculate_ema_multiplier(ohlcv, "short", regime_name)
@@ -836,17 +845,30 @@ def run_full_analysis(symbol, collected_data):
     gate_long  = evaluate_gates("long",  funding, ls_ratio)
     gate_short = evaluate_gates("short", funding, ls_ratio)
 
+    # ── [v2.0 ①②③] 4h 메타 레짐 + 일봉 바이어스 + 4h BOS ────
+    bb_4h       = analyze_bollinger_bands(df_4h)
+    regime_4h   = classify_market_regime(df_4h, adx_4h, bb_4h)
+    bos_choch_4h = detect_bos_choch(df_4h, lookback=30, n=2)  # 4h BOS (n=2: 넓은 스윙)
+    daily_bias  = analyze_daily_bias(df_1d)
+
+    # ── 로그 ─────────────────────────────────────────────────
     logger.info(
-        f"  MTF-RSI: 15m:{rsi['value']:.1f} 1h:{rsi.get('value_1h') or '-'} "
-        f"4h:{rsi.get('value_4h') or '-'} [{rsi['state']}] | "
+        f"  MTF-RSI: 1h:{rsi['value']:.1f} 4h:{rsi.get('value_1h') or '-'} "
+        f"1d:{rsi.get('value_4h') or '-'} [{rsi['state']}] | "
         f"BB:{bb['state']}(%B={bb['pct_b']:.2f}) | "
-        f"ADX:{adx_15m['adx']:.1f}[{adx_15m['strength']}] | "
+        f"ADX(1h):{adx_1h['adx']:.1f}[{adx_1h['strength']}] | "
         f"국면:{regime_name} | "
         f"Vol:{vol['ratio']:.2f}x({vol['score']:.0f}pt) [{vol.get('baseline_method','?')}] | "
         f"Taker:{taker.get('bias','?')} | 청산:{liq.get('signal','none')}"
     )
+    logger.info(
+        f"  [v2.0] 4h국면:{regime_4h.get('regime','?')} | "
+        f"일봉바이어스:{daily_bias.get('bias','?')}({daily_bias.get('bull_count',0)}강세/{daily_bias.get('bear_count',0)}약세) | "
+        f"4h-BOS: 상승={bos_choch_4h.get('bos_bullish',False)} 하락={bos_choch_4h.get('bos_bearish',False)} | "
+        f"4h-CHoCH: 상승전환={bos_choch_4h.get('choch_bullish',False)} 하락전환={bos_choch_4h.get('choch_bearish',False)}"
+    )
     if bos_choch.get("bos_bullish") or bos_choch.get("bos_bearish"):
-        logger.info(f"  BOS: 상승={bos_choch['bos_bullish']} 하락={bos_choch['bos_bearish']}")
+        logger.info(f"  1h-BOS: 상승={bos_choch['bos_bullish']} 하락={bos_choch['bos_bearish']}")
     if fvg.get("in_bullish_fvg") or fvg.get("in_bearish_fvg"):
         logger.info(f"  FVG: 강세={fvg['in_bullish_fvg']} 약세={fvg['in_bearish_fvg']}")
 
@@ -857,8 +879,8 @@ def run_full_analysis(symbol, collected_data):
         "bollinger":        bb,
         "ema_long":         ema_long,
         "ema_short":        ema_short,
-        "adx_15m":          adx_15m,
         "adx_1h":           adx_1h,
+        "adx_4h":           adx_4h,
         "funding_rate":     funding,
         "ls_ratio":         ls_ratio,
         "oi_change":        {"available": False},
@@ -867,13 +889,17 @@ def run_full_analysis(symbol, collected_data):
         "volume":           vol,
         "atr":              atr,
         "regime":           regime,
+        # [v2.0 추가 키]
+        "regime_4h":        regime_4h,       # ① 4h 메타 레짐
+        "daily_bias":       daily_bias,      # ② 일봉 바이어스
+        "bos_choch":        bos_choch,       # 1h BOS (기존)
+        "bos_choch_4h":     bos_choch_4h,   # ③ 4h BOS
         "gate_long":        gate_long,
         "gate_short":       gate_short,
         "candle_pattern":   candle_pattern,
         "market_structure": market_struct,
         "vol_price_div":    vol_price_div,
         "fvg":              fvg,
-        "bos_choch":        bos_choch,
         "fibonacci":        fibonacci,
         "analyzed_at":      datetime.datetime.utcnow().isoformat() + "Z",
     }
