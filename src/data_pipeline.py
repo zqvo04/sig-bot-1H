@@ -167,6 +167,9 @@ def collect_funding_rate(exchange: ccxt.okx, symbol: str) -> Optional[dict]:
 # 3. 롱숏 비율 (1h Bot: period 4h)
 # ════════════════════════════════════════════════════════════════════
 def collect_ls_ratio(exchange: ccxt.okx, symbol: str) -> dict:
+    """
+    롱숏 비율 수집 — 1H 4개 평균으로 4H 근사
+    """
     _neutral = {"available": False, "long_pct": 0.5, "short_pct": 0.5, "ratio": 1.0}
 
     def _parse(ls_val: float) -> dict:
@@ -175,16 +178,23 @@ def collect_ls_ratio(exchange: ccxt.okx, symbol: str) -> dict:
         return {"long_pct": round(long_pct,4), "short_pct": round(short_pct,4),
                 "ratio": round(ls_val,4), "available": True}
 
+    def _avg_ratio(data_list: list) -> float:
+        """최근 4개 ls_ratio 평균 → 4H 근사"""
+        ratios = [float(d[1]) for d in data_list[:4]]
+        return sum(ratios) / len(ratios)
+
     swap_symbol   = _to_ccxt_swap(symbol)
     ccy           = _to_ccy(symbol)
     swap_exchange = getattr(exchange, "_swap", exchange)
 
     # ── 1단계: CCXT ─────────────────────────────────────────
     try:
-        data = swap_exchange.fetch_long_short_ratio(swap_symbol, "4h", limit=1)
+        data = swap_exchange.fetch_long_short_ratio(swap_symbol, "1h", limit=4)
         if data and len(data) > 0:
-            result = _parse(float(data[-1].get("longShortRatio", 1.0)))
-            logger.info(f"  📊 {symbol} 롱숏(CCXT/4h): 롱 {result['long_pct']*100:.1f}%")
+            ratios = [float(d.get("longShortRatio", 1.0)) for d in data]
+            ls_val = sum(ratios) / len(ratios)
+            result = _parse(ls_val)
+            logger.info(f"  📊 {symbol} 롱숏(CCXT/1h×{len(ratios)}): 롱 {result['long_pct']*100:.1f}%")
             return result
     except AttributeError:
         logger.debug(f"[LS] CCXT 미지원: {symbol}")
@@ -194,12 +204,12 @@ def collect_ls_ratio(exchange: ccxt.okx, symbol: str) -> dict:
     # ── 2단계: publicGet ─────────────────────────────────────
     try:
         resp = exchange.publicGetRubikStatContractsLongShortAccountRatio({
-            "ccy": ccy, "period": "4H", "limit": "1",
+            "ccy": ccy, "period": "1H", "limit": "4",
         })
         data_list = resp.get("data", [])
         if data_list:
-            result = _parse(float(data_list[0][1]))
-            logger.info(f"  📊 {symbol} 롱숏(publicGet/4H): 롱 {result['long_pct']*100:.1f}%")
+            result = _parse(_avg_ratio(data_list))
+            logger.info(f"  📊 {symbol} 롱숏(publicGet/1H×{min(4,len(data_list))}): 롱 {result['long_pct']*100:.1f}%")
             return result
     except Exception as e:
         logger.debug(f"[LS] publicGet 실패: {e}")
@@ -207,18 +217,17 @@ def collect_ls_ratio(exchange: ccxt.okx, symbol: str) -> dict:
     # ── 3단계: 직접 HTTP ─────────────────────────────────────
     try:
         resp = _okx_get("/rubik/stat/contracts/long-short-account-ratio", {
-            "ccy": ccy, "period": "4H", "limit": "1",
+            "ccy": ccy, "period": "1H", "limit": "4",
         })
         if resp.get("code") == "0" and resp.get("data"):
-            result = _parse(float(resp["data"][0][1]))
-            logger.info(f"  📊 {symbol} 롱숏(HTTP/4H): 롱 {result['long_pct']*100:.1f}%")
+            result = _parse(_avg_ratio(resp["data"]))
+            logger.info(f"  📊 {symbol} 롱숏(HTTP/1H×{min(4,len(resp['data']))}): 롱 {result['long_pct']*100:.1f}%")
             return result
     except Exception as e:
         logger.debug(f"[LS] HTTP 실패: {e}")
 
     logger.warning(f"  ❌ {symbol} 롱숏비율 전체 실패 → neutral 반환")
     return _neutral
-
 
 # ════════════════════════════════════════════════════════════════════
 # 4. Taker 비율 (5m 유지 — 미시구조 분석용)
