@@ -217,7 +217,7 @@ def collect_ls_ratio(exchange: ccxt.okx, symbol: str) -> dict:
     # 3단계: 직접 HTTP
     try:
         resp = _okx_get("/rubik/stat/contracts/long-short-pos-ratio", {
-            "instId": _to_base_id(symbol), "period": "4H", "limit": "1",
+            "ccy": _to_ccy(symbol), "period": "4H", "limit": "1",
         })
         if resp.get("code") == "0" and resp.get("data"):
             ls        = float(resp["data"][0][1])
