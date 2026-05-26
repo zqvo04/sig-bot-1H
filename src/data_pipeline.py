@@ -166,69 +166,57 @@ def collect_funding_rate(exchange: ccxt.okx, symbol: str) -> Optional[dict]:
 # ════════════════════════════════════════════════════════════════════
 # 3. 롱숏 비율 (1h Bot: period 4h)
 # ════════════════════════════════════════════════════════════════════
-
 def collect_ls_ratio(exchange: ccxt.okx, symbol: str) -> dict:
-    """
-    [1h Bot] period: "1H" → "4H"
-    mid TF = 4h이므로 4h 기간 포지션 비율이 더 안정적
+    _neutral = {"available": False, "long_pct": 0.5, "short_pct": 0.5, "ratio": 1.0}
 
-    3단계 폴백:
-      1) CCXT fetch_long_short_ratio
-      2) publicGetRubikStatContractsLongShortAccountRatio
-      3) _okx_get /rubik/stat/contracts/long-short-pos-ratio
-    """
-    _neutral    = {"available": False, "long_pct": 0.5, "short_pct": 0.5, "ratio": 1.0}
-    swap_symbol = _to_ccxt_swap(symbol)
+    def _parse(ls_val: float) -> dict:
+        long_pct  = ls_val / (1.0 + ls_val)
+        short_pct = 1.0 - long_pct
+        return {"long_pct": round(long_pct,4), "short_pct": round(short_pct,4),
+                "ratio": round(ls_val,4), "available": True}
+
+    swap_symbol   = _to_ccxt_swap(symbol)
+    ccy           = _to_ccy(symbol)
     swap_exchange = getattr(exchange, "_swap", exchange)
 
-    # 1단계: CCXT
+    # ── 1단계: CCXT ─────────────────────────────────────────
     try:
         data = swap_exchange.fetch_long_short_ratio(swap_symbol, "4h", limit=1)
         if data and len(data) > 0:
-            ls_ratio  = float(data[-1].get("longShortRatio", 1.0))
-            long_pct  = ls_ratio / (1.0 + ls_ratio)
-            short_pct = 1.0 - long_pct
-            logger.info(f"  📊 {symbol} 롱숏(CCXT/4h): 롱 {long_pct*100:.1f}% / 숏 {short_pct*100:.1f}%")
-            return {"long_pct": round(long_pct,4), "short_pct": round(short_pct,4),
-                    "ratio": round(ls_ratio,4), "available": True}
+            result = _parse(float(data[-1].get("longShortRatio", 1.0)))
+            logger.info(f"  📊 {symbol} 롱숏(CCXT/4h): 롱 {result['long_pct']*100:.1f}%")
+            return result
     except AttributeError:
-        logger.debug(f"[collect_ls_ratio] CCXT 미지원: {symbol}")
+        logger.debug(f"[LS] CCXT 미지원: {symbol}")
     except Exception as e:
-        logger.debug(f"[collect_ls_ratio] CCXT 실패: {e}")
+        logger.debug(f"[LS] CCXT 실패: {e}")
 
-    # 2단계: publicGetRubikStatContractsLongShortAccountRatio
+    # ── 2단계: publicGet ─────────────────────────────────────
     try:
-        result    = exchange.publicGetRubikStatContractsLongShortAccountRatio({
-            "ccy": _to_ccy(symbol), "period": "4H", "limit": "1",
+        resp = exchange.publicGetRubikStatContractsLongShortAccountRatio({
+            "ccy": ccy, "period": "4H", "limit": "1",
         })
-        data_list = result.get("data", [])
+        data_list = resp.get("data", [])
         if data_list:
-            ls        = float(data_list[0][1])
-            long_pct  = ls / (1.0 + ls)
-            short_pct = 1.0 - long_pct
-            logger.info(f"  📊 {symbol} 롱숏(계정비율/4h): 롱 {long_pct*100:.1f}%")
-            return {"long_pct": round(long_pct,4), "short_pct": round(short_pct,4),
-                    "ratio": round(ls,4), "available": True}
-    except AttributeError:
-        logger.debug(f"[collect_ls_ratio] publicGetRubikStat... 미지원")
+            result = _parse(float(data_list[0][1]))
+            logger.info(f"  📊 {symbol} 롱숏(publicGet/4H): 롱 {result['long_pct']*100:.1f}%")
+            return result
     except Exception as e:
-        logger.debug(f"[collect_ls_ratio] 계정비율 폴백 실패: {e}")
+        logger.debug(f"[LS] publicGet 실패: {e}")
 
-    # 3단계: 직접 HTTP
+    # ── 3단계: 직접 HTTP ─────────────────────────────────────
     try:
-        resp = _okx_get("/rubik/stat/contracts/long-short-pos-ratio", {
-            "ccy": _to_ccy(symbol), "period": "4H", "limit": "1",
+        resp = _okx_get("/rubik/stat/contracts/long-short-account-ratio", {
+            "ccy": ccy, "period": "4H", "limit": "1",
         })
         if resp.get("code") == "0" and resp.get("data"):
-            ls        = float(resp["data"][0][1])
-            long_pct  = ls / (1.0 + ls)
-            short_pct = 1.0 - long_pct
-            logger.info(f"  📊 {symbol} 롱숏(포지션비율/4h): 롱 {long_pct*100:.1f}%")
-            return {"long_pct": round(long_pct,4), "short_pct": round(short_pct,4),
-                    "ratio": round(ls,4), "available": True}
+            result = _parse(float(resp["data"][0][1]))
+            logger.info(f"  📊 {symbol} 롱숏(HTTP/4H): 롱 {result['long_pct']*100:.1f}%")
+            return result
     except Exception as e:
-        logger.warning(f"  ❌ {symbol} 롱숏비율 전체 실패: {e}")
+        logger.debug(f"[LS] HTTP 실패: {e}")
 
+    logger.warning(f"  ❌ {symbol} 롱숏비율 전체 실패 → neutral 반환")
     return _neutral
 
 
