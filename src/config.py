@@ -1,23 +1,18 @@
 """
-config.py — 전역 설정 (1h Bot v3.0)
+config.py — 전역 설정 (1h Bot v3.2)
 ────────────────────────────────────────────────────────────────────
-[v3.0 추가: 9개 개선 기능]
-
-① 스마트머니 LS 다이버전스  (Top Trader vs Retail)
-② OI 변화 + 가격 방향 매트릭스
-③ 펀딩비 히스토리 추세
-④ 1D 캔들 패턴
-⑤ 4H 캔들 패턴
-⑥ 멀티TF 모멘텀 정합 스코어
-⑦ (Basis 분석 - Phase3)
-⑧ 주간 키레벨 S/R
-⑨ 1D EMA 구조 스코어
-
-가중치 체계 1h 최적화:
-  RANGING:   RSI↑ BB↑ Taker↓ Volume↑ (평균회귀 집중)
-  TRENDING:  LS↑  Volume↑ Taker↓    (추세 확증 집중)
-  EXPLOSIVE: LS↑  Volume↑           (모멘텀 집중)
-  SQUEEZE:   BB↑  Volume↑ Taker↓    (압축 감지 집중)
+[v3.0] 9개 분석 기능 추가
+[v3.1] 불량신호 방지 6개 (쿨다운/FVG/MACD/연속신호 등)
+[v3.2] 불량신호 방지 통합 확장
+  ④ RANGING_ENTRY_EMA_ADJ → 제거 (A-2 역풍카운터로 통합)
+  [A-1] 3중 역풍 하드블록 파라미터
+  [A-2] 역풍 카운터 (EMA/MACD/Taker/FVG/MA20)
+  [A-3] 하락 모멘텀 컨텍스트 임계값
+  [B-1] RANGING 심리보너스 억제 배율
+  [B-2] RANGING+역EMA 보너스 캡
+  [C-1] MA20 위치+기울기 임계값
+  [D-1/D-2] 기본점수 대비 보너스 캡
+  [E-1] RANGING 지속시간 임계값
 ────────────────────────────────────────────────────────────────────
 """
 import os
@@ -99,10 +94,9 @@ REGIME_TREND_ADX     = 25
 REGIME_STRONG_ADX    = 40
 
 # ══════════════════════════════════════════════════════════════════════
-# [v3.0] 국면별 가중치 — 1h 최적화
+# [v3.0] 국면별 가중치
 # ══════════════════════════════════════════════════════════════════════
-
-SCORE_WEIGHTS = {  # 기본 (UNKNOWN)
+SCORE_WEIGHTS = {
     "rsi":              0.26,
     "bollinger":        0.21,
     "funding_rate":     0.18,
@@ -110,51 +104,38 @@ SCORE_WEIGHTS = {  # 기본 (UNKNOWN)
     "taker_volume":     0.15,
     "volume":           0.05,
 }
-
-# RANGING: 평균회귀 집중
-# 1h RSI/BB 신뢰도 높음 / Taker(5m)는 범위진입에 덜 중요 / Volume 의미↑
 SCORE_WEIGHTS_RANGING = {
-    "rsi":              0.30,   # +0 → 과매도/과매수 명확
-    "bollinger":        0.27,   # +1 → %B 위치 중요
+    "rsi":              0.30,
+    "bollinger":        0.27,
     "funding_rate":     0.12,
     "long_short_ratio": 0.12,
-    "taker_volume":     0.09,   # -1 → 5m 데이터, 범위진입 덜 중요
-    "volume":           0.10,   # +3 → 낮은 거래량 = 오실레이터 함정
+    "taker_volume":     0.09,
+    "volume":           0.10,
 }
-
-# TRENDING: 추세 확증 집중
-# LS 방향 + 거래량 중요 / RSI/BB 추세에선 덜 중요
 SCORE_WEIGHTS_TRENDING = {
     "rsi":              0.10,
     "bollinger":        0.08,
     "funding_rate":     0.16,
-    "long_short_ratio": 0.25,   # +3 → 추세 = 포지션 방향 중요
-    "taker_volume":     0.30,   # -4 → 여전히 중요하나 1h에서 다소 완화
-    "volume":           0.11,   # +2
+    "long_short_ratio": 0.25,
+    "taker_volume":     0.30,
+    "volume":           0.11,
 }
-
-# EXPLOSIVE: 모멘텀 집중
-# Taker + LS + Volume 가장 중요
 SCORE_WEIGHTS_EXPLOSIVE = {
     "rsi":              0.06,
     "bollinger":        0.05,
     "funding_rate":     0.13,
-    "long_short_ratio": 0.26,   # +2
-    "taker_volume":     0.36,   # -2
-    "volume":           0.14,   # +4 → 거래량 폭발 확인 중요
+    "long_short_ratio": 0.26,
+    "taker_volume":     0.36,
+    "volume":           0.14,
 }
-
-# SQUEEZE: BB 압축 감지 집중
-# BB가 핵심 / Volume↑ (거래량 없는 스퀴즈 = 노이즈)
 SCORE_WEIGHTS_SQUEEZE = {
-    "rsi":              0.13,   # -2
-    "bollinger":        0.38,   # +3 → 핵심 지표
+    "rsi":              0.13,
+    "bollinger":        0.38,
     "funding_rate":     0.12,
     "long_short_ratio": 0.13,
-    "taker_volume":     0.15,   # -4
-    "volume":           0.09,   # +4
+    "taker_volume":     0.15,
+    "volume":           0.09,
 }
-
 REGIME_SCORE_WEIGHTS = {
     "RANGING":   SCORE_WEIGHTS_RANGING,
     "TRENDING":  SCORE_WEIGHTS_TRENDING,
@@ -164,7 +145,7 @@ REGIME_SCORE_WEIGHTS = {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 기존 보너스 체계
+# 보너스 체계
 # ══════════════════════════════════════════════════════════════════════
 BONUS_PULLBACK_ENTRY        = 12
 BONUS_PULLBACK_ENTRY_WEAK   = 8
@@ -189,60 +170,49 @@ BONUS_POST_SQUEEZE          = 10
 BONUS_MARKET_STRUCT_TREND   = 8
 BONUS_FUNDING_LS_ALIGN      = 6
 
-# [v3.0] 보너스 캡 상향 (새 보너스 반영)
 BONUS_CAP_TIERS = [(38, 22), (48, 32), (9999, 42)]
 
 # ══════════════════════════════════════════════════════════════════════
-# [v3.0] 신규 보너스 상수
+# [v3.0] 신규 보너스
 # ══════════════════════════════════════════════════════════════════════
-
-# ① 스마트머니 LS 다이버전스
-BONUS_SMART_MONEY_STRONG    = 15   # 고래 강력 반대편 포착
+BONUS_SMART_MONEY_STRONG    = 15
 BONUS_SMART_MONEY_MILD      = 8
-SMART_MONEY_DIV_STRONG      = 0.15  # 15%p 이상 괴리
-SMART_MONEY_DIV_MILD        = 0.10  # 10%p 이상 괴리
+SMART_MONEY_DIV_STRONG      = 0.15
+SMART_MONEY_DIV_MILD        = 0.10
 
-# ② OI 변화 + 가격 방향 매트릭스
-BONUS_OI_TREND_CONFIRM      = 10   # 가격 + OI 방향 일치 → 추세 확증
-BONUS_OI_REVERSAL_SIGNAL    = 6    # 가격↓ + OI↓ → 청산 소진 (롱 기대)
-OI_CHANGE_THRESHOLD         = 0.02  # OI 2% 이상 변화 시 유의미
-OI_PRICE_CHANGE_THRESHOLD   = 0.008 # 가격 0.8% 이상 변화 시 유의미
+BONUS_OI_TREND_CONFIRM      = 10
+BONUS_OI_REVERSAL_SIGNAL    = 6
+OI_CHANGE_THRESHOLD         = 0.02
+OI_PRICE_CHANGE_THRESHOLD   = 0.008
 
-# ③ 펀딩비 히스토리
-BONUS_FUNDING_FLIP          = 8    # 음→양 or 양→음 전환
-BONUS_FUNDING_EXTREME_ACCUM = 8    # 4연속 극단 → 역방향 유리
-FUNDING_HISTORY_LIMIT       = 8    # 수집 개수 (8 × 8h = 64h)
-FUNDING_EXTREME_THRESHOLD   = 0.001 # 0.1% 이상 = 극단값
+BONUS_FUNDING_FLIP          = 8
+BONUS_FUNDING_EXTREME_ACCUM = 8
+FUNDING_HISTORY_LIMIT       = 8
+FUNDING_EXTREME_THRESHOLD   = 0.001
 
-# ④ 1D 캔들 패턴 (1h보다 2배 가중)
 BONUS_CANDLE_1D_PIN_BAR     = 20
 BONUS_CANDLE_1D_ENGULFING   = 18
-
-# ⑤ 4H 캔들 패턴 (1h보다 1.4배 가중)
 BONUS_CANDLE_4H_PIN_BAR     = 14
 BONUS_CANDLE_4H_ENGULFING   = 12
 
-# ⑥ 멀티TF 모멘텀 정합
-BONUS_MTF_MOMENTUM_FULL     = 15   # 3/3 TF 방향 일치
-BONUS_MTF_MOMENTUM_PARTIAL  = 7    # 2/3 TF 방향 일치
-MTF_MOMENTUM_RSI_SLOPE_MIN  = 2.0  # RSI 기울기 최소값 (4캔들 기준)
+BONUS_MTF_MOMENTUM_FULL     = 15
+BONUS_MTF_MOMENTUM_PARTIAL  = 7
+MTF_MOMENTUM_RSI_SLOPE_MIN  = 2.0
 
-# ⑧ 주간 키레벨 S/R
-BONUS_WEEKLY_KEY_LEVEL      = 8    # 주간 고/저가 근접
-WEEKLY_LEVEL_TOLERANCE      = 0.003 # 0.3% 이내
+BONUS_WEEKLY_KEY_LEVEL      = 8
+WEEKLY_LEVEL_TOLERANCE      = 0.003
 
-# ⑨ 1D EMA 구조
-EMA_STRUCTURE_ALIGN_ADJ     = -5   # 임계값 완화 (구조 순방향)
-EMA_STRUCTURE_AGAINST_ADJ   = +8   # 임계값 강화 (구조 역방향)
-EMA_DISTANCE_EXTREME        = 0.15  # EMA200 대비 15% 이상 이격
-EMA_DISTANCE_EXTREME_ADJ    = +5   # 극단 이격 시 임계값 추가 강화
+EMA_STRUCTURE_ALIGN_ADJ     = -5
+EMA_STRUCTURE_AGAINST_ADJ   = +8
+EMA_DISTANCE_EXTREME        = 0.15
+EMA_DISTANCE_EXTREME_ADJ    = +5
 
 # ══════════════════════════════════════════════════════════════════════
-# 극단 과매도/과매수 (1h Bot TF 매핑)
+# 극단 과매도/과매수
 # ══════════════════════════════════════════════════════════════════════
-EXTREME_OVERSOLD_15M  = 32   # entry(1h)
-EXTREME_OVERSOLD_1H   = 32   # mid(4h)
-EXTREME_OVERSOLD_4H   = 38   # macro(1d)
+EXTREME_OVERSOLD_15M  = 32
+EXTREME_OVERSOLD_1H   = 32
+EXTREME_OVERSOLD_4H   = 38
 EXTREME_OVERBOUGHT_15M = 68
 EXTREME_OVERBOUGHT_1H  = 68
 EXTREME_OVERBOUGHT_4H  = 62
@@ -250,7 +220,7 @@ EXTREME_OVERBOUGHT_4H  = 62
 BB_STREAK_SUPPRESS_RSI_EXEMPT = 28
 
 # ══════════════════════════════════════════════════════════════════════
-# 패널티 파라미터
+# 패널티
 # ══════════════════════════════════════════════════════════════════════
 MTF_RSI_OVERBOUGHT_1H         = 72
 MTF_RSI_OVERBOUGHT_1H_MILD    = 68
@@ -308,6 +278,60 @@ EXPLOSIVE_OVERSOLD_PENALTY     = 0.80
 
 LIQ_REVERSE_PENALTY = 0.92
 HIDDEN_DIV_MIN_ADX  = 18
+
+# ══════════════════════════════════════════════════════════════════════
+# [v3.1] 불량신호 방지 — 기본 6개
+# ══════════════════════════════════════════════════════════════════════
+# ② 가격밴드 쿨다운
+PRICE_BAND_COOLDOWN_PCT      = 0.005   # 0.5% 이내 재진입 억제
+
+# ③ FVG 역방향 패널티
+BEARISH_FVG_LONG_PENALTY     = -12    # 약세FVG 내부 롱 진입
+BEARISH_FVG_OVERHEAD_PENALTY = -6     # 약세FVG ≥2 오버헤드
+
+# ⑤ MACD 음수권 패널티
+MACD_BEARISH_LONG_PENALTY    = -8     # DIF<0 AND DEA<0 구간 역방향
+
+# ⑥ 연속 동방향 신호
+CONSECUTIVE_SIGNAL_ADJ       = 3      # 1회 추가당 +3pt
+CONSECUTIVE_SIGNAL_MAX_ADJ   = 9      # 상한 +9pt
+
+# ══════════════════════════════════════════════════════════════════════
+# [v3.2] 불량신호 방지 — 확장 (A/B/C/D/E)
+# ══════════════════════════════════════════════════════════════════════
+
+# [A-2] 역풍 카운터 (④ RANGING_ENTRY_EMA_ADJ 흡수)
+# 역풍 요소: MACD음수, entry EMA 역방향, Taker 역풍, FVG 오버헤드≥2, price<MA20+slope음수
+HEADWIND_PRESSURE_PER_FACTOR  = 3    # 요소당 +3pt 임계값
+HEADWIND_PRESSURE_MAX_ADJ     = 12   # 최대 +12pt
+
+# [A-3] 하락 모멘텀 컨텍스트
+# 조건: 최근 3봉 중 음봉≥2 AND price<MA20 AND MACD음수 AND MA20기울기 음수
+MOMENTUM_CONTEXT_ADJ          = 5    # +5pt 임계값
+
+# [B-1] RANGING 심리보너스 억제
+# entry EMA 역방향 시 펀딩비/OI/스마트머니/펀딩추세 보너스 절반
+RANGING_SENTIMENT_MULT        = 0.50
+
+# [B-2] RANGING + EMA역방향 보너스 캡
+RANGING_REVERSE_BONUS_CAP     = 20   # 기존 22~42pt → 20pt로 제한
+
+# [C-1] MA20 위치 + 기울기 임계값 조정
+# price < MA20 AND MA20 slope 음수 시 추가 강화
+EMA20_POSITION_ADJ            = 4    # +4pt 임계값
+
+# [D-1] 기본점수 약할 때 보너스 캡
+WEAK_BASE_SCORE_THRESHOLD     = 55.0  # base_score < 55 기준
+WEAK_BASE_BONUS_THRESHOLD     = 25    # bonus_raw > 25 기준
+WEAK_BASE_BONUS_CAP           = 18    # 이 경우 캡 = 18pt
+
+# [D-2] 보너스/기본점수 비율 캡
+MAX_BONUS_TO_BASE_RATIO       = 0.55  # 보너스 ≤ base_score × 55%
+MIN_BONUS_FLOOR               = 10    # 비율캡 하한 (너무 낮아지지 않도록)
+
+# [E-1] RANGING 지속시간 임계값
+RANGING_DURATION_ADJ_MID      = 2    # 3~6h 지속 → +2pt
+RANGING_DURATION_ADJ_LONG     = 4    # 6h+ 지속 → +4pt
 
 # ══════════════════════════════════════════════════════════════════════
 # SMC / 피보나치
