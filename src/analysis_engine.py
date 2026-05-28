@@ -1,33 +1,3 @@
-"""
-analysis_engine.py — 분석 엔진 (1h Bot v3.0)
-────────────────────────────────────────────────────────────────────
-[v3.0 신규 분석 함수 9개]
-
-① analyze_smart_money_divergence(top_trader_ls, retail_ls)
-   고래 vs 개인 LS 괴리 → 스마트머니 방향 포착
-
-② analyze_oi_matrix(oi_data, price_change_4h)
-   OI변화 × 가격변화 4분면 → 추세 성격 분류
-
-③ analyze_funding_history(funding_hist)
-   64h 펀딩비 추세·전환·누적 극단 분석
-
-④ analyze_candle_pattern_1d(df_1d)
-   일봉 캔들 패턴 (가중치 2배)
-
-⑤ analyze_candle_pattern_4h(df_4h)
-   4h 캔들 패턴 (가중치 1.4배)
-
-⑥ analyze_mtf_momentum(df_1h, df_4h, df_1d)
-   RSI 기울기 기반 3TF 모멘텀 정합
-
-⑧ detect_weekly_levels(df_1d, current_price)
-   전주 고/저가 + 전일 키레벨 S/R
-
-⑨ analyze_1d_ema_structure(df_1d, current_price)
-   1d EMA20/50/200 구조 + 이격 분석
-────────────────────────────────────────────────────────────────────
-"""
 import logging
 from typing import Optional
 import numpy as np
@@ -120,7 +90,7 @@ def _detect_bear_div(df, rsi, lb=6):
 def _detect_hidden_bull_div(df, rsi, lb=8):
     if df is None or len(df)<lb*2: return False
     c=df["close"].values; r=rsi.values
-    return bool(c[-lb:].min()>c[-lb*2:-lb].min() and r[-lb:].min()<r[-lb*2:-lb].min())
+    return bool(c[-lb:].min()>c[-lb*2:-lb].min() and r[-lb:].min()>r[-lb*2:-lb].min())
 
 def _detect_hidden_bear_div(df, rsi, lb=8):
     if df is None or len(df)<lb*2: return False
@@ -187,6 +157,15 @@ def analyze_bollinger_bands(df):
     period=config.BOLLINGER_PERIOD; std_dev=config.BOLLINGER_STD
     if df is None or len(df)<period+1: return _empty_bb()
     close=df["close"].astype(float); mid=close.rolling(period).mean(); std=close.rolling(period).std()
+    
+    # [v3.2] MA20 기울기 부호 — A-2/A-3/C-1 임계값 조정에 사용 (수정 2)
+    ma20_slope_sign = 0
+    if len(close) >= config.BOLLINGER_PERIOD + 3:
+        m_now  = float(mid.iloc[-1])
+        m_prev = float(mid.iloc[-4])   # 3봉 전 MA20 값
+        if   m_now > m_prev: ma20_slope_sign =  1   # 우상향
+        elif m_now < m_prev: ma20_slope_sign = -1   # 우하향
+
     upper=mid+std_dev*std; lower=mid-std_dev*std
     bw_s=(upper-lower)/mid.replace(0,np.nan)
     cur_bw=float(bw_s.iloc[-1]) if not pd.isna(bw_s.iloc[-1]) else 0.0
@@ -202,7 +181,7 @@ def analyze_bollinger_bands(df):
     elif pct_b<=0.65: ls,ss,state=50,50,"middle"
     elif pct_b<=0.85: ls,ss,state=35,65,"upper_zone"
     elif pct_b<=1.0:  ls,ss,state=18,82,"near_upper"
-    else:             ls,ss,state=8,92,"upper_breakout"
+    else:              ls,ss,state=8,92,"upper_breakout"
     pctb_s=(close-lower)/(upper-lower).replace(0,np.nan).fillna(0.5)
     lower_streak=upper_streak=0
     for pb in reversed(pctb_s.iloc[-10:].values):
@@ -213,12 +192,58 @@ def analyze_bollinger_bands(df):
         else: break
     return {"long_score":ls,"short_score":ss,"pct_b":round(pct_b,4),"squeeze":squeeze,
             "state":state,"upper":round(c_upper,6),"lower":round(c_lower,6),"mid":round(c_mid,6),
+            "ma20_slope_sign": ma20_slope_sign,
             "band_width":round(cur_bw,6),"avg_band_width":round(avg_bw,6),
             "lower_streak":lower_streak,"upper_streak":upper_streak,"available":True}
 
 def _empty_bb():
     return {"long_score":50,"short_score":50,"pct_b":0.5,"squeeze":False,"state":"unknown",
-            "upper":0,"lower":0,"mid":0,"band_width":0,"avg_band_width":0,"lower_streak":0,"upper_streak":0,"available":False}
+            "upper":0,"lower":0,"mid":0,"band_width":0,"avg_band_width":0,"lower_streak":0,"upper_streak":0,"ma20_slope_sign":0,"available":False}
+
+
+# ══════════════════════════════════════════════════════════════════
+# [수정 1] _empty_bb() 함수 바로 다음에calculate_macd 함수 삽입
+# ══════════════════════════════════════════════════════════════════
+
+def calculate_macd(df, fast: int = 12, slow: int = 26, signal_period: int = 9) -> dict:
+    """
+    [v3.1] MACD (12,26,9)
+    bearish : DIF < 0 AND DEA < 0 → 롱 방향 패널티 -8pt
+    bullish : DIF > 0 AND DEA > 0 → 숏 방향 패널티 -8pt
+    cross_up / cross_down : 골든/데드 크로스
+    """
+    import logging as _l
+    _empty = {"macd": 0.0, "signal_line": 0.0, "histogram": 0.0,
+              "bearish": False, "bullish": False, "cross_up": False, "cross_down": False, "available": False}
+    if df is None or len(df) < slow + signal_period + 2:
+        return _empty
+    try:
+        close      = df["close"].astype(float)
+        ema_f      = _calc_ema(close, fast)      # analysis_engine 내부 함수
+        ema_s      = _calc_ema(close, slow)
+        macd_line  = ema_f - ema_s
+        sig_line   = _calc_ema(macd_line, signal_period)
+        histogram  = macd_line - sig_line
+
+        m_cur, m_prev = float(macd_line.iloc[-1]), float(macd_line.iloc[-2])
+        s_cur, s_prev = float(sig_line.iloc[-1]),  float(sig_line.iloc[-2])
+        h_cur         = float(histogram.iloc[-1])
+
+        bearish    = m_cur < 0 and s_cur < 0
+        bullish    = m_cur > 0 and s_cur > 0
+        cross_up   = m_prev <= s_prev and m_cur > s_cur
+        cross_down = m_prev >= s_prev and m_cur < s_cur
+
+        _l.getLogger(__name__).debug(
+            f"[MACD/1h] DIF:{m_cur:.4f} DEA:{s_cur:.4f} Hist:{h_cur:.4f} "
+            f"[{'🔴음수' if bearish else '🟢양수' if bullish else '중립'}]"
+            + (" ↑골든" if cross_up else " ↓데드" if cross_down else "")
+        )
+        return {"macd": round(m_cur,6), "signal_line": round(s_cur,6), "histogram": round(h_cur,6),
+                "bearish": bearish, "bullish": bullish, "cross_up": cross_up, "cross_down": cross_down, "available": True}
+    except Exception as e:
+        import logging as _l2; _l2.getLogger(__name__).warning(f"[MACD] 오류: {e}")
+        return _empty
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -509,11 +534,21 @@ def check_fibonacci_levels(df):
 def analyze_candle_pattern(df, tf_label="1h"):
     """tf_label: "1h" | "4h" | "1d" — 로그 구분용"""
     _empty={"long_score":50,"short_score":50,"patterns":[],"bearish_pin":False,"bullish_pin":False,
-            "bearish_engulf":False,"bullish_engulf":False,"consecutive_bear":False,"consecutive_bull":False}
+            "bearish_engulf":False,"bullish_engulf":False,"consecutive_bear":False,"consecutive_bull":False,
+            "recent_bear_count_3": 0}
     if df is None or len(df)<4: return _empty
     try:
         c=df["close"].astype(float).values; o=df["open"].astype(float).values
         h=df["high"].astype(float).values; l=df["low"].astype(float).values
+        
+        # [v3.2] 최근 3봉 음봉 수 — A-3 하락 모멘텀 컨텍스트에 사용 (수정 3)
+        close = df["close"]
+        open_ = df["open"]
+        recent_bear_count_3 = sum(
+            1 for i in [-3, -2, -1]
+            if len(close) > abs(i) and float(close.iloc[i]) < float(open_.iloc[i])
+        )
+
         body=np.abs(c-o); upper=h-np.maximum(c,o); lower=np.minimum(c,o)-l; rng=h-l
         min_rng=float(np.mean(rng[-20:]))*0.3; cr=rng[-1]
         bp  =(cr>min_rng and upper[-1]>body[-1]*2.0 and lower[-1]<upper[-1]*0.3 and c[-1]<o[-1])
@@ -533,7 +568,7 @@ def analyze_candle_pattern(df, tf_label="1h"):
         if patterns: logger.info(f"[캔들패턴/{tf_label}] {patterns}")
         return {"long_score":round(min(100,max(0,ls_)),2),"short_score":round(min(100,max(0,ss_)),2),
                 "patterns":patterns,"bearish_pin":bp,"bullish_pin":blp,"bearish_engulf":be,"bullish_engulf":ble,
-                "consecutive_bear":cb,"consecutive_bull":cb2}
+                "consecutive_bear":cb,"consecutive_bull":cb2, "recent_bear_count_3": recent_bear_count_3}
     except Exception as e:
         logger.warning(f"[캔들패턴/{tf_label}] 오류: {e}"); return _empty
 
@@ -665,7 +700,7 @@ def analyze_oi_matrix(oi_data: dict, df_1h) -> dict:
     PT = config.OI_PRICE_CHANGE_THRESHOLD
     OT = config.OI_CHANGE_THRESHOLD
 
-    price_up   = price_chg >  PT
+    price_up  = price_chg >  PT
     price_down = price_chg < -PT
     oi_up      = oi_chg    >  OT and oi_avail
     oi_down    = oi_chg    < -OT and oi_avail
@@ -1042,6 +1077,7 @@ def run_full_analysis(symbol, collected_data):
     liq      = analyze_liquidations(liq_raw, df_1h)
     vol      = check_volume_confirmation(df_1h, df_4h=df_4h)
     atr      = get_atr_state(df_1h)
+    macd_1h  = calculate_macd(df_1h)    # [v3.1] MACD 계산 추가 (수정 4)
 
     candle_1h = analyze_candle_pattern(df_1h, "1h")
     ms        = analyze_market_structure(df_1h)
@@ -1124,5 +1160,7 @@ def run_full_analysis(symbol, collected_data):
         "mtf_momentum":     mtf_momentum,
         "weekly_levels":    weekly_lvl,
         "ema_structure":    ema_struct,
+        # v3.1/v3.2 macd_1h 반환 추가 (수정 5)
+        "macd_1h":          macd_1h,
         "analyzed_at":      datetime.datetime.utcnow().isoformat() + "Z",
     }
