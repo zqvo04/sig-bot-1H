@@ -1,3 +1,7 @@
+"""
+analysis_engine.py — 분석 엔진 (1h Bot v3.0)
+"""
+
 import logging
 from typing import Optional
 import numpy as np
