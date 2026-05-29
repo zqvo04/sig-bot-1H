@@ -1,5 +1,11 @@
 """
-analysis_engine.py — 분석 엔진 (1h Bot v3.0)
+analysis_engine.py — 분석 엔진 (1h Bot v3.4)
+
+[v3.4 변경]
+  [개선 1] analyze_liquidations() 청산 방향 로직 버그픽스
+    - short_liq_detected: favorable_direction "short" → "long" (숏청산=매도세력소진=반등신호)
+    - long_liq_detected:  favorable_direction "long"  → "short" (롱청산=매수세력소진=하락신호)
+    - 점수 방향도 동일하게 수정
 """
 
 import logging
@@ -13,9 +19,9 @@ import config
 logger = logging.getLogger(__name__)
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # 1. 기본 유틸
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def calculate_atr(df, period=None):
     if df is None or df.empty or "high" not in df.columns:
@@ -61,9 +67,9 @@ def check_volume_confirmation(df_1h, df_4h=None):
             "current_vol":round(cur_vol,2),"avg_vol":round(baseline,2),"baseline_method":method}
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # 2. RSI (멀티TF)
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def calculate_rsi(df, period=None):
     period = period or config.RSI_PERIOD
@@ -153,22 +159,21 @@ def _empty_rsi():
             "pullback_short_strong":False,"pullback_short_weak":False,"pullback_short_micro":False}
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # 3. 볼린저밴드
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def analyze_bollinger_bands(df):
     period=config.BOLLINGER_PERIOD; std_dev=config.BOLLINGER_STD
     if df is None or len(df)<period+1: return _empty_bb()
     close=df["close"].astype(float); mid=close.rolling(period).mean(); std=close.rolling(period).std()
-    
-    # [v3.2] MA20 기울기 부호 — A-2/A-3/C-1 임계값 조정에 사용 (수정 2)
+
     ma20_slope_sign = 0
     if len(close) >= config.BOLLINGER_PERIOD + 3:
         m_now  = float(mid.iloc[-1])
-        m_prev = float(mid.iloc[-4])   # 3봉 전 MA20 값
-        if   m_now > m_prev: ma20_slope_sign =  1   # 우상향
-        elif m_now < m_prev: ma20_slope_sign = -1   # 우하향
+        m_prev = float(mid.iloc[-4])
+        if   m_now > m_prev: ma20_slope_sign =  1
+        elif m_now < m_prev: ma20_slope_sign = -1
 
     upper=mid+std_dev*std; lower=mid-std_dev*std
     bw_s=(upper-lower)/mid.replace(0,np.nan)
@@ -205,17 +210,7 @@ def _empty_bb():
             "upper":0,"lower":0,"mid":0,"band_width":0,"avg_band_width":0,"lower_streak":0,"upper_streak":0,"ma20_slope_sign":0,"available":False}
 
 
-# ══════════════════════════════════════════════════════════════════
-# [수정 1] _empty_bb() 함수 바로 다음에calculate_macd 함수 삽입
-# ══════════════════════════════════════════════════════════════════
-
 def calculate_macd(df, fast: int = 12, slow: int = 26, signal_period: int = 9) -> dict:
-    """
-    [v3.1] MACD (12,26,9)
-    bearish : DIF < 0 AND DEA < 0 → 롱 방향 패널티 -8pt
-    bullish : DIF > 0 AND DEA > 0 → 숏 방향 패널티 -8pt
-    cross_up / cross_down : 골든/데드 크로스
-    """
     import logging as _l
     _empty = {"macd": 0.0, "signal_line": 0.0, "histogram": 0.0,
               "bearish": False, "bullish": False, "cross_up": False, "cross_down": False, "available": False}
@@ -223,7 +218,7 @@ def calculate_macd(df, fast: int = 12, slow: int = 26, signal_period: int = 9) -
         return _empty
     try:
         close      = df["close"].astype(float)
-        ema_f      = _calc_ema(close, fast)      # analysis_engine 내부 함수
+        ema_f      = _calc_ema(close, fast)
         ema_s      = _calc_ema(close, slow)
         macd_line  = ema_f - ema_s
         sig_line   = _calc_ema(macd_line, signal_period)
@@ -250,9 +245,9 @@ def calculate_macd(df, fast: int = 12, slow: int = 26, signal_period: int = 9) -
         return _empty
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # 4. EMA
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def _ema_direction(df):
     if df is None or len(df)<config.EMA_SLOW+1: return "neutral"
@@ -274,9 +269,9 @@ def calculate_ema_multiplier(ohlcv_dict, direction, regime="UNKNOWN"):
             "reason":f"EMA {same_count}/3 일치 (역:{reverse_count}개 → ×{mult:.2f}) [{regime}]"}
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # 5. ADX
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def calculate_adx(df, period=None):
     period=period or config.ADX_PERIOD
@@ -302,9 +297,9 @@ def calculate_adx(df, period=None):
     return {"adx":c_adx,"plus_di":c_pdi,"minus_di":c_mdi,"trend_dir":td,"strength":st,"multiplier":m,"available":True}
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # 6. 펀딩비 / LS / Taker / 청산
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def analyze_funding_rate(funding_data):
     if funding_data is None:
@@ -364,7 +359,24 @@ def analyze_taker_volume(taker_data):
     logger.info(f"[Taker] 매수:{br*100:.1f}% [{bias}/{strength}] 롱:{ls:.1f} 숏:{ss:.1f}")
     return {"long_score":ls,"short_score":ss,"bias":bias,"strength":strength,"buy_ratio":br,"sell_ratio":sr,"available":True}
 
+
 def analyze_liquidations(liq_data, df_1h=None):
+    """
+    [v3.4 개선 1] 청산 방향 로직 버그픽스
+    ─────────────────────────────────────
+    수정 전 (버그):
+      short_liq_detected → favorable_direction="short", 숏 점수 높임
+      long_liq_detected  → favorable_direction="long",  롱 점수 높임
+
+    수정 후 (정확):
+      short_liq_detected = 숏 포지션 강제청산 = 매도세력 소진 = 가격 반등 압력
+        → favorable_direction="long"  (롱에 유리)
+        → 롱 점수 높임, 숏 점수 낮춤
+
+      long_liq_detected  = 롱 포지션 강제청산 = 매수세력 소진 = 가격 하락 압력
+        → favorable_direction="short" (숏에 유리)
+        → 숏 점수 높임, 롱 점수 낮춤
+    """
     _empty={"long_score":50,"short_score":50,"signal":"none","is_large":False,
             "long_liq_proxy":0.0,"short_liq_proxy":0.0,"favorable_direction":None,"display_hint":None,"available":False}
     if df_1h is None or len(df_1h)<15: return _empty
@@ -389,18 +401,42 @@ def analyze_liquidations(liq_data, df_1h=None):
     signal="none"
     if lls>sls and lls>0.15: signal="long_liq_detected"
     elif sls>lls and sls>0.15: signal="short_liq_detected"
-    ls,ss=50,50
-    if signal=="long_liq_detected":
-        ls=round(60+lls*30,2); ss=round(40-lls*10,2)
-        if is_large: ls=min(100,ls+10)
-    elif signal=="short_liq_detected":
-        ss=round(60+sls*30,2); ls=round(40-sls*10,2)
-        if is_large: ss=min(100,ss+10)
-    _map={"long_liq_detected":("long","롱청산 감지 → 반등 기대"),"short_liq_detected":("short","숏청산 감지 → 되돌림 기대")}
-    fav,hint=_map.get(signal,(None,None))
-    return {"long_score":round(min(100,max(0,ls)),2),"short_score":round(min(100,max(0,ss)),2),
-            "signal":signal,"is_large":is_large,"long_liq_proxy":round(lls,4),"short_liq_proxy":round(sls,4),
+
+    ls_score, ss_score = 50, 50
+
+    # [v3.4 개선 1] 방향 수정
+    # long_liq_detected  = 롱 강제청산 = 매수세력 소진 → 숏에 유리
+    # short_liq_detected = 숏 강제청산 = 매도세력 소진 → 롱에 유리
+    if signal == "long_liq_detected":
+        # 하락 압력 → 숏에 유리
+        ss_score = round(60 + lls * 30, 2)
+        ls_score = round(40 - lls * 10, 2)
+        if is_large:
+            ss_score = min(100, ss_score + 10)
+        fav  = "short"
+        hint = "롱청산 감지 → 하락 지속 기대"
+        logger.info(f"[청산감지] 롱청산(lls:{lls:.2f}) → 숏유리 (favorable=short)")
+
+    elif signal == "short_liq_detected":
+        # 반등 압력 → 롱에 유리
+        ls_score = round(60 + sls * 30, 2)
+        ss_score = round(40 - sls * 10, 2)
+        if is_large:
+            ls_score = min(100, ls_score + 10)
+        fav  = "long"
+        hint = "숏청산 감지 → 반등 기대"
+        logger.info(f"[청산감지] 숏청산(sls:{sls:.2f}) → 롱유리 (favorable=long)")
+
+    else:
+        fav  = None
+        hint = None
+
+    return {"long_score":round(min(100,max(0,ls_score)),2),
+            "short_score":round(min(100,max(0,ss_score)),2),
+            "signal":signal,"is_large":is_large,
+            "long_liq_proxy":round(lls,4),"short_liq_proxy":round(sls,4),
             "favorable_direction":fav,"display_hint":hint,"available":True}
+
 
 def classify_market_regime(df_1h, adx, bb):
     if df_1h is None or len(df_1h)<25 or not bb.get("available"):
@@ -442,9 +478,9 @@ def evaluate_gates(direction, funding, ls_ratio_result):
     return {"passed":True,"funding_penalty":pf,"block_reason":None,"penalty_reason":pr}
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # 7. SMC (FVG, BOS, Fibonacci)
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def detect_fvg(df, lookback=30):
     _empty={"in_bullish_fvg":False,"in_bearish_fvg":False,"bullish_fvg_count":0,"bearish_fvg_count":0,"nearest_bullish_fvg":None,"nearest_bearish_fvg":None}
@@ -531,12 +567,11 @@ def check_fibonacci_levels(df):
         logger.warning(f"[피보] 오류: {e}"); return _empty
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # 8. 캔들 패턴 (TF별)
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def analyze_candle_pattern(df, tf_label="1h"):
-    """tf_label: "1h" | "4h" | "1d" — 로그 구분용"""
     _empty={"long_score":50,"short_score":50,"patterns":[],"bearish_pin":False,"bullish_pin":False,
             "bearish_engulf":False,"bullish_engulf":False,"consecutive_bear":False,"consecutive_bull":False,
             "recent_bear_count_3": 0}
@@ -544,8 +579,7 @@ def analyze_candle_pattern(df, tf_label="1h"):
     try:
         c=df["close"].astype(float).values; o=df["open"].astype(float).values
         h=df["high"].astype(float).values; l=df["low"].astype(float).values
-        
-        # [v3.2] 최근 3봉 음봉 수 — A-3 하락 모멘텀 컨텍스트에 사용 (수정 3)
+
         close = df["close"]
         open_ = df["open"]
         recent_bear_count_3 = sum(
@@ -577,9 +611,9 @@ def analyze_candle_pattern(df, tf_label="1h"):
         logger.warning(f"[캔들패턴/{tf_label}] 오류: {e}"); return _empty
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # 9. 시장 구조 / 거래량 다이버전스
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def analyze_market_structure(df):
     _empty={"long_score":50,"short_score":50,"lower_high":False,"higher_low":False,"failed_breakout":False,"failed_breakdown":False}
@@ -623,27 +657,18 @@ def analyze_vol_price_divergence(df):
         logger.warning(f"[거래량다이버] 오류: {e}"); return _empty
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # [v3.0] ① 스마트머니 LS 다이버전스
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def analyze_smart_money_divergence(top_trader_ls: dict, retail_ls: dict) -> dict:
-    """
-    고래(상위 트레이더) vs 개인(일반 계좌) LS 괴리 분석
-    divergence = top_trader_long_pct - retail_long_pct
-    양수: 고래가 개인보다 더 롱 → 롱 유리
-    음수: 고래가 개인보다 더 숏 → 숏 유리
-    """
     _empty = {"available": False, "divergence": 0.0,
               "smart_direction": "neutral", "long_score_adj": 0, "short_score_adj": 0}
-
     if not top_trader_ls.get("available") or not retail_ls.get("available"):
         return _empty
-
     tt_long  = top_trader_ls.get("long_pct", 0.5)
     ret_long = retail_ls.get("long_pct",     0.5)
     div      = tt_long - ret_long
-
     if   div >  config.SMART_MONEY_DIV_STRONG:
         direction = "long"; ls_adj = config.BONUS_SMART_MONEY_STRONG; ss_adj = -config.BONUS_SMART_MONEY_STRONG
         logger.info(f"[스마트머니] 🐋 고래 강력 롱 포착 (괴리:{div:+.1%}) → 롱 유리 +{ls_adj}pt")
@@ -659,198 +684,115 @@ def analyze_smart_money_divergence(top_trader_ls: dict, retail_ls: dict) -> dict
     else:
         direction = "neutral"; ls_adj = ss_adj = 0
         logger.debug(f"[스마트머니] 중립 (괴리:{div:+.1%})")
-
-    return {
-        "available":       True,
-        "divergence":      round(div, 4),
-        "top_trader_long": round(tt_long, 4),
-        "retail_long":     round(ret_long, 4),
-        "smart_direction": direction,
-        "long_score_adj":  ls_adj,
-        "short_score_adj": ss_adj,
-    }
+    return {"available":True,"divergence":round(div,4),"top_trader_long":round(tt_long,4),
+            "retail_long":round(ret_long,4),"smart_direction":direction,
+            "long_score_adj":ls_adj,"short_score_adj":ss_adj}
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # [v3.0] ② OI 변화 × 가격 방향 매트릭스
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def analyze_oi_matrix(oi_data: dict, df_1h) -> dict:
-    """
-    OI 변화 × 4H 가격 변화 4분면:
-      가격↑ OI↑ → 신규 매수 진입 (강한 상승)   → 롱 확증 +10pt
-      가격↓ OI↑ → 신규 매도 진입 (강한 하락)   → 숏 확증 +10pt
-      가격↑ OI↓ → 숏 커버링 (약한 반등)        → 중립 / 롱 소폭 +3pt
-      가격↓ OI↓ → 롱 청산 소진 (바닥 가능)     → 반전 롱 기대 +6pt
-    """
     _empty = {"available": False, "quadrant": "neutral",
               "long_score_adj": 0, "short_score_adj": 0,
               "oi_change_pct": 0.0, "price_change_pct": 0.0}
-
     if not oi_data.get("available") or df_1h is None or len(df_1h) < 5:
         return _empty
-
     oi_chg   = oi_data.get("oi_change_pct", 0.0)
     oi_avail = oi_data.get("oi_4h_ago", 0) > 0
-
-    # 4H 가격 변화
     try:
         p_now = float(df_1h["close"].iloc[-1])
         p_4h  = float(df_1h["close"].iloc[-5])
         price_chg = (p_now - p_4h) / p_4h if p_4h > 0 else 0.0
     except Exception:
         return _empty
-
     PT = config.OI_PRICE_CHANGE_THRESHOLD
     OT = config.OI_CHANGE_THRESHOLD
-
     price_up  = price_chg >  PT
     price_down = price_chg < -PT
     oi_up      = oi_chg    >  OT and oi_avail
     oi_down    = oi_chg    < -OT and oi_avail
-
     ls_adj = ss_adj = 0; quadrant = "neutral"
-
     if price_up and oi_up:
-        quadrant = "trend_long"
-        ls_adj   = config.BONUS_OI_TREND_CONFIRM
-        ss_adj   = -config.BONUS_OI_TREND_CONFIRM
+        quadrant = "trend_long"; ls_adj = config.BONUS_OI_TREND_CONFIRM; ss_adj = -config.BONUS_OI_TREND_CONFIRM
         logger.info(f"[OI매트릭스] 💹 가격↑+OI↑ → 신규매수 진입 (강한 상승) 롱+{ls_adj}pt")
-
     elif price_down and oi_up:
-        quadrant = "trend_short"
-        ss_adj   = config.BONUS_OI_TREND_CONFIRM
-        ls_adj   = -config.BONUS_OI_TREND_CONFIRM
+        quadrant = "trend_short"; ss_adj = config.BONUS_OI_TREND_CONFIRM; ls_adj = -config.BONUS_OI_TREND_CONFIRM
         logger.info(f"[OI매트릭스] 📉 가격↓+OI↑ → 신규매도 진입 (강한 하락) 숏+{ss_adj}pt")
-
     elif price_down and oi_down:
-        quadrant = "reversal_long"
-        ls_adj   = config.BONUS_OI_REVERSAL_SIGNAL
+        quadrant = "reversal_long"; ls_adj = config.BONUS_OI_REVERSAL_SIGNAL
         logger.info(f"[OI매트릭스] 🔄 가격↓+OI↓ → 롱 청산 소진 (바닥 가능) 롱+{ls_adj}pt")
-
     elif price_up and oi_down:
-        quadrant = "weak_bounce"
-        ls_adj   = 3
+        quadrant = "weak_bounce"; ls_adj = 3
         logger.debug(f"[OI매트릭스] 가격↑+OI↓ → 숏커버링 (약한 반등)")
-
     else:
         logger.debug(f"[OI매트릭스] 중립 (가격:{price_chg:+.2%} OI:{oi_chg:+.2%})")
-
-    return {
-        "available":       True,
-        "quadrant":        quadrant,
-        "long_score_adj":  ls_adj,
-        "short_score_adj": ss_adj,
-        "oi_change_pct":   round(oi_chg,   4),
-        "price_change_pct":round(price_chg, 4),
-    }
+    return {"available":True,"quadrant":quadrant,"long_score_adj":ls_adj,"short_score_adj":ss_adj,
+            "oi_change_pct":round(oi_chg,4),"price_change_pct":round(price_chg,4)}
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # [v3.0] ③ 펀딩비 히스토리 추세
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def analyze_funding_history_trend(funding_hist: dict) -> dict:
-    """
-    64h 펀딩비 히스토리 분석:
-      - 전환점 (음→양, 양→음): 심리 전환 신호
-      - 연속 극단값: 과열 → 역방향 유리
-      - 추세 방향: 롱/숏 소폭 조정
-    """
     _empty = {"available": False, "long_score_adj": 0, "short_score_adj": 0,
               "signal": "neutral", "detail": ""}
-
     if not funding_hist.get("available"):
         return _empty
-
     flip    = funding_hist.get("flip")
     consec  = funding_hist.get("consecutive_extreme", 0)
     trend   = funding_hist.get("trend", "neutral")
     rates   = funding_hist.get("rates", [])
     current = rates[0] if rates else 0.0
-
     ls_adj = ss_adj = 0; signal = "neutral"; detail = ""
-
-    # 전환점: 음→양 (롱 과열 시작) → 숏 유리
     if flip == "neg_to_pos":
-        ss_adj = config.BONUS_FUNDING_FLIP
-        signal = "flip_short"
+        ss_adj = config.BONUS_FUNDING_FLIP; signal = "flip_short"
         detail = f"펀딩 음→양 전환 → 롱과열 시작 신호 숏+{ss_adj}pt"
         logger.info(f"[펀딩추세] {detail}")
-
-    # 전환점: 양→음 (숏 과열 시작) → 롱 유리
     elif flip == "pos_to_neg":
-        ls_adj = config.BONUS_FUNDING_FLIP
-        signal = "flip_long"
+        ls_adj = config.BONUS_FUNDING_FLIP; signal = "flip_long"
         detail = f"펀딩 양→음 전환 → 숏과열 시작 신호 롱+{ls_adj}pt"
         logger.info(f"[펀딩추세] {detail}")
-
-    # 연속 극단 양수 (4회 이상) → 롱 과열 → 숏 유리
     elif consec >= 4 and current > 0:
-        ss_adj = config.BONUS_FUNDING_EXTREME_ACCUM
-        signal = "extreme_long_heat"
+        ss_adj = config.BONUS_FUNDING_EXTREME_ACCUM; signal = "extreme_long_heat"
         detail = f"펀딩 {consec}회 연속 극단 양수 → 롱과열 누적 숏+{ss_adj}pt"
         logger.info(f"[펀딩추세] {detail}")
-
-    # 연속 극단 음수 → 숏 과열 → 롱 유리
     elif consec >= 4 and current < 0:
-        ls_adj = config.BONUS_FUNDING_EXTREME_ACCUM
-        signal = "extreme_short_heat"
+        ls_adj = config.BONUS_FUNDING_EXTREME_ACCUM; signal = "extreme_short_heat"
         detail = f"펀딩 {consec}회 연속 극단 음수 → 숏과열 누적 롱+{ls_adj}pt"
         logger.info(f"[펀딩추세] {detail}")
-
-    # 추세 방향 소폭 반영
     elif trend == "rising" and current > 0:
         ss_adj = 3; signal = "rising_long_bias"
         detail = f"펀딩 상승 추세 (롱편향 강화 중) 숏+3pt"
     elif trend == "falling" and current < 0:
         ls_adj = 3; signal = "falling_short_bias"
         detail = f"펀딩 하락 추세 (숏편향 강화 중) 롱+3pt"
-
-    return {
-        "available":       True,
-        "long_score_adj":  ls_adj,
-        "short_score_adj": ss_adj,
-        "signal":          signal,
-        "detail":          detail,
-    }
+    return {"available":True,"long_score_adj":ls_adj,"short_score_adj":ss_adj,
+            "signal":signal,"detail":detail}
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # [v3.0] ⑥ 멀티TF 모멘텀 정합
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def analyze_mtf_momentum(df_1h, df_4h, df_1d) -> dict:
-    """
-    1h/4h/1d RSI 기울기 (4캔들) 기반 모멘텀 방향 일치도
-    slope = rsi[-1] - rsi[-4] (4봉 기울기)
-    MIN = MTF_MOMENTUM_RSI_SLOPE_MIN
-    """
     _empty = {"available": False, "alignment": 0, "direction": "neutral",
-              "long_score_adj": 0, "short_score_adj": 0,
-              "slopes": {}}
-
+              "long_score_adj": 0, "short_score_adj": 0, "slopes": {}}
     MIN = config.MTF_MOMENTUM_RSI_SLOPE_MIN
-
     def _slope(df):
         if df is None or len(df) < 8: return 0.0
         rsi = calculate_rsi(df)
         return float(rsi.iloc[-1] - rsi.iloc[-4])
-
     s1h = _slope(df_1h); s4h = _slope(df_4h); s1d = _slope(df_1d)
-
     def _dir(s):
         if s >  MIN: return "bull"
         if s < -MIN: return "bear"
         return "neutral"
-
     d1h = _dir(s1h); d4h = _dir(s4h); d1d = _dir(s1d)
-
-    bull_cnt = [d1h,d4h,d1d].count("bull")
-    bear_cnt = [d1h,d4h,d1d].count("bear")
-
+    bull_cnt = [d1h,d4h,d1d].count("bull"); bear_cnt = [d1h,d4h,d1d].count("bear")
     ls_adj = ss_adj = 0; direction = "neutral"; alignment = 0
-
     if bull_cnt == 3:
         ls_adj = config.BONUS_MTF_MOMENTUM_FULL; alignment = 3; direction = "bull"
         logger.info(f"[멀티TF모멘텀] ★★★ 3/3 상승 정합 → 롱+{ls_adj}pt")
@@ -865,46 +807,31 @@ def analyze_mtf_momentum(df_1h, df_4h, df_1d) -> dict:
         logger.info(f"[멀티TF모멘텀] ★★ 2/3 하락 정합 → 숏+{ss_adj}pt")
     else:
         logger.debug(f"[멀티TF모멘텀] 혼조 (1h:{d1h} 4h:{d4h} 1d:{d1d})")
-
-    return {
-        "available":       True,
-        "alignment":       alignment,
-        "direction":       direction,
-        "long_score_adj":  ls_adj,
-        "short_score_adj": ss_adj,
-        "slopes":          {"1h":round(s1h,2),"4h":round(s4h,2),"1d":round(s1d,2)},
-        "dirs":            {"1h":d1h,"4h":d4h,"1d":d1d},
-    }
+    return {"available":True,"alignment":alignment,"direction":direction,
+            "long_score_adj":ls_adj,"short_score_adj":ss_adj,
+            "slopes":{"1h":round(s1h,2),"4h":round(s4h,2),"1d":round(s1d,2)},
+            "dirs":{"1h":d1h,"4h":d4h,"1d":d1d}}
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # [v3.0] ⑧ 주간 키레벨 S/R
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def detect_weekly_levels(df_1d, current_price: float) -> dict:
-    """
-    전주 고/저가 + 전일 키레벨 → S/R 근접 여부
-    df_1d: 최소 10개 일봉 필요
-    """
     _empty = {"available": False, "near_level": False, "level_type": None,
               "level_price": None, "distance_pct": None,
               "long_score_adj": 0, "short_score_adj": 0}
-
     if df_1d is None or len(df_1d) < 10 or current_price <= 0:
         return _empty
-
     try:
         highs  = df_1d["high"].astype(float).values
         lows   = df_1d["low"].astype(float).values
         closes = df_1d["close"].astype(float).values
-
-        # 전주(7일) 고/저가
         prev_week_high = float(np.max(highs[-9:-2]))
         prev_week_low  = float(np.min(lows[-9:-2]))
         prev_day_high  = float(highs[-2])
         prev_day_low   = float(lows[-2])
         prev_day_close = float(closes[-2])
-
         levels = [
             ("prev_week_high",  prev_week_high),
             ("prev_week_low",   prev_week_low),
@@ -912,9 +839,7 @@ def detect_weekly_levels(df_1d, current_price: float) -> dict:
             ("prev_day_low",    prev_day_low),
             ("prev_day_close",  prev_day_close),
         ]
-
         TOL = config.WEEKLY_LEVEL_TOLERANCE
-
         for level_type, level_price in levels:
             dist = abs(current_price - level_price) / level_price
             if dist <= TOL:
@@ -926,106 +851,68 @@ def detect_weekly_levels(df_1d, current_price: float) -> dict:
                 else:
                     ls_adj = config.BONUS_WEEKLY_KEY_LEVEL
                     logger.info(f"[주간레벨] ✅ {level_type}={level_price:.1f} 근접 지지 ({dist:.2%}) 롱+{ls_adj}pt")
-
-                return {
-                    "available":       True,
-                    "near_level":      True,
-                    "level_type":      level_type,
-                    "level_price":     round(level_price, 4),
-                    "distance_pct":    round(dist, 4),
-                    "is_resistance":   is_resistance,
-                    "long_score_adj":  ls_adj,
-                    "short_score_adj": ss_adj,
-                }
-
-        return {"available": True, "near_level": False, "level_type": None,
-                "level_price": None, "distance_pct": None, "long_score_adj": 0, "short_score_adj": 0}
-
+                return {"available":True,"near_level":True,"level_type":level_type,
+                        "level_price":round(level_price,4),"distance_pct":round(dist,4),
+                        "is_resistance":is_resistance,"long_score_adj":ls_adj,"short_score_adj":ss_adj}
+        return {"available":True,"near_level":False,"level_type":None,
+                "level_price":None,"distance_pct":None,"long_score_adj":0,"short_score_adj":0}
     except Exception as e:
         logger.warning(f"[주간레벨] 오류: {e}")
         return _empty
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # [v3.0] ⑨ 1D EMA 구조 스코어
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def analyze_1d_ema_structure(df_1d, current_price: float) -> dict:
-    """
-    1d EMA20/50/200 구조 분석:
-      강세: price > EMA20 > EMA50 > EMA200 → 임계값 완화
-      약세: price < EMA20 < EMA50 < EMA200 → 역방향 임계값 강화
-      EMA200 이격 15% 이상 → 평균회귀 위험 추가 패널티
-    """
-    _empty = {
-        "available": False, "structure": "neutral",
-        "ema20": None, "ema50": None, "ema200": None,
-        "dist_from_200": None, "long_threshold_adj": 0, "short_threshold_adj": 0,
-    }
-
+    _empty = {"available": False, "structure": "neutral",
+              "ema20": None, "ema50": None, "ema200": None,
+              "dist_from_200": None, "long_threshold_adj": 0, "short_threshold_adj": 0}
     if df_1d is None or len(df_1d) < 60 or current_price <= 0:
         return _empty
-
     try:
         close = df_1d["close"].astype(float)
         ema20  = float(_calc_ema(close, 20).iloc[-1])
         ema50  = float(_calc_ema(close, 50).iloc[-1])
         ema200 = float(_calc_ema(close, 200).iloc[-1]) if len(df_1d) >= 200 else None
-
         dist200 = (current_price - ema200) / ema200 if ema200 else None
-
         bull_struct = (current_price > ema20 > ema50)
         if ema200: bull_struct = bull_struct and (ema50 > ema200)
-
         bear_struct = (current_price < ema20 < ema50)
         if ema200: bear_struct = bear_struct and (ema50 < ema200)
-
         lt_adj = st_adj = 0
-
         if bull_struct:
             structure = "bull"
-            lt_adj = config.EMA_STRUCTURE_ALIGN_ADJ     # -5 (롱 완화)
-            st_adj = config.EMA_STRUCTURE_AGAINST_ADJ   # +8 (역추세 숏 강화)
+            lt_adj = config.EMA_STRUCTURE_ALIGN_ADJ
+            st_adj = config.EMA_STRUCTURE_AGAINST_ADJ
             logger.info(f"[1D-EMA구조] 📈 강세구조 price>{ema20:.0f}>EMA50 → 롱임계{lt_adj:+d}pt")
-
         elif bear_struct:
             structure = "bear"
-            st_adj = config.EMA_STRUCTURE_ALIGN_ADJ     # -5 (숏 완화)
-            lt_adj = config.EMA_STRUCTURE_AGAINST_ADJ   # +8 (역추세 롱 강화)
+            st_adj = config.EMA_STRUCTURE_ALIGN_ADJ
+            lt_adj = config.EMA_STRUCTURE_AGAINST_ADJ
             logger.info(f"[1D-EMA구조] 📉 약세구조 price<{ema20:.0f}<EMA50 → 숏임계{st_adj:+d}pt")
-
         else:
             structure = "neutral"
             logger.debug(f"[1D-EMA구조] 중립 (price:{current_price:.0f} EMA20:{ema20:.0f} EMA50:{ema50:.0f})")
-
-        # EMA200 이격 극단 패널티
         if dist200 is not None and abs(dist200) >= config.EMA_DISTANCE_EXTREME:
-            if dist200 > 0:   # 위에서 너무 멀리
+            if dist200 > 0:
                 lt_adj += config.EMA_DISTANCE_EXTREME_ADJ
-                logger.info(f"[1D-EMA구조] ⚠️ EMA200 상방 {dist200:.0%} 이격 → 롱임계+{config.EMA_DISTANCE_EXTREME_ADJ}pt (평균회귀 위험)")
-            else:             # 아래서 너무 멀리
+                logger.info(f"[1D-EMA구조] ⚠️ EMA200 상방 {dist200:.0%} 이격 → 롱임계+{config.EMA_DISTANCE_EXTREME_ADJ}pt")
+            else:
                 st_adj += config.EMA_DISTANCE_EXTREME_ADJ
                 logger.info(f"[1D-EMA구조] ⚠️ EMA200 하방 {dist200:.0%} 이격 → 숏임계+{config.EMA_DISTANCE_EXTREME_ADJ}pt")
-
-        return {
-            "available":          True,
-            "structure":          structure,
-            "ema20":              round(ema20, 4),
-            "ema50":              round(ema50, 4),
-            "ema200":             round(ema200, 4) if ema200 else None,
-            "dist_from_200":      round(dist200, 4) if dist200 is not None else None,
-            "long_threshold_adj": lt_adj,
-            "short_threshold_adj":st_adj,
-        }
-
+        return {"available":True,"structure":structure,"ema20":round(ema20,4),"ema50":round(ema50,4),
+                "ema200":round(ema200,4) if ema200 else None,"dist_from_200":round(dist200,4) if dist200 is not None else None,
+                "long_threshold_adj":lt_adj,"short_threshold_adj":st_adj}
     except Exception as e:
         logger.warning(f"[1D-EMA구조] 오류: {e}")
         return _empty
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # 일봉 바이어스
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def analyze_daily_bias(df_1d):
     _neutral={"bias":"NEUTRAL","threshold_adj_long":0,"threshold_adj_short":0,"bull_count":0,"bear_count":0,"ema9":None,"ema21":None}
@@ -1045,14 +932,14 @@ def analyze_daily_bias(df_1d):
         logger.warning(f"[일봉바이어스] 오류: {e}"); return _neutral
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 # 전체 분석 통합
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 
 def run_full_analysis(symbol, collected_data):
     import datetime
     logger.info(f"{chr(8213)*50}")
-    logger.info(f"🔬 분석 [1H봇 v3.0]: {symbol}")
+    logger.info(f"🔬 분석 [1H봇 v3.4]: {symbol}")
 
     ohlcv        = collected_data.get("ohlcv", {})
     ticker       = collected_data.get("ticker") or {}
@@ -1067,7 +954,6 @@ def run_full_analysis(symbol, collected_data):
     df_1h = ohlcv.get("1h"); df_4h = ohlcv.get("4h"); df_1d = ohlcv.get("1d")
     price = ticker.get("last") or 0.0
 
-    # ── 기본 분석 ────────────────────────────────────────────
     rsi     = analyze_mtf_rsi(df_1h, df_4h, df_1d)
     bb      = analyze_bollinger_bands(df_1h)
     adx_1h  = calculate_adx(df_1h)
@@ -1081,7 +967,7 @@ def run_full_analysis(symbol, collected_data):
     liq      = analyze_liquidations(liq_raw, df_1h)
     vol      = check_volume_confirmation(df_1h, df_4h=df_4h)
     atr      = get_atr_state(df_1h)
-    macd_1h  = calculate_macd(df_1h)    # [v3.1] MACD 계산 추가 (수정 4)
+    macd_1h  = calculate_macd(df_1h)
 
     candle_1h = analyze_candle_pattern(df_1h, "1h")
     ms        = analyze_market_structure(df_1h)
@@ -1094,13 +980,11 @@ def run_full_analysis(symbol, collected_data):
     gate_long = evaluate_gates("long",  funding, ls_ratio)
     gate_short= evaluate_gates("short", funding, ls_ratio)
 
-    # ── v2.0 분석 ────────────────────────────────────────────
     bb_4h        = analyze_bollinger_bands(df_4h)
     regime_4h    = classify_market_regime(df_4h, adx_4h, bb_4h)
     bos_4h       = detect_bos_choch(df_4h, lookback=30, n=2)
     daily_bias   = analyze_daily_bias(df_1d)
 
-    # ── [v3.0] 신규 분석 ─────────────────────────────────────
     candle_4h    = analyze_candle_pattern(df_4h, "4h")
     candle_1d    = analyze_candle_pattern(df_1d, "1d")
     smart_money  = analyze_smart_money_divergence(top_trader, ls_raw)
@@ -1110,13 +994,12 @@ def run_full_analysis(symbol, collected_data):
     weekly_lvl   = detect_weekly_levels(df_1d, price)
     ema_struct   = analyze_1d_ema_structure(df_1d, price)
 
-    # ── 요약 로그 ────────────────────────────────────────────
     logger.info(
         f"  MTF-RSI: 1h:{rsi['value']:.1f} 4h:{rsi.get('value_1h') or '-'} "
         f"1d:{rsi.get('value_4h') or '-'} [{rsi['state']}] | "
         f"BB:{bb['state']}(%B={bb['pct_b']:.2f}) | ADX:{adx_1h['adx']:.1f} | "
         f"1h국면:{regime_name} | Vol:{vol['ratio']:.2f}x | "
-        f"Taker:{taker.get('bias','?')} | 청산:{liq.get('signal','none')}"
+        f"Taker:{taker.get('bias','?')} | 청산:{liq.get('signal','none')} → {liq.get('favorable_direction','?')}"
     )
     logger.info(
         f"  [v3.0] 스마트머니:{smart_money.get('smart_direction','?')}(괴리:{smart_money.get('divergence',0):+.1%}) | "
@@ -1157,14 +1040,12 @@ def run_full_analysis(symbol, collected_data):
         "vol_price_div":    vpd,
         "fvg":              fvg,
         "fibonacci":        fib,
-        # [v3.0]
         "smart_money":      smart_money,
         "oi_matrix":        oi_matrix,
         "funding_trend":    fund_trend,
         "mtf_momentum":     mtf_momentum,
         "weekly_levels":    weekly_lvl,
         "ema_structure":    ema_struct,
-        # v3.1/v3.2 macd_1h 반환 추가 (수정 5)
         "macd_1h":          macd_1h,
         "analyzed_at":      datetime.datetime.utcnow().isoformat() + "Z",
     }
