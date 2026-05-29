@@ -1,32 +1,26 @@
 """
-scoring_system.py — 점수 산출 (1h Bot v3.3)
+scoring_system.py — 점수 산출 (1h Bot v3.4)
 ────────────────────────────────────────────────────────────────────
 v3.1  ①쿨다운즉시저장 ②가격밴드쿨다운 ③FVG역방향 ⑤MACD패널티 ⑥연속신호
 v3.2  [A-2]역풍카운터 [A-3]모멘텀컨텍스트 [B-1]RANGING심리억제
       [B-2]RANGING역EMA보너스캡 [C-1]MA20위치기울기 [D-1/D-2]보너스비율캡
       [E-1]RANGING지속시간
 v3.3  추세 포착 강화 — 양방향 완전 대칭
-  [A-1] EMA 배율 극단 오버라이드 (최솟값 0.92 보장)
-  [A-2] 극단 시 v3.2-A2/A3/C1 역풍필터 전체 면제
-  [A-3] 극단 시 임계값 절대 상한 68pt
-  [A-4] 극단 시 역방향 바이어스 완화 (+7→+3)
-  [A-5] 극단 시 MTF RSI 패널티 완전 면제
-  [A-6] 극단 시 마이크로구조 패널티 캡 (-8pt)
-  [A-7] 극단 시 BOS/CHoCH 패널티 완화
-  [A-8] 극단 시 FVG 패널티 절반
-  [B]   MACD 히스토그램 방향성 분리 → 양전환 보너스 +6pt
-  [C-1] 4H RSI 극단 + 1H MACD hist 전환 → 보너스 +12pt
-  [C-2] 4H+1H 동시 극단 확인 → 추가 보너스 +6pt
-  [C-3] 4H RSI 극단 단독 → 임계값 완화 -5pt
-  [D]   추세 순방향 RSI 패널티 완화 (×0.85→×0.90)
-  [E]   추세 국면 연속신호 임계값 완화 (+1pt/회, 기본 3pt)
-────────────────────────────────────────────────────────────────────
-충돌 처리:
-  A-5 > D: 극단 시 A-5(완전면제) 우선, D(부분완화)는 비극단 추세에만 적용
-  A-2 > v3.2 역풍필터: 극단 시 v3.2 A2/A3/C1 면제 (단, v3.2 로직 코드 유지)
-  B > ⑤: 히스토그램 양전환이면 MACD패널티 면제, 아니면 ⑤ 그대로
-  A-8 > ③: 극단 시 FVG패널티 ×0.5 (③ 로직 유지, 결과값만 조정)
-  D-1/D-2 > 극단 exemption: 극단 시 D-1/D-2 보너스비율캡 면제
+v3.4  불량신호 방지 강화
+  [개선 1] 청산 방향 로직 버그픽스 → analysis_engine.py
+  [개선 2] SHORT/LONG 역풍필터 확장
+    - A-2 pressure에 3가지 요소 추가 (양방향 대칭):
+      · 역방향 청산 감지 (short_liq_detected → 롱 역풍, long_liq_detected → 숏 역풍)
+      · 모순 시장구조 (붕괴실패→숏 역풍, 돌파실패→롱 역풍)
+      · 역방향 주간레벨 근접 (지지레벨 근접→숏 역풍, 저항레벨 근접→롱 역풍)
+  [개선 3] SQUEEZE 메타레짐 완화 제거 → config.py
+  [개선 4] 모순 시장구조 보너스 상쇄
+    - LH + 붕괴실패 동시: LH 보너스 무효
+    - HL + 돌파실패 동시: HL 보너스 무효
+  [개선 5] SQUEEZE 구간 BOS 보너스 삭감 (×0.30)
+    - 1h-BOS: 8pt → 2pt
+    - 4h-BOS: 12pt → 4pt
+  [기타] 가격밴드 쿨다운 0.5%→1.0% (config), 최소쿨다운 60분 보장
 ────────────────────────────────────────────────────────────────────
 """
 import json, logging, os
@@ -40,9 +34,9 @@ _SENTIMENT_PREFIXES = (
 )
 
 
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
 # 세션 / 펀딩사이클 헬퍼
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
 def _session_adj():
     h = datetime.now(timezone.utc).hour
     wd = datetime.now(timezone.utc).weekday()
@@ -61,9 +55,9 @@ def _tiered_bonus_cap(base_score):
     return 42
 
 
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
 # 점수 산출 핵심
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
 def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = None) -> dict:
     d = direction
 
@@ -94,6 +88,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     candle_1h    = analysis.get("candle_pattern", {})
     bos_data     = analysis.get("bos_choch", {})
     fvg          = analysis.get("fvg", {})
+    mst          = analysis.get("market_structure", {})
     ema_info     = analysis.get(f"ema_{d}", {})
     rev_cnt      = ema_info.get("reverse_count", 0)
     ema_same     = ema_info.get("same_count", 0)
@@ -118,10 +113,9 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     bfv          = fvg.get("in_bearish_fvg", False)
     both         = bf and bfv
     bear3        = candle_1h.get("recent_bear_count_3", 0)
-    macd_hist    = macd_1h.get("histogram", 0.0)   # [v3.3-B]
+    macd_hist    = macd_1h.get("histogram", 0.0)
 
-    # ── 극단 과매도/과매수 플래그 (v3.3 조건부 완화 핵심) ──────
-    # 정의: 같은 방향 신호에서만 True (롱=과매도, 숏=과매수)
+    # ── 극단 과매도/과매수 플래그 ──────────────────────────────
     is_ext_oversold = (
         d == "long" and
         rsi15 <= config.EXTREME_OVERSOLD_15M and
@@ -138,7 +132,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     )
     is_extreme = is_ext_oversold or is_ext_overbought
 
-    # [v3.3-D] 추세 순방향 판정 (패밀리 D/E)
+    # [v3.3-D] 추세 순방향 판정
     _trend_aligned = (
         rn in ("TRENDING", "EXPLOSIVE") and
         rev_cnt == 0 and
@@ -182,7 +176,6 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     ema_table  = config.REGIME_EMA_MULTIPLIERS.get(rn, config.EMA_MULTIPLIER)
     ema_mult   = ema_table.get(rev_cnt, 1.0)
 
-    # [v3.3-A1] 극단 시 EMA 배율 최솟값 보장 (0.75→0.92)
     if is_extreme:
         original_ema = ema_mult
         ema_mult = max(ema_mult, config.EXTREME_EMA_MULT_FLOOR)
@@ -191,9 +184,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
 
     base_score = raw_score * ema_mult * gate_penalty
 
-    # ────────────────────────────────────────────
-    # MTF RSI 패널티 (A-5 / D 통합)
-    # ────────────────────────────────────────────
+    # ── MTF RSI 패널티 ────────────────────────────────────────
     mtf_p = 1.0; mtf_r = None
     if d == "long":
         if rsi1h >= config.MTF_RSI_OVERBOUGHT_1H_EXTREME:
@@ -210,11 +201,9 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         elif rsi1h <= config.MTF_RSI_OVERSOLD_1H_MILD:
             mtf_p = config.MTF_RSI_PENALTY_MILD;  mtf_r = f"RSI약과매도({rsi1h:.0f})"
 
-    # [v3.3-A5] 극단 시 MTF RSI 패널티 완전 면제 (우선 적용)
     if is_extreme and mtf_p < 1.0:
         logger.info(f"[A-5/{d.upper()}] 극단 MTF RSI 패널티 면제: {mtf_r}({mtf_p:.2f}→1.0)")
         mtf_p = 1.0; mtf_r = None
-    # [v3.3-D] 추세 순방향 RSI 패널티 완화 (극단 아닌 경우)
     elif _trend_aligned and mtf_p < 1.0:
         mtf_p = min(1.0, mtf_p + config.TRENDING_RSI_SOFT_RELIEF)
         logger.info(f"[D/{d.upper()}] 추세추종 RSI패널티 완화: {mtf_r}({mtf_p:.2f})")
@@ -222,7 +211,6 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     if mtf_p < 1.0:
         logger.info(f"[MTF-RSI/{d.upper()}] {mtf_r} → ×{mtf_p:.2f}")
 
-    # 기타 soft 패널티
     exh_mult = 1.0
     if rn == "EXPLOSIVE":
         if d == "long"  and rsi1h >= config.EXPLOSIVE_EXHAUSTION_RSI_LONG:  exh_mult = config.EXPLOSIVE_EXHAUSTION_PENALTY
@@ -238,9 +226,9 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
 
     liq_rev = 1.0
     if liq.get("favorable_direction") not in (None, d) and liq.get("signal", "none") != "none":
-        liq_rev = config.LIQ_REVERSE_PENALTY
+        liq_rev = config.LIQ_REVERSE_PENALTY  # [v3.4] 0.92→0.80
+        logger.info(f"[청산역풍/{d.upper()}] favorable={liq.get('favorable_direction')} ≠ {d} → ×{liq_rev:.2f}")
 
-    # BB 연속 이탈 억제
     if (d=="long"  and bb.get("lower_streak",0)>=3 and rn=="TRENDING"
             and rsi15 > config.BB_STREAK_SUPPRESS_RSI_EXEMPT):
         return _suppressed_result(d, raw_score, base_score, ema_mult, gate, regime,
@@ -250,21 +238,18 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         return _suppressed_result(d, raw_score, base_score, ema_mult, gate, regime,
                                    f"BB상단{bb.get('upper_streak',0)}캔들연속")
 
-    # BOS/CHoCH 패널티
     choch_p  = config.CHOCH_AGAINST_PENALTY    if ((d=="long" and bos_data.get("choch_bearish")) or (d=="short" and bos_data.get("choch_bullish"))) else 1.0
     bos_p    = config.BOS_CONFLICT_PENALTY     if ((d=="long" and bos_data.get("bos_bearish"))   or (d=="short" and bos_data.get("bos_bullish")))   else 1.0
     choch4_p = config.CHOCH_4H_AGAINST_PENALTY if ((d=="long" and bos4.get("choch_bearish"))     or (d=="short" and bos4.get("choch_bullish")))     else 1.0
     bos4_p   = config.BOS_4H_CONFLICT_PENALTY  if ((d=="long" and bos4.get("bos_bearish"))       or (d=="short" and bos4.get("bos_bullish")))       else 1.0
 
-    # [v3.3-A7] 극단 시 BOS/CHoCH 패널티 완화 (반전 포착용)
     if is_extreme:
-        bos_p    = min(1.0, bos_p    + config.EXTREME_BOS_RELIEF)   # 0.82→0.90
+        bos_p    = min(1.0, bos_p    + config.EXTREME_BOS_RELIEF)
         bos4_p   = min(1.0, bos4_p   + config.EXTREME_BOS_RELIEF)
-        choch_p  = min(1.0, choch_p  + config.EXTREME_CHOCH_RELIEF) # 0.88→0.94
+        choch_p  = min(1.0, choch_p  + config.EXTREME_CHOCH_RELIEF)
         choch4_p = min(1.0, choch4_p + config.EXTREME_CHOCH_RELIEF)
         if any(x < 1.0 for x in [bos_p, bos4_p, choch_p, choch4_p]):
-            logger.info(f"[A-7/{d.upper()}] 극단 BOS/CHoCH패널티 완화: "
-                        f"bos={bos_p:.2f} choch={choch_p:.2f}")
+            logger.info(f"[A-7/{d.upper()}] 극단 BOS/CHoCH패널티 완화")
 
     any_bos = (bos_p < 1.0 or bos4_p < 1.0)
 
@@ -290,7 +275,8 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     liq_sig = liq.get("signal","none"); liq_large = liq.get("is_large", False)
     liq_api = micro_result and any(n=="LiqCascade" and p<0 for n,p,_ in micro_result.get("details",[]))
     if not liq_api and liq_large and not bos_rev:
-        if (d=="long" and liq_sig=="long_liq_detected") or (d=="short" and liq_sig=="short_liq_detected"):
+        # [v3.4 개선 1] favorable_direction이 버그픽스됐으므로 이 조건도 정확해짐
+        if (d=="long" and liq_sig=="short_liq_detected") or (d=="short" and liq_sig=="long_liq_detected"):
             bonuses.append(("대규모청산꼬리", config.BONUS_LIQUIDATION))
 
     if ema_same==3 and ts in ("strong","mild") and ((d=="long" and tb=="buy_dominant") or (d=="short" and tb=="sell_dominant")):
@@ -307,23 +293,62 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     if d=="short" and vpd.get("bearish_vol_div"): bonuses.append(("거래량약세다이버", round(config.BONUS_VOL_PRICE_DIV*vm)))
     elif d=="long"  and vpd.get("bullish_vol_div"): bonuses.append(("거래량강세다이버", round(config.BONUS_VOL_PRICE_DIV*vm)))
 
-    mst = analysis.get("market_structure", {}); se = rn not in ("RANGING","SQUEEZE")
-    if d=="short":
-        if mst.get("failed_breakout"): bonuses.append(("돌파실패",  config.BONUS_FAILED_BREAKOUT))
-        if mst.get("lower_high") and se: bonuses.append(("LowerHigh", config.BONUS_MARKET_STRUCT_TREND))
-    elif d=="long":
-        if mst.get("failed_breakdown"): bonuses.append(("붕괴실패",  config.BONUS_FAILED_BREAKOUT))
-        if mst.get("higher_low") and se: bonuses.append(("HigherLow", config.BONUS_MARKET_STRUCT_TREND))
+    se = rn not in ("RANGING","SQUEEZE")
+
+    # ── [개선 4] 모순 시장구조 보너스 상쇄 ──────────────────────
+    # 조건: LH(하락구조) + 붕괴실패(하락 실패) 동시 발생 → 모순 → LH 보너스 무효
+    #       HL(상승구조) + 돌파실패(상승 실패) 동시 발생 → 모순 → HL 보너스 무효
+    _conflict_struct_cancel = config.CONFLICT_STRUCT_BONUS_CANCEL
+    _lh_conflict = mst.get("lower_high") and mst.get("failed_breakdown")   # LH 존재하나 하락 실패
+    _hl_conflict = mst.get("higher_low") and mst.get("failed_breakout")    # HL 존재하나 상승 실패
+
+    if d == "short":
+        if mst.get("failed_breakout"):
+            bonuses.append(("돌파실패", config.BONUS_FAILED_BREAKOUT))
+        if mst.get("lower_high") and se:
+            if _conflict_struct_cancel and _lh_conflict:
+                logger.info(f"[개선4/SHORT] LH+붕괴실패 모순구조 → LowerHigh 보너스 무효")
+            else:
+                bonuses.append(("LowerHigh", config.BONUS_MARKET_STRUCT_TREND))
+    elif d == "long":
+        if mst.get("failed_breakdown"):
+            bonuses.append(("붕괴실패", config.BONUS_FAILED_BREAKOUT))
+        if mst.get("higher_low") and se:
+            if _conflict_struct_cancel and _hl_conflict:
+                logger.info(f"[개선4/LONG] HL+돌파실패 모순구조 → HigherLow 보너스 무효")
+            else:
+                bonuses.append(("HigherLow", config.BONUS_MARKET_STRUCT_TREND))
 
     fv = config.BONUS_FVG_ENTRY_CONFLICTED if both else config.BONUS_FVG_ENTRY
     if both:               bonuses.append(("FVG모호진입",  fv))
     elif d=="long"  and bf:  bonuses.append(("FVG강세진입", fv))
     elif d=="short" and bfv: bonuses.append(("FVG약세진입", fv))
 
-    if d=="long"  and bos_data.get("bos_bullish"):  bonuses.append(("1h-BOS상승", config.BONUS_BOS_CONFIRM))
-    elif d=="short" and bos_data.get("bos_bearish"): bonuses.append(("1h-BOS하락", config.BONUS_BOS_CONFIRM))
-    if d=="long"  and bos4.get("bos_bullish"):  bonuses.append(("4h-BOS상승", config.BONUS_BOS_CONFIRM_4H))
-    elif d=="short" and bos4.get("bos_bearish"): bonuses.append(("4h-BOS하락", config.BONUS_BOS_CONFIRM_4H))
+    # ── [개선 5] SQUEEZE 구간 BOS 보너스 삭감 ──────────────────
+    # SQUEEZE는 방향 미결정 구간이므로 BOS(후행 신호)를 과대평가하지 않음
+    _bos_mult = config.SQUEEZE_BOS_BONUS_MULT if rn == "SQUEEZE" else 1.0
+
+    if d=="long"  and bos_data.get("bos_bullish"):
+        bos_bonus = round(config.BONUS_BOS_CONFIRM * _bos_mult)
+        bonuses.append(("1h-BOS상승", bos_bonus))
+        if rn == "SQUEEZE":
+            logger.info(f"[개선5/LONG] SQUEEZE 1h-BOS 보너스 삭감: {config.BONUS_BOS_CONFIRM}→{bos_bonus}pt")
+    elif d=="short" and bos_data.get("bos_bearish"):
+        bos_bonus = round(config.BONUS_BOS_CONFIRM * _bos_mult)
+        bonuses.append(("1h-BOS하락", bos_bonus))
+        if rn == "SQUEEZE":
+            logger.info(f"[개선5/SHORT] SQUEEZE 1h-BOS 보너스 삭감: {config.BONUS_BOS_CONFIRM}→{bos_bonus}pt")
+
+    if d=="long"  and bos4.get("bos_bullish"):
+        bos4_bonus = round(config.BONUS_BOS_CONFIRM_4H * _bos_mult)
+        bonuses.append(("4h-BOS상승", bos4_bonus))
+        if rn == "SQUEEZE":
+            logger.info(f"[개선5/LONG] SQUEEZE 4h-BOS 보너스 삭감: {config.BONUS_BOS_CONFIRM_4H}→{bos4_bonus}pt")
+    elif d=="short" and bos4.get("bos_bearish"):
+        bos4_bonus = round(config.BONUS_BOS_CONFIRM_4H * _bos_mult)
+        bonuses.append(("4h-BOS하락", bos4_bonus))
+        if rn == "SQUEEZE":
+            logger.info(f"[개선5/SHORT] SQUEEZE 4h-BOS 보너스 삭감: {config.BONUS_BOS_CONFIRM_4H}→{bos4_bonus}pt")
 
     fib = analysis.get("fibonacci", {})
     if d=="long":
@@ -337,7 +362,6 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     if d=="long"  and rsi.get("hidden_bull_div") and he: bonuses.append(("히든강세다이버", config.BONUS_HIDDEN_DIVERGENCE))
     elif d=="short" and rsi.get("hidden_bear_div") and he: bonuses.append(("히든약세다이버", config.BONUS_HIDDEN_DIVERGENCE))
 
-    # v3.0 신규 보너스
     sm_adj = smart_money.get("long_score_adj" if d=="long" else "short_score_adj", 0)
     if sm_adj > 0: bonuses.append((f"스마트머니{'롱' if d=='long' else '숏'}", sm_adj))
     oi_adj = oi_matrix.get("long_score_adj" if d=="long" else "short_score_adj", 0)
@@ -374,25 +398,37 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     if (prev_regime=="SQUEEZE" or rn=="EXPLOSIVE") and bb_jb:
         bonuses.append(("Post-Squeeze돌파", config.BONUS_POST_SQUEEZE))
 
-    # [v3.3-C1] 4H RSI 극단 + 1H MACD 히스토그램 전환 보너스 (양방향)
+    # [v3.4.1 아이디어 3] 청산+스퀴즈 반전 보너스 (양방향 대칭)
+    # 근거: SQUEEZE 구간에서 대량 청산 = 강한 반전 신호
+    #   short_liq_detected(sls≥0.6) + SQUEEZE → 롱 반전 세팅
+    #   long_liq_detected(lls≥0.6)  + SQUEEZE → 숏 반전 세팅
+    _liq_sq_thr = config.LIQ_SQUEEZE_REVERSAL_MIN_PROXY
+    if d == "long" and rn == "SQUEEZE":
+        sls_val = liq.get("short_liq_proxy", 0.0)
+        if sls_val >= _liq_sq_thr:
+            bonuses.append(("숏청산+스퀴즈반전", config.BONUS_SHORT_LIQ_SQUEEZE_REVERSAL))
+            logger.info(f"[아이디어3/LONG] 숏청산({sls_val:.2f})≥{_liq_sq_thr}+SQUEEZE → +{config.BONUS_SHORT_LIQ_SQUEEZE_REVERSAL}pt")
+    elif d == "short" and rn == "SQUEEZE":
+        lls_val = liq.get("long_liq_proxy", 0.0)
+        if lls_val >= _liq_sq_thr:
+            bonuses.append(("롱청산+스퀴즈반전", config.BONUS_SHORT_LIQ_SQUEEZE_REVERSAL))
+            logger.info(f"[아이디어3/SHORT] 롱청산({lls_val:.2f})≥{_liq_sq_thr}+SQUEEZE → +{config.BONUS_SHORT_LIQ_SQUEEZE_REVERSAL}pt")
+
+    # [v3.3-C1]
     _c1_long  = (d=="long"  and rsi4h <= config.RSI_4H_EXTREME_OVERSOLD  and macd_hist > 0)
     _c1_short = (d=="short" and rsi4h >= config.RSI_4H_EXTREME_OVERBOUGHT and macd_hist < 0)
     if _c1_long:
         bonuses.append(("4H극단+1H반전세팅(롱)", config.BONUS_4H_EXTREME_REVERSAL))
-        logger.info(f"[C-1/LONG] 4H RSI {rsi4h:.1f}<{config.RSI_4H_EXTREME_OVERSOLD} + MACD hist {macd_hist:.1f}>0 → +{config.BONUS_4H_EXTREME_REVERSAL}pt")
     elif _c1_short:
         bonuses.append(("4H극단+1H반전세팅(숏)", config.BONUS_4H_EXTREME_REVERSAL))
-        logger.info(f"[C-1/SHORT] 4H RSI {rsi4h:.1f}>{config.RSI_4H_EXTREME_OVERBOUGHT} + MACD hist {macd_hist:.1f}<0 → +{config.BONUS_4H_EXTREME_REVERSAL}pt")
 
-    # [v3.3-C2] 4H + 1H 동시 극단 추가 확인 보너스 (양방향)
+    # [v3.3-C2]
     _c2_long  = is_ext_oversold  and rsi4h <= config.RSI_4H_EXTREME_OVERSOLD
     _c2_short = is_ext_overbought and rsi4h >= config.RSI_4H_EXTREME_OVERBOUGHT
     if _c2_long:
         bonuses.append(("4H+1H동시극단확인(롱)", config.BONUS_MTF_EXTREME_CONFIRM))
-        logger.info(f"[C-2/LONG] 4H+1H 동시 극단 → +{config.BONUS_MTF_EXTREME_CONFIRM}pt")
     elif _c2_short:
         bonuses.append(("4H+1H동시극단확인(숏)", config.BONUS_MTF_EXTREME_CONFIRM))
-        logger.info(f"[C-2/SHORT] 4H+1H 동시 극단 → +{config.BONUS_MTF_EXTREME_CONFIRM}pt")
 
     # ── 기존 보너스 조정 ──────────────────────────────────────
     if exh_mult < 1.0:
@@ -421,7 +457,6 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     if vs < config.VOLUME_PENALTY_MID_THRESHOLD:
         bonuses = [(n, round(v*0.5) if n in _lvs else v) for n,v in bonuses]
 
-    # [v3.2-B1] RANGING 심리보너스 억제 (비극단 시에만)
     entry_against = (d=="long" and entry_ema_tf=="bearish") or (d=="short" and entry_ema_tf=="bullish")
     if rn == "RANGING" and entry_against and not is_extreme:
         bonuses = [
@@ -435,11 +470,9 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     bonus_raw = sum(v for _, v in bonuses)
 
     if is_extreme:
-        # [v3.3] 극단 시: BOS 기반 캡 면제, tiered cap만 적용
         bonus_cap = _tiered_bonus_cap(base_score)
-        logger.info(f"[보너스캡 극단면제/{d.upper()}] BOS/비율캡 면제, tiered={bonus_cap}pt")
+        logger.info(f"[보너스캡 극단면제/{d.upper()}] tiered={bonus_cap}pt")
     else:
-        # 기존 BOS 기반 캡
         if any_bos and ema_all_rev and not bb_rev_exempt:
             bonus_cap = config.COUNTER_TREND_BONUS_CAP
         elif any_bos:
@@ -447,17 +480,14 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         else:
             bonus_cap = _tiered_bonus_cap(base_score)
 
-        # [v3.2-B2] RANGING + entry_against → 캡 20pt
         if rn == "RANGING" and entry_against:
             bonus_cap = min(bonus_cap, config.RANGING_REVERSE_BONUS_CAP)
             logger.info(f"[B-2/{d.upper()}] RANGING역EMA → 보너스캡={bonus_cap}pt")
 
-        # [v3.2-D1] 기본점수 약할 때 보너스 캡
         if base_score < config.WEAK_BASE_SCORE_THRESHOLD and bonus_raw > config.WEAK_BASE_BONUS_THRESHOLD:
             bonus_cap = min(bonus_cap, config.WEAK_BASE_BONUS_CAP)
             logger.info(f"[D-1/{d.upper()}] 약기본점수({base_score:.1f}) → 캡={bonus_cap}pt")
 
-        # [v3.2-D2] 보너스/기본점수 비율 캡
         ratio_cap = max(round(base_score * config.MAX_BONUS_TO_BASE_RATIO), config.MIN_BONUS_FLOOR)
         bonus_cap = min(bonus_cap, ratio_cap)
 
@@ -486,19 +516,15 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
             * choch_p * choch4_p * bos_p * bos4_p * rbw * exp_bos_p)
     micro_pen = micro_result.get("total_penalty", 0) if micro_result else 0
 
-    # [v3.3-A6] 극단 시 마이크로구조 패널티 캡
     if is_extreme and micro_pen < config.EXTREME_MICRO_CAP:
         logger.info(f"[A-6/{d.upper()}] 극단 마이크로패널티 캡: {micro_pen}→{config.EXTREME_MICRO_CAP}pt")
         micro_pen = config.EXTREME_MICRO_CAP
 
-    # [v3.3-B] MACD 히스토그램 방향성 분리 (양방향 대칭)
-    # hist>0이면 골든크로스 진행 중 → 패널티 면제 + 보너스
-    # hist<0이면 데드크로스 진행 중 → 패널티 면제 + 보너스
+    # [v3.3-B] MACD 히스토그램 방향성 분리
     macd_pen = 0; macd_hist_bonus = 0
     if macd_1h.get("available"):
         if d == "long" and macd_1h.get("bearish"):
             if macd_hist > 0:
-                # DIF·DEA 음수권이지만 히스토그램 양전환 = 골든크로스 진행
                 macd_hist_bonus = config.MACD_HIST_TURN_BONUS
                 logger.info(f"[B/LONG] MACD hist 양전환({macd_hist:.1f}) → 패널티 면제 +{macd_hist_bonus}pt")
             else:
@@ -506,14 +532,13 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
                 logger.info(f"[⑤/LONG] MACD 음수권 → {macd_pen}pt")
         elif d == "short" and macd_1h.get("bullish"):
             if macd_hist < 0:
-                # DIF·DEA 양수권이지만 히스토그램 음전환 = 데드크로스 진행
                 macd_hist_bonus = config.MACD_HIST_TURN_BONUS
                 logger.info(f"[B/SHORT] MACD hist 음전환({macd_hist:.1f}) → 패널티 면제 +{macd_hist_bonus}pt")
             else:
                 macd_pen = config.MACD_BEARISH_LONG_PENALTY
                 logger.info(f"[⑤/SHORT] MACD 양수권 → {macd_pen}pt")
 
-    # [v3.1-③ + v3.3-A8] FVG 역방향 패널티 (극단 시 절반)
+    # [v3.1-③ + v3.3-A8] FVG 역방향 패널티
     fvg_pen = 0
     _fvg_mult = config.EXTREME_FVG_PENALTY_MULT if is_extreme else 1.0
     if d == "long":
@@ -550,15 +575,13 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
                   config.ADX_COUNTER_TREND_BOOST_WEAK   if ha >= config.ADX_COUNTER_TREND_THRESHOLD_WEAK   else 0)
         if adx_cb: thr = min(85, thr + adx_cb)
 
-    # v2.0 메타·바이어스·세션·펀딩
     meta_adj = config.META_REGIME_THRESHOLD_ADJ.get((r4h_name, rn), 0)
     if meta_adj: thr = min(88, max(52, thr + meta_adj))
 
     bias_adj = db.get(f"threshold_adj_{d}", 0)
-    # [v3.3-A4] 극단 시 역방향 바이어스 완화
     if is_extreme and bias_adj > 0:
         original_bias = bias_adj
-        bias_adj = max(0, bias_adj - config.EXTREME_BIAS_RELIEF)  # +7→+3
+        bias_adj = max(0, bias_adj - config.EXTREME_BIAS_RELIEF)
         logger.info(f"[A-4/{d.upper()}] 극단 바이어스 완화: {original_bias}→{bias_adj}pt")
     if bias_adj: thr = min(90, max(52, thr + bias_adj))
 
@@ -571,50 +594,89 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     ema_s_adj = ema_struct.get("long_threshold_adj" if d=="long" else "short_threshold_adj", 0)
     if ema_s_adj: thr = min(92, max(50, thr + ema_s_adj))
 
-    # [v3.3-A2] 극단 시 v3.2 역풍필터 전체 면제
-    # [v3.2-A2] 역풍 카운터 (비극단 시만 적용)
+    # ── [개선 2 + 아이디어 1/2/4] A-2 역풍 카운터 (비극단 시) ─────
     p_adj = 0; mom_adj = 0; c1_adj = 0
+    pressure = 0
     if not is_extreme:
-        pressure = 0
         if d == "long":
-            if macd_1h.get("bearish"):                               pressure += 1
-            if entry_ema_tf == "bearish":                            pressure += 1
-            if tb == "sell_dominant":                                pressure += 1
-            if fvg.get("bearish_fvg_count", 0) >= 2 and not bf:     pressure += 1
-            if ma20 > 0 and cp < ma20 and ma20_slope < 0:            pressure += 1
+            # [아이디어 1] MACD hist 양전환 중이면 MACD pressure 면제
+            _macd_headwind = (macd_1h.get("bearish") and
+                              not (config.HEADWIND_MACD_HIST_EXEMPT and macd_hist > 0))
+            if _macd_headwind:                                            pressure += 1
+            if entry_ema_tf == "bearish":                                  pressure += 1
+            if tb == "sell_dominant":                                       pressure += 1
+            if fvg.get("bearish_fvg_count", 0) >= 2 and not bf:            pressure += 1
+            if ma20 > 0 and cp < ma20 and ma20_slope < 0:                  pressure += 1
+            if config.HEADWIND_LIQ_REVERSE_ENABLE:
+                if liq.get("signal") == "long_liq_detected":               pressure += 1
+            if config.HEADWIND_FAILED_STRUCT_ENABLE:
+                if mst.get("failed_breakout"):                              pressure += 1
+            if config.HEADWIND_WEEKLY_LEVEL_ENABLE:
+                if weekly_lvl.get("short_score_adj", 0) > 0:               pressure += 1
+
         elif d == "short":
-            if macd_1h.get("bullish"):                               pressure += 1
-            if entry_ema_tf == "bullish":                            pressure += 1
-            if tb == "buy_dominant":                                 pressure += 1
-            if fvg.get("bullish_fvg_count", 0) >= 2 and not bfv:    pressure += 1
-            if ma20 > 0 and cp > ma20 and ma20_slope > 0:            pressure += 1
-        p_adj = min(pressure * config.HEADWIND_PRESSURE_PER_FACTOR, config.HEADWIND_PRESSURE_MAX_ADJ)
+            _macd_headwind = (macd_1h.get("bullish") and
+                              not (config.HEADWIND_MACD_HIST_EXEMPT and macd_hist < 0))
+            if _macd_headwind:                                              pressure += 1
+            if entry_ema_tf == "bullish":                                   pressure += 1
+            if tb == "buy_dominant":                                         pressure += 1
+            if fvg.get("bullish_fvg_count", 0) >= 2 and not bfv:            pressure += 1
+            if ma20 > 0 and cp > ma20 and ma20_slope > 0:                   pressure += 1
+            if config.HEADWIND_LIQ_REVERSE_ENABLE:
+                if liq.get("signal") == "short_liq_detected":               pressure += 1
+            if config.HEADWIND_FAILED_STRUCT_ENABLE:
+                if mst.get("failed_breakdown"):                              pressure += 1
+            if config.HEADWIND_WEEKLY_LEVEL_ENABLE:
+                if weekly_lvl.get("long_score_adj", 0) > 0:                 pressure += 1
+
+        # [아이디어 2/4] SQUEEZE 구간: A-2 상한 절반, A-3/C-1 면제
+        _in_squeeze = (rn == "SQUEEZE")
+        _a2_max = (config.HEADWIND_PRESSURE_MAX_ADJ // config.SQUEEZE_HEADWIND_MAX_DIVISOR
+                   if (_in_squeeze and config.SQUEEZE_HEADWIND_A3_C1_EXEMPT)
+                   else config.HEADWIND_PRESSURE_MAX_ADJ)
+
+        p_adj = min(pressure * config.HEADWIND_PRESSURE_PER_FACTOR, _a2_max)
         if p_adj > 0:
             thr = min(90, thr + p_adj)
-            logger.info(f"[A-2/{d.upper()}] 역풍 {pressure}요소×{config.HEADWIND_PRESSURE_PER_FACTOR}pt=+{p_adj}pt → 임계:{thr}pt")
+            logger.info(f"[A-2/{d.upper()}] 역풍 {pressure}요소×{config.HEADWIND_PRESSURE_PER_FACTOR}pt"
+                        f"=+{p_adj}pt(상한:{_a2_max}{'🔄SQUEEZE완화' if _in_squeeze else ''}) → 임계:{thr}pt")
 
-        # [v3.2-A3] 하락 모멘텀 컨텍스트
-        if d == "long":
-            if bear3 >= 2 and ma20 > 0 and cp < ma20 and macd_1h.get("bearish") and ma20_slope < 0:
-                mom_adj = config.MOMENTUM_CONTEXT_ADJ
-                thr = min(90, thr + mom_adj)
-                logger.info(f"[A-3/{d.upper()}] 하락모멘텀 → +{mom_adj}pt 임계:{thr}pt")
-        elif d == "short":
-            bull3 = 3 - bear3
-            if bull3 >= 2 and ma20 > 0 and cp > ma20 and macd_1h.get("bullish") and ma20_slope > 0:
-                mom_adj = config.MOMENTUM_CONTEXT_ADJ
-                thr = min(90, thr + mom_adj)
-                logger.info(f"[A-3/{d.upper()}] 상승모멘텀 → +{mom_adj}pt 임계:{thr}pt")
+        # [v3.2-A3] 하락 모멘텀 컨텍스트 — [아이디어 4] SQUEEZE 시 면제
+        if not (_in_squeeze and config.SQUEEZE_HEADWIND_A3_C1_EXEMPT):
+            if d == "long":
+                if bear3 >= 2 and ma20 > 0 and cp < ma20 and macd_1h.get("bearish") and ma20_slope < 0:
+                    mom_adj = config.MOMENTUM_CONTEXT_ADJ
+                    thr = min(90, thr + mom_adj)
+                    logger.info(f"[A-3/{d.upper()}] 하락모멘텀 → +{mom_adj}pt 임계:{thr}pt")
+            elif d == "short":
+                bull3 = 3 - bear3
+                if bull3 >= 2 and ma20 > 0 and cp > ma20 and macd_1h.get("bullish") and ma20_slope > 0:
+                    mom_adj = config.MOMENTUM_CONTEXT_ADJ
+                    thr = min(90, thr + mom_adj)
+                    logger.info(f"[A-3/{d.upper()}] 상승모멘텀 → +{mom_adj}pt 임계:{thr}pt")
+        else:
+            logger.info(f"[A-3/{d.upper()}] SQUEEZE 구간 → 하락모멘텀 컨텍스트 면제")
 
-        # [v3.2-C1] MA20 위치 + 기울기
-        if d == "long" and ma20 > 0 and cp < ma20 and ma20_slope < 0:
-            c1_adj = config.EMA20_POSITION_ADJ
-            thr = min(90, thr + c1_adj)
-            logger.info(f"[C-1/{d.upper()}] price<MA20+slope음 → +{c1_adj}pt 임계:{thr}pt")
-        elif d == "short" and ma20 > 0 and cp > ma20 and ma20_slope > 0:
-            c1_adj = config.EMA20_POSITION_ADJ
-            thr = min(90, thr + c1_adj)
-            logger.info(f"[C-1/{d.upper()}] price>MA20+slope양 → +{c1_adj}pt 임계:{thr}pt")
+        # [v3.2-C1] MA20 위치 + 기울기 — [아이디어 4] SQUEEZE 시 면제
+        if not (_in_squeeze and config.SQUEEZE_HEADWIND_A3_C1_EXEMPT):
+            if d == "long" and ma20 > 0 and cp < ma20 and ma20_slope < 0:
+                c1_adj = config.EMA20_POSITION_ADJ
+                thr = min(90, thr + c1_adj)
+                logger.info(f"[C-1/{d.upper()}] price<MA20+slope음 → +{c1_adj}pt 임계:{thr}pt")
+            elif d == "short" and ma20 > 0 and cp > ma20 and ma20_slope > 0:
+                c1_adj = config.EMA20_POSITION_ADJ
+                thr = min(90, thr + c1_adj)
+                logger.info(f"[C-1/{d.upper()}] price>MA20+slope양 → +{c1_adj}pt 임계:{thr}pt")
+        else:
+            logger.info(f"[C-1/{d.upper()}] SQUEEZE 구간 → MA20위치 임계 조정 면제")
+
+        # [아이디어 2] A-2+A-3+C-1 합산 절대 상한
+        _total_headwind = p_adj + mom_adj + c1_adj
+        if _total_headwind > config.HEADWIND_TOTAL_MAX_ADJ:
+            _excess = _total_headwind - config.HEADWIND_TOTAL_MAX_ADJ
+            thr = max(52, thr - _excess)
+            logger.info(f"[아이디어2/{d.upper()}] 역풍합산 {_total_headwind}pt > 상한{config.HEADWIND_TOTAL_MAX_ADJ}pt → -{_excess}pt 조정 임계:{thr}pt")
+
     else:
         logger.info(f"[A-2/{d.upper()}] 극단 조건 → v3.2 역풍필터(A2/A3/C1) 전체 면제")
 
@@ -628,12 +690,27 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
             thr = min(90, thr + dur_adj)
             logger.info(f"[E-1/{d.upper()}] RANGING {dur_h:.1f}h → +{dur_adj}pt 임계:{thr}pt")
 
-    # [v3.3-A3] 극단 시 임계값 절대 상한
     if is_extreme and thr > config.EXTREME_THRESHOLD_CAP:
         logger.info(f"[A-3/{d.upper()}] 극단 임계값 캡: {thr}pt → {config.EXTREME_THRESHOLD_CAP}pt")
         thr = config.EXTREME_THRESHOLD_CAP
 
-    # [v3.3-C3] 4H RSI 극단 단독 → 임계값 완화 (A-3 캡 이후 적용)
+    # [v3.4.1 아이디어 5] SQUEEZE + 대량 청산 → 임계 완화 (양방향 대칭)
+    # 근거: SQUEEZE 구간 대량 청산은 방향성 결정의 강력한 선행지표
+    _squeeze_liq_relief = 0
+    if rn == "SQUEEZE" and not is_extreme:
+        if d == "long":
+            sls_v = liq.get("short_liq_proxy", 0.0)
+            if sls_v >= config.SQUEEZE_LIQ_REVERSAL_THRESHOLD:
+                _squeeze_liq_relief = config.SQUEEZE_LIQ_REVERSAL_RELIEF
+                thr = max(52, thr - _squeeze_liq_relief)
+                logger.info(f"[아이디어5/LONG] SQUEEZE+숏청산({sls_v:.2f}) → 임계 -{_squeeze_liq_relief}pt → {thr}pt")
+        elif d == "short":
+            lls_v = liq.get("long_liq_proxy", 0.0)
+            if lls_v >= config.SQUEEZE_LIQ_REVERSAL_THRESHOLD:
+                _squeeze_liq_relief = config.SQUEEZE_LIQ_REVERSAL_RELIEF
+                thr = max(52, thr - _squeeze_liq_relief)
+                logger.info(f"[아이디어5/SHORT] SQUEEZE+롱청산({lls_v:.2f}) → 임계 -{_squeeze_liq_relief}pt → {thr}pt")
+
     _c3_relief = 0
     if (d == "long"  and rsi4h <= config.RSI_4H_EXTREME_OVERSOLD) or \
        (d == "short" and rsi4h >= config.RSI_4H_EXTREME_OVERBOUGHT):
@@ -641,12 +718,10 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         thr = max(58, thr - _c3_relief)
         logger.info(f"[C-3/{d.upper()}] 4H RSI극단({rsi4h:.1f}) → 임계 -{_c3_relief}pt → {thr}pt")
 
-    # [v3.1-⑥ + v3.3-E] 연속 동방향 신호 임계값
     consec_adj = 0
     if sym:
         cnt = get_consecutive_signal_count(sym, d)
         if cnt >= 2:
-            # [v3.3-E] 추세 순방향이면 +1pt/회, 아니면 기본 +3pt/회
             adj_per = config.CONSECUTIVE_SIGNAL_ADJ_TREND if _trend_aligned else config.CONSECUTIVE_SIGNAL_ADJ
             consec_adj = min(config.CONSECUTIVE_SIGNAL_MAX_ADJ, (cnt-1) * adj_per)
             thr = min(90, thr + consec_adj)
@@ -655,7 +730,6 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     # ── 신호 판정 ────────────────────────────────────────────
     signal = (final_score >= thr)
 
-    # [v3.2-A1] 3중 역풍 하드블록 (극단 예외 유지)
     triple_blocked = False
     if signal and not is_extreme:
         triple_long  = d=="long"  and macd_1h.get("bearish") and entry_ema_tf=="bearish" and tb=="sell_dominant"
@@ -711,18 +785,17 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         "gate_info": gate, "bb_suppressed": False, "regime": regime,
         "regime_threshold": thr, "triple_blocked": triple_blocked,
         "is_extreme": is_extreme, "trend_aligned": _trend_aligned,
-        "headwind_pressure": pressure if not is_extreme else 0,
+        "headwind_pressure": pressure,
         "pressure_adj": p_adj, "momentum_adj": mom_adj, "c1_adj": c1_adj,
         "ranging_dur_adj": dur_adj, "consec_adj": consec_adj,
         "macd_penalty": macd_pen, "macd_hist_bonus": macd_hist_bonus,
         "fvg_conflict_penalty": fvg_pen, "soft_penalty": soft, "vol_penalty": vol_pen,
         "meta_adj": meta_adj, "bias_adj": bias_adj, "session_adj": sess_adj,
-        "c3_relief": _c3_relief,
+        "c3_relief": _c3_relief, "squeeze_liq_relief": _squeeze_liq_relief,
     }
 
-
 def _suppressed_result(d, raw_score, base_score, ema_mult, gate, regime, reason):
-    logger.info(f"[Score/{d.upper()}] ⛔ BB연속이탈 억제: {reason}")
+    logger.info(f"[Score/{d.upper()}] ⛔ 억제: {reason}")
     return {
         "direction": d, "final_score": 0.0, "raw_score": round(raw_score,2),
         "weighted_score": round(base_score,2), "ema_multiplier": ema_mult,
@@ -735,7 +808,7 @@ def _suppressed_result(d, raw_score, base_score, ema_mult, gate, regime, reason)
         "c1_adj": 0, "ranging_dur_adj": 0, "consec_adj": 0,
         "macd_penalty": 0, "macd_hist_bonus": 0, "fvg_conflict_penalty": 0,
         "soft_penalty": 1.0, "vol_penalty": 0, "meta_adj": 0, "bias_adj": 0,
-        "session_adj": 0, "c3_relief": 0,
+        "session_adj": 0, "c3_relief": 0, "squeeze_liq_relief": 0,
     }
 
 
@@ -781,7 +854,8 @@ def _effective_cooldown(symbol, direction, current_price):
     if dm >= config.PRICE_MOVE_SUPPRESS_STRONG: return config.COOLDOWN_SUPPRESSED_STRONG
     if dm >= config.PRICE_MOVE_SUPPRESS_MILD:   return config.COOLDOWN_SUPPRESSED_MILD
     if dm <= config.PRICE_MOVE_RESET_THRESHOLD: return 0
-    return config.SIGNAL_COOLDOWN_MINUTES
+    # [v3.4] 최소 쿨다운 보장
+    return max(config.SIGNAL_COOLDOWN_MINUTES_MIN, config.SIGNAL_COOLDOWN_MINUTES)
 
 def is_in_cooldown(symbol, direction, current_price=0.0) -> bool:
     last = _load_state().get(f"{symbol}_{direction}")
@@ -796,7 +870,6 @@ def is_in_cooldown(symbol, direction, current_price=0.0) -> bool:
     return False
 
 def record_signal_sent(symbol, direction, current_price=0.0) -> None:
-    """[v3.1-①] notification 성공 여부와 무관하게 쿨다운 즉시 저장"""
     st = _load_state()
     st[f"{symbol}_{direction}"] = datetime.now(timezone.utc).isoformat()
     if current_price > 0: st[f"{symbol}_{direction}_last_price"] = current_price
@@ -804,7 +877,7 @@ def record_signal_sent(symbol, direction, current_price=0.0) -> None:
     logger.info(f"[State] {symbol} {direction.upper()} 쿨다운 저장 price:{current_price:.4f}")
 
 def is_in_price_band_cooldown(symbol, direction, current_price) -> bool:
-    """[v3.1-②] 마지막 진입가 ±0.5% 이내 재진입 억제"""
+    """[v3.4] 가격밴드 쿨다운 1.0%로 강화 (config.PRICE_BAND_COOLDOWN_PCT)"""
     if current_price <= 0: return False
     lp = _load_state().get(f"{symbol}_{direction}_last_price", 0)
     if not lp: return False
@@ -826,7 +899,6 @@ def record_consecutive_signal(symbol, direction) -> None:
     _save_state(st); logger.info(f"[연속신호] {symbol} {direction.upper()} {cnt}회")
 
 def record_regime_duration(symbol, regime_name) -> None:
-    """[v3.2-E1] 국면 변경 감지 및 시작 시간 기록"""
     st = _load_state()
     if st.get(f"{symbol}_current_regime") != regime_name:
         st[f"{symbol}_current_regime"] = regime_name
@@ -854,7 +926,7 @@ def _save_prev_regime(symbol, rn):
 def run_scoring_pipeline(symbol, analysis, market_data=None):
     import datetime as dt
     logger.info(f"{'─'*55}")
-    logger.info(f"🎯 점수 산출 [v3.3]: {symbol}")
+    logger.info(f"🎯 점수 산출 [v3.4]: {symbol}")
 
     rn   = analysis.get("regime", {}).get("regime", "UNKNOWN")
     r4h  = analysis.get("regime_4h", {})
