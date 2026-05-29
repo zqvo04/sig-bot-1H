@@ -15,13 +15,17 @@ notification.py — 텔레그램 알림 (1h Bot v2.0)
   ⑦ 펀딩비 사이클   → 시장 컨텍스트 섹션 + 임계값 근거
   임계값 근거 표시  → 푸터에 조정 내역 전체 표시
 
+[v2.1]
+  시간 표시 전면 KST(한국 표준시) 기준으로 통일
+  UTC+9, 포맷: YYYY-MM-DD HH:MM KST
+
 [v3.7 유지]
   EXPLOSIVE 준과매도/과매수 패널티 (P1)
   청산 역방향 패널티 (P3)
 ──────────────────────────────────────────────────────────────────────────────
 """
 import logging, time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 import requests
 
@@ -31,6 +35,19 @@ import config
 
 logger = logging.getLogger(__name__)
 _TG_BASE = "https://api.telegram.org/bot{token}/{method}"
+
+# ── KST 시간대 상수 ───────────────────────────────────────────────
+KST = timezone(timedelta(hours=9))
+
+def _now_kst() -> datetime:
+    """현재 KST 시각 반환"""
+    return datetime.now(timezone.utc).astimezone(KST)
+
+def _fmt_kst(dt_obj: datetime = None) -> str:
+    """datetime → 'YYYY-MM-DD HH:MM KST' 포맷"""
+    if dt_obj is None:
+        dt_obj = _now_kst()
+    return dt_obj.strftime("%Y-%m-%d %H:%M KST")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -106,7 +123,7 @@ def _micro_severity(penalty: int) -> str:
 
 
 def _get_session_label() -> str:
-    """현재 UTC 기준 세션 레이블"""
+    """현재 UTC 기준 세션 레이블 (세션 판정은 UTC 유지)"""
     now     = datetime.now(timezone.utc)
     hour    = now.hour
     weekday = now.weekday()
@@ -118,7 +135,7 @@ def _get_session_label() -> str:
 
 
 def _get_funding_cycle_label() -> str:
-    """펀딩비 사이클 상태"""
+    """펀딩비 사이클 상태 (UTC 기준 유지)"""
     hour = datetime.now(timezone.utc).hour
     if hour in config.FUNDING_CYCLE_HOURS:
         return f"⚠️ 정산±1h (hour={hour})"
@@ -153,13 +170,13 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     rsi       = analysis.get("rsi",           {})
     bb        = analysis.get("bollinger",      {})
     ema       = analysis.get(f"ema_{direction}", {})
-    adx       = analysis.get("adx_1h",        {})   # [1h Bot] entry ADX = 1h
+    adx       = analysis.get("adx_1h",        {})
     funding   = analysis.get("funding_rate",   {})
     ls        = analysis.get("ls_ratio",       {})
     taker     = analysis.get("taker_volume",   {})
     liq       = analysis.get("liquidations",   {})
     fvg       = analysis.get("fvg",            {})
-    bos_choch = analysis.get("bos_choch",      {})   # 1h BOS
+    bos_choch = analysis.get("bos_choch",      {})
     fibonacci = analysis.get("fibonacci",      {})
     atr       = analysis.get("atr",            {})
     price     = analysis.get("current_price")
@@ -190,7 +207,9 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     session_adj             = side_result.get("session_adj",                 0)
     funding_cycle_adj       = side_result.get("funding_cycle_adj",           0)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    # [v2.1] KST 시각
+    now_str = _fmt_kst()
+
     lines = []
 
     same_count    = ema.get("same_count",    0)
@@ -215,7 +234,7 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     elif same_count == 1: trend_align, trend_detail = "⚠️ 부분 역방향 2/3", "상위 TF와 방향 불일치 — 주의"
     else:                 trend_align, trend_detail = "⚠️ 역방향 3/3", "모든 TF EMA 반대 방향 — 역추세 진입"
 
-    # ── 눌림목 (1h Bot: 4h+1h 기준) ──────────────────────────
+    # ── 눌림목 ────────────────────────────────────────────────
     pb_strong = rsi.get("pullback_long_strong"  if direction=="long" else "pullback_short_strong", False)
     pb_weak   = rsi.get("pullback_long_weak"    if direction=="long" else "pullback_short_weak",   False)
     pb_micro  = rsi.get("pullback_long_micro"   if direction=="long" else "pullback_short_micro",  False)
@@ -242,7 +261,7 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
         smc_tags.append(f"황금포켓({retr}%)" if retr else "황금포켓")
 
     # ══════════════════════════════════════════════════════════
-    # ── 헤더 (1H BOT 구분 배지) ───────────────────────────────
+    # ── 헤더
     # ══════════════════════════════════════════════════════════
     dir_icon = "🟢" if direction == "long" else "🔴"
     dir_text = "롱(LONG)" if direction == "long" else "숏(SHORT)"
@@ -258,7 +277,8 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
         lines.append(f"<b>{pullback_str}</b>")
     if smc_tags:
         lines.append(f"🏛 SMC 확인: <b>{' | '.join(smc_tags)}</b>")
-    lines.append(f"🕐 {now}")
+    # [v2.1] KST 시각
+    lines.append(f"🕐 {now_str}")
     lines.append("")
 
     # ── 마이크로구조 필터 ─────────────────────────────────────
@@ -277,7 +297,7 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
         lines.append("")
 
     # ══════════════════════════════════════════════════════════
-    # ── [v2.0] 시장 컨텍스트 ──────────────────────────────────
+    # ── [v2.0] 시장 컨텍스트
     # ══════════════════════════════════════════════════════════
     regime_1h_name = regime_info.get("regime", "?")
     regime_4h_name = regime_4h_info.get("regime", "?")
@@ -288,7 +308,7 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     bias_bear      = daily_bias_info.get("bear_count", 0)
 
     bias_icon = "🟢" if bias_str=="BULL" else ("🔴" if bias_str=="BEAR" else "⚪")
-    session_label  = _get_session_label()
+    session_label   = _get_session_label()
     funding_c_label = _get_funding_cycle_label()
 
     # 임계값 조정 내역
@@ -307,18 +327,18 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     lines.append(f"  <i>임계값: {thr_summary}</i>")
     lines.append("")
 
-    # ── 1h 시장 국면 (기존 유지) ─────────────────────────────
+    # ── 1h 시장 국면 ─────────────────────────────────────────
     r_desc = regime_info.get("description", "")
     lines.append(f"📊 <b>1h 국면: {regime_1h_icon} {regime_1h_name}</b>")
     lines.append(f"   <i>{r_desc}</i>")
     lines.append("")
 
-    # ── 기술 지표 (TF 표기: 1h/4h/1d) ───────────────────────
+    # ── 기술 지표 ────────────────────────────────────────────
     lines.append("📈 <b>기술 지표</b>")
 
-    rsi_val = rsi.get("value",    50.0)   # 1h RSI
-    rsi_1h  = rsi.get("value_1h")         # 4h RSI
-    rsi_4h  = rsi.get("value_4h")         # 1d RSI
+    rsi_val = rsi.get("value",    50.0)
+    rsi_1h  = rsi.get("value_1h")
+    rsi_4h  = rsi.get("value_4h")
     rsi_tag = ("⚡ 과매도" if rsi.get("state")=="oversold" else
                "⚡ 과매수" if rsi.get("state")=="overbought" else "— 중립")
 
@@ -330,7 +350,6 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
         if rsi.get("hidden_bear_div"):      div_s = "  📊히든약세(추세지속)"
         elif rsi.get("bearish_divergence"): div_s = "  ✅약세다이버전스(반전)"
 
-    # [1h Bot] TF 레이블: 1h / 4h / 1d
     rsi_tf = [f"1h:<code>{rsi_val:.0f}</code>"]
     if rsi_1h is not None: rsi_tf.append(f"4h:<code>{rsi_1h:.0f}</code>")
     if rsi_4h is not None: rsi_tf.append(f"1d:<code>{rsi_4h:.0f}</code>")
@@ -349,7 +368,7 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     if bb.get("upper_streak",0) >= 2: sk_s = f"  ⚠️상단이탈{bb['upper_streak']}캔들"
     lines.append(f"  볼린저밴드: {bb_tag}  (%B:{bb.get('pct_b',0.5):.2f}){sq_s}{sk_s}")
 
-    ema_tf   = ema.get("tf_signals", {})   # 1h/4h/1d 자동 표시
+    ema_tf   = ema.get("tf_signals", {})
     ema_mult = ema.get("multiplier", 1.0)
     ema_str  = " | ".join(
         f"{tf}:{'↑' if s=='bullish' else ('↓' if s=='bearish' else '—')}"
@@ -366,7 +385,7 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     )
     lines.append("")
 
-    # ── SMC / 구조 분석 (1h + 4h BOS 통합) ──────────────────
+    # ── SMC / 구조 분석 ──────────────────────────────────────
     has_1h_smc = (
         fvg.get("in_bullish_fvg") or fvg.get("in_bearish_fvg") or
         bos_choch.get("bos_bullish") or bos_choch.get("bos_bearish") or
@@ -382,7 +401,6 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     if has_1h_smc or has_4h_smc:
         lines.append("🏛 <b>SMC / 구조 분석</b>")
 
-        # FVG
         bull_fvg = fvg.get("in_bullish_fvg", False)
         bear_fvg = fvg.get("in_bearish_fvg", False)
         if bull_fvg and bear_fvg:
@@ -394,7 +412,6 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
         else:
             lines.append("  FVG        : — 외부")
 
-        # 1h BOS/CHoCH
         def _bos_line(bos_data, tf_label, bos_penalty, choch_p):
             if bos_data.get("bos_bullish"):
                 if direction == "short":
@@ -415,17 +432,15 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
             else:
                 sh = bos_data.get("last_swing_high"); sl_v = bos_data.get("last_swing_low")
                 parts = []
-                if sh:  parts.append(f"고점:{_fmt_price(sh, symbol)}")
-                if sl_v:parts.append(f"저점:{_fmt_price(sl_v, symbol)}")
+                if sh:   parts.append(f"고점:{_fmt_price(sh, symbol)}")
+                if sl_v: parts.append(f"저점:{_fmt_price(sl_v, symbol)}")
                 return [f"  {tf_label}-BOS : — 구조 유지  ({', '.join(parts)})"]
 
         for ln in _bos_line(bos_choch,    "1h", bos_conflict_penalty, choch_penalty):
             lines.append(ln)
-        # [v2.0 ③] 4h BOS
         for ln in _bos_line(bos_choch_4h, "4h", bos_4h_conflict_penalty, choch_4h_penalty):
             lines.append(ln)
 
-        # 피보나치
         if direction == "long":
             if fibonacci.get("in_golden_pocket_long"):
                 lines.append(f"  피보나치   : 🥇 황금포켓 {fibonacci.get('long_retracement','?')}%")
@@ -578,14 +593,12 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
                         .replace("[OBI]","").replace("[CM]","").strip())
             reasons.append(f"⚠️ {r_clean[:55]}")
 
-    # [v2.0] 4h 메타 레짐 맥락
     meta_combo = f"4h {regime_4h_name} × 1h {regime_name}"
     if meta_adj < 0:
         reasons.append(f"★ 메타레짐 확인 ({meta_combo}) — 임계값 {meta_adj}pt 완화")
     elif meta_adj > 0:
         reasons.append(f"⚠️ 메타레짐 불일치 ({meta_combo}) — 임계값 +{meta_adj}pt 강화")
 
-    # [v2.0] 일봉 바이어스
     if bias_str != "NEUTRAL":
         align_dir = "롱" if bias_str=="BULL" else "숏"
         if (bias_str=="BULL" and direction=="long") or (bias_str=="BEAR" and direction=="short"):
@@ -612,7 +625,6 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     elif direction=="short" and fibonacci.get("in_golden_pocket_short"):
         reasons.append(f"피보 황금포켓 {fibonacci.get('short_retracement','?')}% — 최강 재진입 구간")
 
-    # 4h BOS 우선 표시
     if direction=="long"  and bos_choch_4h.get("bos_bullish"):
         reasons.append("★★ 4h-BOS 상승 확증 — 4h 스윙고점 돌파 (강력)")
     elif direction=="short" and bos_choch_4h.get("bos_bearish"):
@@ -681,7 +693,8 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def send_error_alert(error_msg: str, context: str = "") -> None:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    # [v2.1] KST 시각
+    now = _fmt_kst()
     send_message(
         f"🚨 <b>[1H봇] 시스템 에러</b>\n<code>{'─'*32}</code>\n🕐 {now}\n"
         f"📍 {context or '—'}\n\n<pre>{error_msg[:800]}</pre>"
@@ -689,7 +702,8 @@ def send_error_alert(error_msg: str, context: str = "") -> None:
 
 
 def send_heartbeat(symbols: list, scan_count: int, signal_count: int) -> None:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    # [v2.1] KST 시각
+    now = _fmt_kst()
     send_message(
         f"💚 <b>[1H봇] 정상 동작 중</b>\n<code>{'─'*32}</code>\n🕐 {now}\n"
         f"🪙 {', '.join(symbols)}\n🔄 실행:{scan_count}회 | 🚨 신호:{signal_count}건"
