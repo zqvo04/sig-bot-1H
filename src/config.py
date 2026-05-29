@@ -1,18 +1,14 @@
 """
-config.py — 전역 설정 (1h Bot v3.2)
+config.py — 전역 설정 (1h Bot v3.4)
 ────────────────────────────────────────────────────────────────────
-[v3.0] 9개 분석 기능 추가
-[v3.1] 불량신호 방지 6개 (쿨다운/FVG/MACD/연속신호 등)
-[v3.2] 불량신호 방지 통합 확장
-  ④ RANGING_ENTRY_EMA_ADJ → 제거 (A-2 역풍카운터로 통합)
-  [A-1] 3중 역풍 하드블록 파라미터
-  [A-2] 역풍 카운터 (EMA/MACD/Taker/FVG/MA20)
-  [A-3] 하락 모멘텀 컨텍스트 임계값
-  [B-1] RANGING 심리보너스 억제 배율
-  [B-2] RANGING+역EMA 보너스 캡
-  [C-1] MA20 위치+기울기 임계값
-  [D-1/D-2] 기본점수 대비 보너스 캡
-  [E-1] RANGING 지속시간 임계값
+[v3.4 변경사항]
+  [개선 1] 청산 방향 로직 버그픽스 → analysis_engine.py에서 처리
+  [개선 2] SHORT 역풍필터 확장 파라미터 추가
+           - LIQ_REVERSE_PRESSURE, FAILED_BREAKDOWN_PRESSURE, WEEKLY_LEVEL_PRESSURE
+  [개선 3] SQUEEZE 메타레짐 완화 제거 (SQUEEZE×* → 0 또는 축소)
+  [개선 4] 모순 시장구조 보너스 상쇄 → scoring_system.py에서 처리
+  [개선 5] SQUEEZE BOS 보너스 삭감 파라미터 추가
+           - SQUEEZE_BOS_BONUS_MULT = 0.30
 ────────────────────────────────────────────────────────────────────
 """
 import os
@@ -276,98 +272,113 @@ EXPLOSIVE_OVERBOUGHT_GUARD_RSI = 60
 EXPLOSIVE_OVERBOUGHT_GUARD_BB  = 0.75
 EXPLOSIVE_OVERSOLD_PENALTY     = 0.80
 
-LIQ_REVERSE_PENALTY = 0.92
+LIQ_REVERSE_PENALTY = 0.80   # [v3.4 개선2] 0.92 → 0.80 (역방향 청산 패널티 강화)
 HIDDEN_DIV_MIN_ADX  = 18
 
 # ══════════════════════════════════════════════════════════════════════
 # [v3.1] 불량신호 방지 — 기본 6개
 # ══════════════════════════════════════════════════════════════════════
-# ② 가격밴드 쿨다운
-PRICE_BAND_COOLDOWN_PCT      = 0.005   # 0.5% 이내 재진입 억제
+PRICE_BAND_COOLDOWN_PCT      = 0.010   # [v3.4] 0.005 → 0.010 (1% 이내 재진입 억제)
 
-# ③ FVG 역방향 패널티
-BEARISH_FVG_LONG_PENALTY     = -12    # 약세FVG 내부 롱 진입
-BEARISH_FVG_OVERHEAD_PENALTY = -6     # 약세FVG ≥2 오버헤드
+BEARISH_FVG_LONG_PENALTY     = -12
+BEARISH_FVG_OVERHEAD_PENALTY = -6
 
-# ⑤ MACD 음수권 패널티
-MACD_BEARISH_LONG_PENALTY    = -8     # DIF<0 AND DEA<0 구간 역방향
+MACD_BEARISH_LONG_PENALTY    = -8
 
-# ⑥ 연속 동방향 신호
-CONSECUTIVE_SIGNAL_ADJ       = 3      # 1회 추가당 +3pt
-CONSECUTIVE_SIGNAL_MAX_ADJ   = 9      # 상한 +9pt
+CONSECUTIVE_SIGNAL_ADJ       = 3
+CONSECUTIVE_SIGNAL_MAX_ADJ   = 9
 
 # ══════════════════════════════════════════════════════════════════════
 # [v3.2] 불량신호 방지 — 확장 (A/B/C/D/E)
 # ══════════════════════════════════════════════════════════════════════
+HEADWIND_PRESSURE_PER_FACTOR  = 3
+HEADWIND_PRESSURE_MAX_ADJ     = 12
 
-# [A-2] 역풍 카운터 (④ RANGING_ENTRY_EMA_ADJ 흡수)
-# 역풍 요소: MACD음수, entry EMA 역방향, Taker 역풍, FVG 오버헤드≥2, price<MA20+slope음수
-HEADWIND_PRESSURE_PER_FACTOR  = 3    # 요소당 +3pt 임계값
-HEADWIND_PRESSURE_MAX_ADJ     = 12   # 최대 +12pt
+MOMENTUM_CONTEXT_ADJ          = 5
 
-# [A-3] 하락 모멘텀 컨텍스트
-# 조건: 최근 3봉 중 음봉≥2 AND price<MA20 AND MACD음수 AND MA20기울기 음수
-MOMENTUM_CONTEXT_ADJ          = 5    # +5pt 임계값
-
-# [B-1] RANGING 심리보너스 억제
-# entry EMA 역방향 시 펀딩비/OI/스마트머니/펀딩추세 보너스 절반
 RANGING_SENTIMENT_MULT        = 0.50
 
-# [B-2] RANGING + EMA역방향 보너스 캡
-RANGING_REVERSE_BONUS_CAP     = 20   # 기존 22~42pt → 20pt로 제한
+RANGING_REVERSE_BONUS_CAP     = 20
 
-# [C-1] MA20 위치 + 기울기 임계값 조정
-# price < MA20 AND MA20 slope 음수 시 추가 강화
-EMA20_POSITION_ADJ            = 4    # +4pt 임계값
+EMA20_POSITION_ADJ            = 4
 
-# [D-1] 기본점수 약할 때 보너스 캡
-WEAK_BASE_SCORE_THRESHOLD     = 55.0  # base_score < 55 기준
-WEAK_BASE_BONUS_THRESHOLD     = 25    # bonus_raw > 25 기준
-WEAK_BASE_BONUS_CAP           = 18    # 이 경우 캡 = 18pt
+WEAK_BASE_SCORE_THRESHOLD     = 55.0
+WEAK_BASE_BONUS_THRESHOLD     = 25
+WEAK_BASE_BONUS_CAP           = 18
 
-# [D-2] 보너스/기본점수 비율 캡
-MAX_BONUS_TO_BASE_RATIO       = 0.55  # 보너스 ≤ base_score × 55%
-MIN_BONUS_FLOOR               = 10    # 비율캡 하한 (너무 낮아지지 않도록)
+MAX_BONUS_TO_BASE_RATIO       = 0.55
+MIN_BONUS_FLOOR               = 10
 
-# [E-1] RANGING 지속시간 임계값
-RANGING_DURATION_ADJ_MID      = 2    # 3~6h 지속 → +2pt
-RANGING_DURATION_ADJ_LONG     = 4    # 6h+ 지속 → +4pt
-
+RANGING_DURATION_ADJ_MID      = 2
+RANGING_DURATION_ADJ_LONG     = 4
 
 # ══════════════════════════════════════════════════════════════════════
 # [v3.3] 추세 포착 강화 — 양방향 대칭 (패밀리 A~E)
 # ══════════════════════════════════════════════════════════════════════
-# ┌─ 설계 원칙 ─────────────────────────────────────────────────────┐
-# │ • 불량신호 방지(v3.1/v3.2) 유지                                  │
-# │ • 극단 상황에서 반전/추세 신호 포착 가능하도록 선택적 완화         │
-# │ • 완화 조건은 항상 엄격한 조건(multi-TF, 4H RSI<20 등)으로 제한  │
-# │ • 롱/숏 완전 대칭                                                │
-# └────────────────────────────────────────────────────────────────┘
+EXTREME_EMA_MULT_FLOOR          = 0.92
+EXTREME_THRESHOLD_CAP           = 68
+EXTREME_BIAS_RELIEF             = 4
+EXTREME_MICRO_CAP               = -8
+EXTREME_BOS_RELIEF              = 0.08
+EXTREME_CHOCH_RELIEF            = 0.06
+EXTREME_FVG_PENALTY_MULT        = 0.5
 
-# [패밀리 A] 극단 과매도/과매수 완화 세트
-EXTREME_EMA_MULT_FLOOR          = 0.92   # A-1: EMA배율 최솟값 (0.75→0.92)
-EXTREME_THRESHOLD_CAP           = 68     # A-3: 극단 시 임계값 절대 상한
-EXTREME_BIAS_RELIEF             = 4      # A-4: 역방향 바이어스 완화 (+7→+3)
-EXTREME_MICRO_CAP               = -8     # A-6: 마이크로구조 패널티 캡
-EXTREME_BOS_RELIEF              = 0.08   # A-7: BOS 패널티 완화 (0.82→0.90)
-EXTREME_CHOCH_RELIEF            = 0.06   # A-7: CHoCH 패널티 완화 (0.88→0.94)
-EXTREME_FVG_PENALTY_MULT        = 0.5    # A-8: FVG 패널티 절반 (극단 시)
+MACD_HIST_TURN_BONUS            = 6
 
-# [패밀리 B] MACD 히스토그램 방향성 분리
-MACD_HIST_TURN_BONUS            = 6      # B: 히스토그램 반전 보너스 (+6pt)
+RSI_4H_EXTREME_OVERSOLD         = 20
+RSI_4H_EXTREME_OVERBOUGHT       = 80
+BONUS_4H_EXTREME_REVERSAL       = 12
+BONUS_MTF_EXTREME_CONFIRM       = 6
+RSI_4H_EXTREME_THRESHOLD_RELIEF = 5
 
-# [패밀리 C] 4H RSI 극단값 + 1H 반전 콤보
-RSI_4H_EXTREME_OVERSOLD         = 20     # C: 4H RSI 극단 과매도 기준
-RSI_4H_EXTREME_OVERBOUGHT       = 80     # C: 4H RSI 극단 과매수 기준
-BONUS_4H_EXTREME_REVERSAL       = 12     # C-1: 4H극단+1H MACD hist 전환 보너스
-BONUS_MTF_EXTREME_CONFIRM       = 6      # C-2: 4H+1H 동시 극단 추가 확인 보너스
-RSI_4H_EXTREME_THRESHOLD_RELIEF = 5      # C-3: 4H극단 시 임계값 완화 (-5pt)
+TRENDING_RSI_SOFT_RELIEF        = 0.05
 
-# [패밀리 D] 추세 추종 RSI 패널티 감면
-TRENDING_RSI_SOFT_RELIEF        = 0.05   # D: 추세 순방향 RSI패널티 완화 (×0.85→×0.90)
+CONSECUTIVE_SIGNAL_ADJ_TREND    = 1
 
-# [패밀리 E] 피라미딩 지원
-CONSECUTIVE_SIGNAL_ADJ_TREND    = 1      # E: 추세 시 연속신호 임계값 +1pt/회 (기본 3pt)
+# ══════════════════════════════════════════════════════════════════════
+# [v3.4] 신규 파라미터
+# ══════════════════════════════════════════════════════════════════════
+
+# [개선 2] SHORT/LONG 역풍필터 확장 — 청산/시장구조/주간레벨 pressure 반영
+# A-2 역풍 체크에 추가된 요소들 (각 +1 pressure → ×HEADWIND_PRESSURE_PER_FACTOR)
+# 별도 on/off 파라미터 (True=활성화)
+HEADWIND_LIQ_REVERSE_ENABLE      = True   # 역방향 청산 감지 → pressure +1
+HEADWIND_FAILED_STRUCT_ENABLE    = True   # 모순 시장구조(붕괴실패/돌파실패) → pressure +1
+HEADWIND_WEEKLY_LEVEL_ENABLE     = True   # 역방향 주간레벨 근접 → pressure +1
+
+# [개선 4] 모순 시장구조 보너스 상쇄
+# LH + 붕괴실패 동시 발생 시 LH 보너스 무효화 (양방향 대칭)
+CONFLICT_STRUCT_BONUS_CANCEL     = True
+
+# [개선 5] SQUEEZE 구간 BOS 보너스 삭감 배율
+SQUEEZE_BOS_BONUS_MULT           = 0.30   # 1h-BOS: 8→2pt, 4h-BOS: 12→4pt
+
+# ──────────────────────────────────────────────────────────────────
+# [v3.4.1] 롱 포착 강화 — 아이디어 1~6
+# ──────────────────────────────────────────────────────────────────
+
+# [아이디어 1] A-2 MACD 역풍 조건 정밀화
+# MACD bearish이지만 histogram > 0 (골든크로스 진행 중)이면 역풍 아님
+HEADWIND_MACD_HIST_EXEMPT        = True   # True=hist 양전환 시 MACD pressure 면제
+
+# [아이디어 2] 역풍 카운터 전체 상한 축소
+# A-2 + A-3 + C-1 합산 상한 (중복 측정 방지)
+HEADWIND_PRESSURE_MAX_ADJ        = 9      # 12 → 9 (기존값 덮어씀)
+HEADWIND_TOTAL_MAX_ADJ           = 15     # A-2+A-3+C-1 합산 절대 상한
+
+# [아이디어 3] 숏청산 + BB 스퀴즈 조합 반전 보너스
+BONUS_SHORT_LIQ_SQUEEZE_REVERSAL = 10    # 숏청산(sls≥0.6)+스퀴즈 롱 반전 보너스
+LIQ_SQUEEZE_REVERSAL_MIN_PROXY   = 0.60  # sls/lls 최소 기준값
+
+# [아이디어 4] SQUEEZE 구간 A-3/C-1 역풍필터 완화
+# A-3(하락모멘텀), C-1(MA20위치) 는 SQUEEZE에서 적용 안 함
+# A-2 상한도 절반으로 축소
+SQUEEZE_HEADWIND_A3_C1_EXEMPT    = True   # True=SQUEEZE에서 A-3/C-1 면제
+SQUEEZE_HEADWIND_MAX_DIVISOR     = 2      # SQUEEZE 시 A-2 상한 ÷2 (12→6, 9→4)
+
+# [아이디어 5] SQUEEZE + 대량 청산 → 임계 직접 완화
+SQUEEZE_LIQ_REVERSAL_THRESHOLD   = 0.60  # sls/lls 기준 (≥60%)
+SQUEEZE_LIQ_REVERSAL_RELIEF      = 5     # 임계 완화 -5pt
 
 # ══════════════════════════════════════════════════════════════════════
 # SMC / 피보나치
@@ -399,6 +410,7 @@ PRICE_MOVE_SUPPRESS_MILD    = 0.03
 PRICE_MOVE_RESET_THRESHOLD  = -0.025
 COOLDOWN_SUPPRESSED_STRONG  = 480
 COOLDOWN_SUPPRESSED_MILD    = 300
+SIGNAL_COOLDOWN_MINUTES_MIN = 60   # [v3.4] 어떤 경우에도 최소 1시간 쿨다운
 
 # ══════════════════════════════════════════════════════════════════════
 # 시스템
@@ -414,6 +426,9 @@ LOG_FILE                = "logs/bot.log"
 # ══════════════════════════════════════════════════════════════════════
 # v2.0 메타 레짐 / 바이어스 / 세션 / 펀딩사이클
 # ══════════════════════════════════════════════════════════════════════
+# [v3.4 개선 3] SQUEEZE 메타레짐 완화 제거
+# 근거: SQUEEZE는 방향 미결정 구간 → 임계 완화 근거 없음
+#       Post-Squeeze 보너스(+10pt)가 이미 존재하므로 이중 완화 불필요
 META_REGIME_THRESHOLD_ADJ: dict = {
     ("TRENDING",  "TRENDING"):  -3,
     ("TRENDING",  "RANGING"):    0,
@@ -427,10 +442,11 @@ META_REGIME_THRESHOLD_ADJ: dict = {
     ("EXPLOSIVE", "RANGING"):   +3,
     ("EXPLOSIVE", "SQUEEZE"):   +4,
     ("EXPLOSIVE", "EXPLOSIVE"): +6,
-    ("SQUEEZE",   "TRENDING"):  -2,
-    ("SQUEEZE",   "RANGING"):    0,
-    ("SQUEEZE",   "SQUEEZE"):   -5,
-    ("SQUEEZE",   "EXPLOSIVE"): -3,
+    # ↓ [v3.4 개선 3] SQUEEZE 행 전체 수정
+    ("SQUEEZE",   "TRENDING"):   0,   # -2 → 0
+    ("SQUEEZE",   "RANGING"):    0,   #  0 유지
+    ("SQUEEZE",   "SQUEEZE"):    0,   # -5 → 0  ★핵심 수정
+    ("SQUEEZE",   "EXPLOSIVE"): -2,   # -3 → -2 (스퀴즈→폭발만 소폭 완화 유지)
     ("UNKNOWN",   "TRENDING"):   0,
     ("UNKNOWN",   "RANGING"):    0,
     ("UNKNOWN",   "SQUEEZE"):    0,
