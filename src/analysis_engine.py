@@ -282,7 +282,7 @@ def calculate_ema_multiplier(ohlcv_dict, direction, regime="UNKNOWN"):
 
 def calculate_adx(df, period=None):
     period=period or config.ADX_PERIOD
-    _n={"adx":0.0,"plus_di":0.0,"minus_di":0.0,"trend_dir":"neutral","strength":"none","multiplier":1.0,"available":False}
+    _n={"adx":0.0,"plus_di":0.0,"minus_di":0.0,"trend_dir":"neutral","strength":"none","multiplier":1.0,"adx_slope":0.0,"available":False}
     if df is None or len(df)<period*2+1: return _n
     high=df["high"].astype(float); low=df["low"].astype(float); close=df["close"].astype(float)
     prev_close=close.shift(1)
@@ -296,12 +296,17 @@ def calculate_adx(df, period=None):
     c_adx=round(float(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else 0.0,2)
     c_pdi=round(float(pdi.iloc[-1]) if not pd.isna(pdi.iloc[-1]) else 0.0,2)
     c_mdi=round(float(mdi.iloc[-1]) if not pd.isna(mdi.iloc[-1]) else 0.0,2)
+    # [II-2] ADX 기울기 (현재 vs N캔들 전)
+    adx_slope=0.0
+    _lb=config.ADX_SLOPE_LOOKBACK
+    if len(adx)>_lb and not pd.isna(adx.iloc[-1-_lb]):
+        adx_slope=round(c_adx-float(adx.iloc[-1-_lb]),2)
     if c_adx<config.ADX_NO_TREND: st,m="none",0.70
     elif c_adx<config.ADX_WEAK_TREND: st,m="weak",0.85
     elif c_adx<config.ADX_STRONG: st,m="normal",1.00
     else: st,m="strong",1.00
     td="bullish" if c_pdi>c_mdi else ("bearish" if c_mdi>c_pdi else "neutral")
-    return {"adx":c_adx,"plus_di":c_pdi,"minus_di":c_mdi,"trend_dir":td,"strength":st,"multiplier":m,"available":True}
+    return {"adx":c_adx,"plus_di":c_pdi,"minus_di":c_mdi,"trend_dir":td,"strength":st,"multiplier":m,"adx_slope":adx_slope,"available":True}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -575,6 +580,137 @@ def check_fibonacci_levels(df):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# [v3.6] II-3 오더블록 / II-5 추세성숙도 / II-1 되돌림깊이
+# ══════════════════════════════════════════════════════════════════════
+
+def detect_order_blocks(df, lookback=None):
+    """[II-3] 오더블록 감지
+    급등/급락(ATR×배수) 직전의 마지막 역방향 캔들 범위 = 기관 주문 누적 구간.
+    가장 최근의 미사용 OB를 한 개씩(상승/하락) 반환하고, 현재가 포함 여부 판정.
+    """
+    _empty = {"available": False, "in_bullish_ob": False, "in_bearish_ob": False,
+              "bullish_ob": None, "bearish_ob": None, "ob_strength": 0.0}
+    lb = lookback or config.OB_LOOKBACK
+    if df is None or len(df) < lb + 2:
+        return _empty
+    try:
+        o = df["open"].astype(float).values
+        h = df["high"].astype(float).values
+        l = df["low"].astype(float).values
+        c = df["close"].astype(float).values
+        atr = calculate_atr(df)
+        atr_v = float(atr.iloc[-1]) if len(atr) else 0.0
+        if atr_v <= 0:
+            return _empty
+        cur = float(c[-1]); n = len(c)
+        start = max(2, n - lb)
+        mult = config.OB_IMPULSE_ATR_MULT
+        bull_ob = None; bear_ob = None; bull_str = 0.0; bear_str = 0.0
+        # 최신부터 거슬러 가장 최근 OB 탐색
+        for i in range(n - 1, start, -1):
+            move = c[i] - c[i - 1]
+            if bull_ob is None and move > mult * atr_v:
+                for j in range(i - 1, max(start - 1, i - config.OB_SCAN_BACK), -1):
+                    if c[j] < o[j]:
+                        bull_ob = (float(l[j]), float(h[j])); bull_str = move / atr_v; break
+            if bear_ob is None and -move > mult * atr_v:
+                for j in range(i - 1, max(start - 1, i - config.OB_SCAN_BACK), -1):
+                    if c[j] > o[j]:
+                        bear_ob = (float(l[j]), float(h[j])); bear_str = (-move) / atr_v; break
+            if bull_ob and bear_ob:
+                break
+        in_bull = bool(bull_ob and bull_ob[0] <= cur <= bull_ob[1])
+        in_bear = bool(bear_ob and bear_ob[0] <= cur <= bear_ob[1])
+        strength = round(bull_str if in_bull else bear_str if in_bear else 0.0, 2)
+        if in_bull: logger.info(f"[오더블록] ★ 상승 OB 내부 {bull_ob} (강도 {bull_str:.1f})")
+        if in_bear: logger.info(f"[오더블록] ★ 하락 OB 내부 {bear_ob} (강도 {bear_str:.1f})")
+        return {"available": True, "in_bullish_ob": in_bull, "in_bearish_ob": in_bear,
+                "bullish_ob": (round(bull_ob[0], 4), round(bull_ob[1], 4)) if bull_ob else None,
+                "bearish_ob": (round(bear_ob[0], 4), round(bear_ob[1], 4)) if bear_ob else None,
+                "ob_strength": strength}
+    except Exception as e:
+        logger.warning(f"[오더블록] 오류: {e}"); return _empty
+
+
+def analyze_structure_maturity(df, lookback=None):
+    """[II-5] 추세 성숙도 — 연속 HH/HL(상승) 또는 LH/LL(하락) 카운트.
+    성숙(5+)할수록 반전 위험↑ → 추세추종 보수화. 4H 스윙 기준 사용 권장.
+    """
+    _empty = {"available": False, "bull_count": 0, "bear_count": 0, "maturity": "none"}
+    lb = lookback or config.MATURITY_LOOKBACK
+    if df is None or len(df) < 30:
+        return _empty
+    try:
+        highs = df["high"].astype(float).values
+        lows  = df["low"].astype(float).values
+        lb = min(lb, len(highs))
+        H = highs[-lb:]; L = lows[-lb:]
+        sh = []; sl = []
+        for i in range(3, len(H) - 3):
+            if H[i] == max(H[i - 3:i + 4]): sh.append(H[i])
+            if L[i] == min(L[i - 3:i + 4]): sl.append(L[i])
+        m = min(len(sh), len(sl))
+        bull = bear = 0
+        # 최신 스윙부터 거슬러 연속 카운트
+        for i in range(m - 1, 0, -1):
+            if sh[i] > sh[i - 1] and sl[i] > sl[i - 1]: bull += 1
+            else: break
+        for i in range(m - 1, 0, -1):
+            if sh[i] < sh[i - 1] and sl[i] < sl[i - 1]: bear += 1
+            else: break
+        dom = max(bull, bear)
+        maturity = ("late" if dom > config.MATURITY_MID_MAX else
+                    "mid"  if dom > config.MATURITY_EARLY_MAX else
+                    "early" if dom >= 1 else "none")
+        if dom >= 1:
+            logger.info(f"[추세성숙도] 상승연속:{bull} 하락연속:{bear} → {maturity}")
+        return {"available": True, "bull_count": bull, "bear_count": bear, "maturity": maturity}
+    except Exception as e:
+        logger.warning(f"[추세성숙도] 오류: {e}"); return _empty
+
+
+def analyze_retracement_depth(df_4h, current_price):
+    """[II-1] 되돌림 깊이 — 4H 스윙 범위 대비 현재가 되돌림 비율.
+    상승스윙(저점 후 고점)→롱 되돌림, 하락스윙(고점 후 저점)→숏 되돌림.
+    """
+    _empty = {"available": False, "long_depth": None, "short_depth": None,
+              "long_zone": "none", "short_zone": "none"}
+    if df_4h is None or len(df_4h) < config.FIB_LOOKBACK // 2 or current_price <= 0:
+        return _empty
+    try:
+        lb = min(config.FIB_LOOKBACK, len(df_4h))
+        highs = df_4h["high"].astype(float).values[-lb:]
+        lows  = df_4h["low"].astype(float).values[-lb:]
+        end = lb - 3
+        shi = int(np.argmax(highs[:end])); sli = int(np.argmin(lows[:end]))
+        sh = float(highs[shi]); sl = float(lows[sli])
+        rng = sh - sl
+        if rng <= 0 or rng / sh < config.RETRACE_MIN_SWING_PCT:
+            return _empty
+        long_depth = (sh - current_price) / rng if shi > sli else None   # 저점→고점 후 눌림
+        short_depth = (current_price - sl) / rng if sli > shi else None   # 고점→저점 후 되돌림
+
+        def _zone(dp):
+            if dp is None: return "none"
+            if dp < config.RETRACE_TOO_SHALLOW: return "too_shallow"
+            if dp < config.RETRACE_OPTIMAL_LOW: return "shallow"
+            if dp <= config.RETRACE_OPTIMAL_HIGH: return "optimal"
+            if dp <= config.RETRACE_DEEP_HIGH: return "deep"
+            return "broken"
+
+        lz = _zone(long_depth); sz = _zone(short_depth)
+        if lz in ("optimal", "deep"): logger.info(f"[되돌림깊이] 롱 {long_depth*100:.0f}% [{lz}]")
+        if sz in ("optimal", "deep"): logger.info(f"[되돌림깊이] 숏 {short_depth*100:.0f}% [{sz}]")
+        return {"available": True,
+                "long_depth": round(long_depth, 3) if long_depth is not None else None,
+                "short_depth": round(short_depth, 3) if short_depth is not None else None,
+                "long_zone": lz, "short_zone": sz,
+                "swing_high": round(sh, 4), "swing_low": round(sl, 4)}
+    except Exception as e:
+        logger.warning(f"[되돌림깊이] 오류: {e}"); return _empty
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 8. 캔들 패턴 (TF별)
 # ══════════════════════════════════════════════════════════════════════
 
@@ -735,8 +871,26 @@ def analyze_oi_matrix(oi_data: dict, df_1h) -> dict:
         logger.debug(f"[OI매트릭스] 가격↑+OI↓ → 숏커버링 (약한 반등)")
     else:
         logger.debug(f"[OI매트릭스] 중립 (가격:{price_chg:+.2%} OI:{oi_chg:+.2%})")
+
+    # [II-9] OI 방향성 추세(기울기) 강화 — 4시간 스냅샷이 아닌 다중 포인트 추세
+    oi_hist = oi_data.get("oi_history", [])
+    oi_slope = 0.0; oi_slope_sign = 0
+    if len(oi_hist) >= config.OI_TREND_MIN_POINTS:
+        recent = oi_hist[0]; old = oi_hist[min(len(oi_hist)-1, 4)]   # 최신순 저장
+        if old > 0:
+            oi_slope = round((recent - old) / old, 4)
+            if   oi_slope >  config.OI_TREND_SLOPE_THRESHOLD: oi_slope_sign = 1
+            elif oi_slope < -config.OI_TREND_SLOPE_THRESHOLD: oi_slope_sign = -1
+    if oi_slope_sign == 1 and price_up:
+        ls_adj += config.BONUS_OI_TREND_SLOPE
+        logger.info(f"[OI매트릭스] 📈 OI 꾸준히 증가({oi_slope:+.2%})+가격↑ → 추세 강함 롱+{config.BONUS_OI_TREND_SLOPE}pt")
+    elif oi_slope_sign == 1 and price_down:
+        ss_adj += config.BONUS_OI_TREND_SLOPE
+        logger.info(f"[OI매트릭스] 📉 OI 꾸준히 증가({oi_slope:+.2%})+가격↓ → 하락 강함 숏+{config.BONUS_OI_TREND_SLOPE}pt")
+
     return {"available":True,"quadrant":quadrant,"long_score_adj":ls_adj,"short_score_adj":ss_adj,
-            "oi_change_pct":round(oi_chg,4),"price_change_pct":round(price_chg,4)}
+            "oi_change_pct":round(oi_chg,4),"price_change_pct":round(price_chg,4),
+            "oi_slope":oi_slope,"oi_slope_sign":oi_slope_sign}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -776,6 +930,29 @@ def analyze_funding_history_trend(funding_hist: dict) -> dict:
     elif trend == "falling" and current < 0:
         ls_adj = 3; signal = "falling_short_bias"
         detail = f"펀딩 하락 추세 (숏편향 강화 중) 롱+3pt"
+
+    # [II-8] 극단 누적 후 첫 감소(쿨링) = 과열 해소 시작 → 역방향 진입 최적 타이밍
+    # 직전(rates[1])부터 거슬러 연속 극단을 세고, 현재(rates[0]) 크기가 줄면 쿨링
+    if len(rates) >= 2:
+        sign_prev = 1 if rates[1] > 0 else -1
+        consec_prev = 0
+        for r in rates[1:]:
+            if abs(r) >= config.FUNDING_EXTREME_THRESHOLD and (r * sign_prev > 0):
+                consec_prev += 1
+            else:
+                break
+        cooling = (consec_prev >= config.FUNDING_COOLING_MIN_CONSEC
+                   and abs(rates[0]) < abs(rates[1])
+                   and rates[0] * sign_prev > 0)
+        if cooling:
+            if sign_prev > 0:   # 롱 과열 식기 시작 → 숏 진입 타이밍
+                ss_adj += config.BONUS_FUNDING_COOLING; signal = "cooling_short"
+                detail = f"펀딩 롱과열 해소 시작({consec_prev}연속 후 감소) 숏+{config.BONUS_FUNDING_COOLING}pt"
+            else:               # 숏 과열 식기 시작 → 롱 진입 타이밍
+                ls_adj += config.BONUS_FUNDING_COOLING; signal = "cooling_long"
+                detail = f"펀딩 숏과열 해소 시작({consec_prev}연속 후 감소) 롱+{config.BONUS_FUNDING_COOLING}pt"
+            logger.info(f"[펀딩추세] {detail}")
+
     return {"available":True,"long_score_adj":ls_adj,"short_score_adj":ss_adj,
             "signal":signal,"detail":detail}
 
@@ -946,7 +1123,7 @@ def analyze_daily_bias(df_1d):
 def run_full_analysis(symbol, collected_data):
     import datetime
     logger.info(f"{chr(8213)*50}")
-    logger.info(f"🔬 분석 [1H봇 v3.4]: {symbol}")
+    logger.info(f"🔬 분석 [1H봇 v3.6]: {symbol}")
 
     ohlcv        = collected_data.get("ohlcv", {})
     ticker       = collected_data.get("ticker") or {}
@@ -1001,6 +1178,11 @@ def run_full_analysis(symbol, collected_data):
     weekly_lvl   = detect_weekly_levels(df_1d, price)
     ema_struct   = analyze_1d_ema_structure(df_1d, price)
 
+    # [v3.6] 신규 분석 (II-1/3/5)
+    order_blocks = detect_order_blocks(df_1h)
+    maturity     = analyze_structure_maturity(df_4h)
+    retracement  = analyze_retracement_depth(df_4h, price)
+
     logger.info(
         f"  MTF-RSI: 1h:{rsi['value']:.1f} 4h:{rsi.get('value_4h') or '-'} "
         f"1d:{rsi.get('value_1d') or '-'} [{rsi['state']}] | "
@@ -1015,6 +1197,12 @@ def run_full_analysis(symbol, collected_data):
         f"모멘텀정합:{mtf_momentum.get('direction','?')}({mtf_momentum.get('alignment',0)}/3) | "
         f"1D-EMA:{ema_struct.get('structure','?')} | "
         f"주간레벨:{weekly_lvl.get('level_type','없음')}"
+    )
+    logger.info(
+        f"  [v3.6] OB:롱{order_blocks.get('in_bullish_ob')}/숏{order_blocks.get('in_bearish_ob')} | "
+        f"성숙도:{maturity.get('maturity','?')}(상{maturity.get('bull_count',0)}/하{maturity.get('bear_count',0)}) | "
+        f"되돌림:롱{retracement.get('long_zone','-')}/숏{retracement.get('short_zone','-')} | "
+        f"ADX기울기:{adx_1h.get('adx_slope',0):+.1f} | OI기울기:{oi_matrix.get('oi_slope',0):+.2%}"
     )
 
     return {
@@ -1054,5 +1242,8 @@ def run_full_analysis(symbol, collected_data):
         "weekly_levels":    weekly_lvl,
         "ema_structure":    ema_struct,
         "macd_1h":          macd_1h,
+        "order_blocks":     order_blocks,
+        "maturity":         maturity,
+        "retracement":      retracement,
         "analyzed_at":      datetime.datetime.utcnow().isoformat() + "Z",
     }
