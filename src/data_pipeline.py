@@ -298,6 +298,8 @@ def collect_oi_data(symbol: str, current_price: float) -> dict:
             data = resp["data"]
             oi_now  = float(data[0][1])   # 최신
             oi_4h   = float(data[min(4, len(data)-1)][1])  # 4H 전
+            # [II-9] OI 방향성 기울기 계산용 히스토리 (최신순)
+            oi_history = [float(row[1]) for row in data]
             if oi_4h > 0:
                 change = (oi_now - oi_4h) / oi_4h
                 direction = "up" if change > config.OI_CHANGE_THRESHOLD else \
@@ -309,7 +311,8 @@ def collect_oi_data(symbol: str, current_price: float) -> dict:
                 return {
                     "available": True, "oi_current": round(oi_now,2),
                     "oi_4h_ago": round(oi_4h,2),
-                    "oi_change_pct": round(change,4), "direction": direction
+                    "oi_change_pct": round(change,4), "direction": direction,
+                    "oi_history": oi_history,
                 }
     except Exception as e:
         logger.debug(f"[OI] rubik 히스토리 실패: {e}")
