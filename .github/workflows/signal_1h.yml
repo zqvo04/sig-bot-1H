@@ -54,6 +54,13 @@ jobs:
       - name: Create state dir
         run: mkdir -p /tmp/bot_state
 
+      - name: Restore bot state cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/bot_state
+          key: bot-state-${{ matrix.symbol }}-${{ github.run_id }}
+          restore-keys: bot-state-${{ matrix.symbol }}-
+
       - name: Run 1H Signal Bot — ${{ matrix.symbol }}
         env:
           OKX_API_KEY:        ${{ secrets.OKX_API_KEY }}
@@ -63,6 +70,13 @@ jobs:
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           SINGLE_SYMBOL:      ${{ matrix.symbol }}
         run: python src/main.py
+
+      - name: Save bot state cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: /tmp/bot_state
+          key: bot-state-${{ matrix.symbol }}-${{ github.run_id }}
 
       - name: Upload logs on failure
         if: failure()
