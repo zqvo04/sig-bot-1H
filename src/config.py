@@ -467,10 +467,65 @@ BONUS_SUBCAP_MOMENTUM  = 20   # I-4: 모멘텀 카테고리 보너스 상한
 BONUS_SUBCAP_STRUCTURE = 18   # I-4: 구조 카테고리 보너스 상한
 BONUS_SUBCAP_CANDLE    = 12   # I-4: 캔들 카테고리 보너스 상한
 BONUS_SUBCAP_SENTIMENT = 15   # I-4: 심리 카테고리 보너스 상한
-BONUS_SUBCAP_LEVEL     = 14   # I-4: 레벨 카테고리 보너스 상한
+BONUS_SUBCAP_LEVEL     = 16   # I-4: 레벨 카테고리 보너스 상한 (II-6 컨플루언스 수용 위해 14→16)
 
 RSI_1D_SLOPE_THRESHOLD = 2.0  # I-7: 1D RSI 기울기 유효 판정 임계
 RSI_1D_SLOPE_ADJ       = 5    # I-7: 기울기 역방향 시 임계 상향폭
 RSI_1D_SLOPE_RELIEF    = 3    # I-7: 기울기 순방향 시 임계 완화폭
 
 DOUBLE_RANGING_ADJ     = 8    # I-8: 4H·1H 이중레인징 임계 상향폭
+
+# ══════════════════════════════════════════════════════════════════════
+# [v3.6] 스윙 전략 신규 요소 (II-1,2,3,4,5,6,8,9)
+# ══════════════════════════════════════════════════════════════════════
+
+# ── [II-1] 되돌림 깊이 스코어링 (4H 스윙 기준) ──────────────────────
+# 4H 추세에서 1H 진입 시 "충분히 눌린 자리"인지 정량 평가
+RETRACE_MIN_SWING_PCT   = 0.02   # 유효 스윙 최소 폭 (스윙고가 대비 2%)
+RETRACE_TOO_SHALLOW     = 0.15   # 15% 미만: 너무 얕음 (추세 초기 가속/노이즈)
+RETRACE_OPTIMAL_LOW     = 0.35   # 35~65%: 적정 눌림 (황금구간)
+RETRACE_OPTIMAL_HIGH    = 0.65
+RETRACE_DEEP_HIGH       = 0.80   # 65~80%: 깊은 눌림 (반전 가능)
+BONUS_RETRACE_OPTIMAL   = 8      # 적정 눌림 보너스
+BONUS_RETRACE_DEEP      = 5      # 깊은 눌림 보너스
+RETRACE_SHALLOW_THR_ADJ = 6      # 너무 얕음 → 임계 상향
+RETRACE_BREAK_THR_ADJ   = 8      # 80%+ 추세붕괴 의심 → 임계 상향
+
+# ── [II-2] ADX 기울기 필터 ──────────────────────────────────────────
+ADX_SLOPE_LOOKBACK       = 4     # 현재 ADX vs N캔들 전
+ADX_SLOPE_FALLING        = -3.0  # 추세 소진 판정 (ADX 하락)
+ADX_SLOPE_RISING         = 5.0   # 추세 가속 판정 (ADX 급등)
+ADX_SLOPE_FALLING_THR_ADJ = 5    # TRENDING+ADX하락+추세추종 → 임계 상향
+BONUS_ADX_ACCELERATION   = 6     # TRENDING/EXPLOSIVE+ADX급등+추세정합 → 보너스
+
+# ── [II-3] 오더블록 감지 ────────────────────────────────────────────
+OB_LOOKBACK         = 30    # 탐색 캔들 수
+OB_IMPULSE_ATR_MULT = 2.0   # 임펄스 캔들 판정 (ATR 배수)
+OB_SCAN_BACK        = 6     # 임펄스 직전 역방향 캔들 탐색 범위
+BONUS_ORDER_BLOCK   = 8     # OB 내부 진입 보너스 (방향 정합 시)
+
+# ── [II-4] 레짐 전환 직후 신호 강화 ─────────────────────────────────
+BONUS_REGIME_TRANSITION_RELEASE  = 12   # SQUEEZE→TRENDING/EXPLOSIVE (압축 해제)
+BONUS_REGIME_TRANSITION_BREAKOUT = 8    # RANGING→TRENDING (박스 돌파, 4H非레인징 한정)
+REGIME_EXHAUSTION_THR_ADJ        = 10   # TRENDING/EXPLOSIVE→RANGING 추세추종 억제
+
+# ── [II-5] 추세 성숙도 지수 (4H 스윙 구조) ──────────────────────────
+MATURITY_LOOKBACK     = 100  # 4H 스윙 탐색 범위
+MATURITY_EARLY_MAX    = 2    # 1~2: 초기 추세
+MATURITY_MID_MAX      = 4    # 3~4: 중기 추세 / 5+: 성숙 추세
+MATURITY_LATE_THR_ADJ = 6    # 성숙 추세 추세추종 → 임계 상향
+MATURITY_EARLY_RELIEF = 2    # 초기 추세 추세추종 → 임계 완화
+
+# ── [II-6] 레벨 컨플루언스 스코어 ───────────────────────────────────
+# 피보황금포켓·FVG·주간레벨·오더블록 중첩 시 개별 보너스를 흡수·대체
+BONUS_CONFLUENCE_2  = 8    # 2개 중첩
+BONUS_CONFLUENCE_3  = 15   # 3개 이상 중첩
+
+# ── [II-8] 펀딩비 극단누적 후 반전(쿨링) 신호 ──────────────────────
+BONUS_FUNDING_COOLING   = 6   # 과열 해소 시작 → 역방향 진입 타이밍 보너스
+FUNDING_COOLING_MIN_CONSEC = 3  # 직전 연속 극단 최소 횟수
+
+# ── [II-9] OI 추세 강화 (방향성 기울기) ─────────────────────────────
+OI_TREND_MIN_POINTS     = 4      # 기울기 계산 최소 포인트
+OI_TREND_SLOPE_THRESHOLD = 0.015 # OI 추세 유효 변화율 (윈도우 누적 1.5%)
+BONUS_OI_TREND_SLOPE    = 5      # OI 추세+가격 정합 → 보너스
