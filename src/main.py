@@ -131,8 +131,8 @@ def main():
         # 1. 데이터 수집
         collected = collect_all_data(exchange, single_symbol)
 
-        if collected["ticker"] is None or collected["ticker"].get("last") is None:
-            logger.warning(f"[{single_symbol}] 티커 수집 실패 — 스킵")
+        if not collected.get("ticker", {}).get("available", False):
+            logger.warning(f"[{single_symbol}] 티커 수집 실패 (available=False) — 스킵")
             result["error"] = "티커 수집 실패"
         else:
             # 2. 기술적 분석
