@@ -93,44 +93,34 @@ REGIME_STRONG_ADX    = 40
 # [v3.0] 국면별 가중치
 # ══════════════════════════════════════════════════════════════════════
 SCORE_WEIGHTS = {
-    "rsi":              0.26,
-    "bollinger":        0.21,
-    "funding_rate":     0.18,
-    "long_short_ratio": 0.15,
-    "taker_volume":     0.15,
-    "volume":           0.05,
+    "rsi":          0.38,
+    "bollinger":    0.31,
+    "taker_volume": 0.23,
+    "volume":       0.08,
 }
 SCORE_WEIGHTS_RANGING = {
-    "rsi":              0.30,
-    "bollinger":        0.27,
-    "funding_rate":     0.12,
-    "long_short_ratio": 0.12,
-    "taker_volume":     0.09,
-    "volume":           0.10,
+    "rsi":          0.39,
+    "bollinger":    0.35,
+    "taker_volume": 0.13,
+    "volume":       0.13,
 }
 SCORE_WEIGHTS_TRENDING = {
-    "rsi":              0.10,
-    "bollinger":        0.08,
-    "funding_rate":     0.16,
-    "long_short_ratio": 0.25,
-    "taker_volume":     0.30,
-    "volume":           0.11,
+    "rsi":          0.17,
+    "bollinger":    0.14,
+    "taker_volume": 0.57,
+    "volume":       0.12,
 }
 SCORE_WEIGHTS_EXPLOSIVE = {
-    "rsi":              0.06,
-    "bollinger":        0.05,
-    "funding_rate":     0.13,
-    "long_short_ratio": 0.26,
-    "taker_volume":     0.36,
-    "volume":           0.14,
+    "rsi":          0.10,
+    "bollinger":    0.08,
+    "taker_volume": 0.59,
+    "volume":       0.23,
 }
 SCORE_WEIGHTS_SQUEEZE = {
-    "rsi":              0.13,
-    "bollinger":        0.38,
-    "funding_rate":     0.12,
-    "long_short_ratio": 0.13,
-    "taker_volume":     0.15,
-    "volume":           0.09,
+    "rsi":          0.17,
+    "bollinger":    0.51,
+    "taker_volume": 0.20,
+    "volume":       0.12,
 }
 REGIME_SCORE_WEIGHTS = {
     "RANGING":   SCORE_WEIGHTS_RANGING,
@@ -208,10 +198,10 @@ EMA_DISTANCE_EXTREME_ADJ    = +5
 # ══════════════════════════════════════════════════════════════════════
 EXTREME_OVERSOLD_15M  = 32
 EXTREME_OVERSOLD_1H   = 32
-EXTREME_OVERSOLD_4H   = 38
+EXTREME_OVERSOLD_4H   = 32   # [I-3] 1D RSI기준 엄격화 (was 38)
 EXTREME_OVERBOUGHT_15M = 68
 EXTREME_OVERBOUGHT_1H  = 68
-EXTREME_OVERBOUGHT_4H  = 62
+EXTREME_OVERBOUGHT_4H  = 68   # [I-3] (was 62)
 
 BB_STREAK_SUPPRESS_RSI_EXEMPT = 28
 
@@ -220,10 +210,10 @@ BB_STREAK_SUPPRESS_RSI_EXEMPT = 28
 # ══════════════════════════════════════════════════════════════════════
 MTF_RSI_OVERBOUGHT_1H         = 72
 MTF_RSI_OVERBOUGHT_1H_MILD    = 68
-MTF_RSI_OVERBOUGHT_4H         = 65
+MTF_RSI_OVERBOUGHT_4H         = 60   # [I-3] (was 65)
 MTF_RSI_OVERSOLD_1H           = 28
 MTF_RSI_OVERSOLD_1H_MILD      = 32
-MTF_RSI_OVERSOLD_4H           = 35
+MTF_RSI_OVERSOLD_4H           = 40   # [I-3] (was 35)
 MTF_RSI_PENALTY_STRONG        = 0.85
 MTF_RSI_PENALTY_MILD          = 0.92
 MTF_RSI_OVERSOLD_1H_EXTREME   = 24
@@ -464,3 +454,23 @@ SESSION_ADJ_WEEKEND = +6
 
 FUNDING_CYCLE_ADJ   = +3
 FUNDING_CYCLE_HOURS = [23, 0, 7, 8, 15, 16]
+
+# ══════════════════════════════════════════════════════════════════════
+# [v3.5] 스윙 전략 개선 파라미터 (I-2, I-4, I-7, I-8)
+# ══════════════════════════════════════════════════════════════════════
+MTF_TREND_PULLBACK_MULT      = 1.4   # I-2: 4H추세+1H조정 눌림목 보너스 배율
+MTF_TREND_COUNTER_MULT       = 0.6   # I-2: 4H추세+1H조정 역추세 보너스 배율
+MTF_RANGE_FAKE_BREAK_MULT    = 0.5   # I-2: 4H레인징+1H추세 BOS 페이크브레이크 배율
+MTF_RANGE_FAKE_BREAK_THR_ADJ = 6     # I-2: 4H레인징+1H추세 임계 상향폭
+
+BONUS_SUBCAP_MOMENTUM  = 20   # I-4: 모멘텀 카테고리 보너스 상한
+BONUS_SUBCAP_STRUCTURE = 18   # I-4: 구조 카테고리 보너스 상한
+BONUS_SUBCAP_CANDLE    = 12   # I-4: 캔들 카테고리 보너스 상한
+BONUS_SUBCAP_SENTIMENT = 15   # I-4: 심리 카테고리 보너스 상한
+BONUS_SUBCAP_LEVEL     = 14   # I-4: 레벨 카테고리 보너스 상한
+
+RSI_1D_SLOPE_THRESHOLD = 2.0  # I-7: 1D RSI 기울기 유효 판정 임계
+RSI_1D_SLOPE_ADJ       = 5    # I-7: 기울기 역방향 시 임계 상향폭
+RSI_1D_SLOPE_RELIEF    = 3    # I-7: 기울기 순방향 시 임계 완화폭
+
+DOUBLE_RANGING_ADJ     = 8    # I-8: 4H·1H 이중레인징 임계 상향폭
