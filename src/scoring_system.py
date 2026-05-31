@@ -47,17 +47,18 @@ def _calc_sentiment_mult(funding: dict, ls: dict, direction: str) -> float:
     return 1.00
 
 def _apply_bonus_subcaps(bonuses: list) -> list:
-    _momentum_names = {"눌림목강","눌림목약","눌림목미세","추세지속EMA+Taker"}
-    _momentum_pfx   = ("멀티TF모멘텀",)
+    _momentum_names = {"눌림목강","눌림목약","눌림목미세","추세지속EMA+Taker","ADX가속"}
+    _momentum_pfx   = ("멀티TF모멘텀","되돌림")                                  # II-1 되돌림 = 모멘텀 카테고리
     _struct_names   = {"1h-BOS상승","1h-BOS하락","4h-BOS상승","4h-BOS하락","HigherLow","LowerHigh","돌파실패","붕괴실패"}
+    _struct_pfx     = ("레짐전환",)                                              # II-4 전환 보너스 = 구조 카테고리
     _sent_pfx       = ("스마트머니","OI매트릭스(","펀딩추세(")
-    _level_pfx      = ("피보","주간레벨(")
+    _level_pfx      = ("피보","주간레벨(","오더블록","레벨컨플루언스")            # II-3/II-6
     caps = {"momentum":config.BONUS_SUBCAP_MOMENTUM,"structure":config.BONUS_SUBCAP_STRUCTURE,
             "candle":config.BONUS_SUBCAP_CANDLE,"sentiment":config.BONUS_SUBCAP_SENTIMENT,"level":config.BONUS_SUBCAP_LEVEL}
     totals = {k:0 for k in caps}; result = []
     for name, value in bonuses:
         if name in _momentum_names or any(name.startswith(p) for p in _momentum_pfx): cat = "momentum"
-        elif name in _struct_names: cat = "structure"
+        elif name in _struct_names or any(name.startswith(p) for p in _struct_pfx): cat = "structure"
         elif name in _CANDLES: cat = "candle"
         elif any(name.startswith(p) for p in _sent_pfx): cat = "sentiment"
         elif any(name.startswith(p) for p in _level_pfx): cat = "level"
@@ -124,6 +125,11 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     bos_data     = analysis.get("bos_choch", {})
     fvg          = analysis.get("fvg", {})
     mst          = analysis.get("market_structure", {})
+    order_blocks = analysis.get("order_blocks", {})      # II-3
+    maturity     = analysis.get("maturity", {})          # II-5
+    retracement  = analysis.get("retracement", {})       # II-1
+    prev_regime  = analysis.get("prev_regime", "")       # II-4
+    adx_slope    = adx_1h.get("adx_slope", 0.0)          # II-2
     ema_info     = analysis.get(f"ema_{d}", {})
     rev_cnt      = ema_info.get("reverse_count", 0)
     ema_same     = ema_info.get("same_count", 0)
@@ -456,6 +462,37 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     elif _c2_short:
         bonuses.append(("4H+1H동시극단확인(숏)", config.BONUS_MTF_EXTREME_CONFIRM))
 
+    # ── [II-3] 오더블록 진입 보너스 (방향 정합) ────────────────
+    if d == "long" and order_blocks.get("in_bullish_ob"):
+        bonuses.append(("오더블록롱", config.BONUS_ORDER_BLOCK))
+    elif d == "short" and order_blocks.get("in_bearish_ob"):
+        bonuses.append(("오더블록숏", config.BONUS_ORDER_BLOCK))
+
+    # ── [II-2] ADX 가속 보너스 (추세정합 + ADX 급등) ───────────
+    if rn in ("TRENDING", "EXPLOSIVE") and _trend_aligned and adx_slope > config.ADX_SLOPE_RISING:
+        bonuses.append(("ADX가속", config.BONUS_ADX_ACCELERATION))
+        logger.info(f"[II-2/{d.upper()}] ADX 가속({adx_slope:+.1f}) → +{config.BONUS_ADX_ACCELERATION}pt")
+
+    # ── [II-1] 되돌림 깊이 보너스 (4H 추세 구간 한정) ───────────
+    if r4h_name in ("TRENDING", "EXPLOSIVE"):
+        _rz = retracement.get(f"{d}_zone", "none")
+        if _rz == "optimal":
+            bonuses.append(("되돌림적정", config.BONUS_RETRACE_OPTIMAL))
+            logger.info(f"[II-1/{d.upper()}] 4H 적정 되돌림 → +{config.BONUS_RETRACE_OPTIMAL}pt")
+        elif _rz == "deep":
+            bonuses.append(("되돌림깊음", config.BONUS_RETRACE_DEEP))
+
+    # ── [II-4] 레짐 전환 직후 신호 강화 ─────────────────────────
+    # 압축 해제(SQUEEZE→추세)는 최강 진입 / 박스 돌파(RANGING→TRENDING)는 4H가 레인징이
+    # 아닐 때만 (I-2 페이크브레이크 경고와 충돌 방지)
+    _trans = (prev_regime, rn)
+    if _trans in (("SQUEEZE", "TRENDING"), ("SQUEEZE", "EXPLOSIVE")):
+        bonuses.append(("레짐전환_압축해제", config.BONUS_REGIME_TRANSITION_RELEASE))
+        logger.info(f"[II-4/{d.upper()}] 레짐전환 압축해제 {_trans} → +{config.BONUS_REGIME_TRANSITION_RELEASE}pt")
+    elif _trans == ("RANGING", "TRENDING") and r4h_name != "RANGING":
+        bonuses.append(("레짐전환_박스돌파", config.BONUS_REGIME_TRANSITION_BREAKOUT))
+        logger.info(f"[II-4/{d.upper()}] 레짐전환 박스돌파 → +{config.BONUS_REGIME_TRANSITION_BREAKOUT}pt")
+
     # ── [I-2] 4H 국면 기반 보너스 분기 ──────────────────────────
     if r4h_name == "TRENDING" and rn in ("RANGING","SQUEEZE"):
         _pb_set = {"눌림목강","눌림목약","눌림목미세","볼린저극단+RSI다이버전스","FVG강세진입","FVG약세진입"}
@@ -500,6 +537,28 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
             for n, v in bonuses
         ]
         logger.info(f"[B-1/{d.upper()}] RANGING+역EMA → 심리보너스 ×{config.RANGING_SENTIMENT_MULT}")
+
+    # ── [II-6] 레벨 컨플루언스: 중첩 시 개별 레벨보너스를 흡수·대체 ──
+    # 피보황금포켓·FVG·오더블록·주간레벨이 겹치면 단순 합산이 아닌 지수적 지지/저항
+    _conf = 0
+    if d == "long":
+        if fib.get("in_golden_pocket_long"):                                       _conf += 1
+        if bf:                                                                      _conf += 1
+        if order_blocks.get("in_bullish_ob"):                                       _conf += 1
+        if weekly_lvl.get("near_level") and not weekly_lvl.get("is_resistance", True): _conf += 1
+    else:
+        if fib.get("in_golden_pocket_short"):                                       _conf += 1
+        if bfv:                                                                     _conf += 1
+        if order_blocks.get("in_bearish_ob"):                                       _conf += 1
+        if weekly_lvl.get("near_level") and weekly_lvl.get("is_resistance", False):  _conf += 1
+    if _conf >= 2:
+        _lvl_pfx = ("피보", "FVG", "주간레벨", "오더블록")
+        bonuses = [(n, v) for n, v in bonuses if not any(n.startswith(p) for p in _lvl_pfx)]
+        if _conf >= 3:
+            bonuses.append(("레벨컨플루언스3+", config.BONUS_CONFLUENCE_3))
+        else:
+            bonuses.append(("레벨컨플루언스2", config.BONUS_CONFLUENCE_2))
+        logger.info(f"[II-6/{d.upper()}] 레벨 {_conf}중첩 → 컨플루언스 (개별 레벨보너스 대체)")
 
     # ── 보너스 캡 계산 ────────────────────────────────────────
     bonuses = _apply_bonus_subcaps(bonuses)
@@ -749,6 +808,43 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         thr = min(90, thr + config.DOUBLE_RANGING_ADJ)
         logger.info(f"[I-8/{d.upper()}] 4H·1H 이중레인징 → 임계+{config.DOUBLE_RANGING_ADJ}pt:{thr}pt")
 
+    # ── [v3.6] II 시리즈 임계 조정 (비극단 시) ─────────────────
+    # 극단 반전은 면제 — 추세추종 억제/얕은눌림 페널티가 정상 반전을 막지 않도록
+    if not is_extreme:
+        # [II-1] 4H 추세에서 되돌림 깊이 기반 임계
+        if r4h_name in ("TRENDING", "EXPLOSIVE"):
+            _rz = retracement.get(f"{d}_zone", "none")
+            if _rz == "too_shallow":
+                thr = min(90, thr + config.RETRACE_SHALLOW_THR_ADJ)
+                logger.info(f"[II-1/{d.upper()}] 되돌림 얕음 → 임계+{config.RETRACE_SHALLOW_THR_ADJ}pt:{thr}pt")
+            elif _rz == "broken":
+                thr = min(90, thr + config.RETRACE_BREAK_THR_ADJ)
+                logger.info(f"[II-1/{d.upper()}] 되돌림 80%+ 추세붕괴의심 → 임계+{config.RETRACE_BREAK_THR_ADJ}pt:{thr}pt")
+
+        # [II-2] TRENDING + ADX 하락(추세 소진) + 추세추종 → 억제
+        if rn == "TRENDING" and _trend_aligned and adx_slope < config.ADX_SLOPE_FALLING:
+            thr = min(90, thr + config.ADX_SLOPE_FALLING_THR_ADJ)
+            logger.info(f"[II-2/{d.upper()}] ADX 소진({adx_slope:+.1f}) → 임계+{config.ADX_SLOPE_FALLING_THR_ADJ}pt:{thr}pt")
+
+        # [II-4] 추세 소진 전환(TRENDING/EXPLOSIVE→RANGING)에서 추세추종 억제
+        if (prev_regime, rn) in (("TRENDING", "RANGING"), ("EXPLOSIVE", "RANGING")):
+            _tf = (d == "long" and entry_ema_tf == "bullish") or (d == "short" and entry_ema_tf == "bearish")
+            if _tf:
+                thr = min(90, thr + config.REGIME_EXHAUSTION_THR_ADJ)
+                logger.info(f"[II-4/{d.upper()}] 추세소진 전환 → 추세추종 억제 임계+{config.REGIME_EXHAUSTION_THR_ADJ}pt:{thr}pt")
+
+        # [II-5] 추세 성숙도 — 4H 추세 방향 정합 시 성숙도에 따라 가감
+        _mat_l = maturity.get("bull_count", 0); _mat_s = maturity.get("bear_count", 0)
+        _mat = _mat_l if d == "long" else _mat_s
+        _mat_dir = (d == "long" and _mat_l > _mat_s) or (d == "short" and _mat_s > _mat_l)
+        if _mat_dir and r4h_name in ("TRENDING", "EXPLOSIVE"):
+            if _mat > config.MATURITY_MID_MAX:
+                thr = min(90, thr + config.MATURITY_LATE_THR_ADJ)
+                logger.info(f"[II-5/{d.upper()}] 성숙추세(연속{_mat}) → 임계+{config.MATURITY_LATE_THR_ADJ}pt:{thr}pt")
+            elif 1 <= _mat <= config.MATURITY_EARLY_MAX:
+                thr = max(52, thr - config.MATURITY_EARLY_RELIEF)
+                logger.info(f"[II-5/{d.upper()}] 초기추세(연속{_mat}) → 임계-{config.MATURITY_EARLY_RELIEF}pt:{thr}pt")
+
     if is_extreme and thr > config.EXTREME_THRESHOLD_CAP:
         logger.info(f"[A-3/{d.upper()}] 극단 임계값 캡: {thr}pt → {config.EXTREME_THRESHOLD_CAP}pt")
         thr = config.EXTREME_THRESHOLD_CAP
@@ -985,7 +1081,7 @@ def _save_prev_regime(symbol, rn):
 def run_scoring_pipeline(symbol, analysis, market_data=None):
     import datetime as dt
     logger.info(f"{'─'*55}")
-    logger.info(f"🎯 점수 산출 [v3.4]: {symbol}")
+    logger.info(f"🎯 점수 산출 [v3.6]: {symbol}")
 
     rn   = analysis.get("regime", {}).get("regime", "UNKNOWN")
     r4h  = analysis.get("regime_4h", {})
