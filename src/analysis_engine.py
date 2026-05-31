@@ -144,15 +144,15 @@ def analyze_mtf_rsi(df_1h, df_4h, df_1d):
             (" ★눌림목숏(강)" if pss else " ★눌림목숏(약)" if psw else " ★눌림목숏(미)" if psm else ""))
     div_tag=((" 📊히든롱" if hbd else "")+(" 📊히든숏" if hsd else ""))
     logger.info(f"[MTF-RSI] 1h:{v1hs} 4h:{v4hs} 1d:{v1ds} 가중:{v_weighted:.1f} [{state}] 롱:{long_score:.1f} 숏:{short_score:.1f}"+pb_tag+div_tag)
-    return {"value":round(v_entry,2),"value_1h":round(v_4h,2) if v_4h else None,
-            "value_4h":round(v_1d,2) if v_1d else None,"value_weighted":round(v_weighted,2),
+    return {"value":round(v_entry,2),"value_1h":round(v_1h,2) if v_1h else None,
+            "value_4h":round(v_4h,2) if v_4h else None,"value_1d":round(v_1d,2) if v_1d else None,"value_weighted":round(v_weighted,2),
             "state":state,"long_score":long_score,"short_score":short_score,
             "bullish_divergence":bull_div,"bearish_divergence":bear_div,"hidden_bull_div":hbd,"hidden_bear_div":hsd,
             "pullback_long":pl,"pullback_short":ps,"pullback_long_strong":pls,"pullback_long_weak":plw,"pullback_long_micro":plm,
             "pullback_short_strong":pss,"pullback_short_weak":psw,"pullback_short_micro":psm}
 
 def _empty_rsi():
-    return {"value":50.0,"value_1h":None,"value_4h":None,"value_weighted":50.0,"state":"neutral",
+    return {"value":50.0,"value_1h":None,"value_4h":None,"value_1d":None,"value_weighted":50.0,"state":"neutral",
             "long_score":50.0,"short_score":50.0,"bullish_divergence":False,"bearish_divergence":False,
             "hidden_bull_div":False,"hidden_bear_div":False,"pullback_long":False,"pullback_short":False,
             "pullback_long_strong":False,"pullback_long_weak":False,"pullback_long_micro":False,
@@ -995,8 +995,8 @@ def run_full_analysis(symbol, collected_data):
     ema_struct   = analyze_1d_ema_structure(df_1d, price)
 
     logger.info(
-        f"  MTF-RSI: 1h:{rsi['value']:.1f} 4h:{rsi.get('value_1h') or '-'} "
-        f"1d:{rsi.get('value_4h') or '-'} [{rsi['state']}] | "
+        f"  MTF-RSI: 1h:{rsi['value']:.1f} 4h:{rsi.get('value_4h') or '-'} "
+        f"1d:{rsi.get('value_1d') or '-'} [{rsi['state']}] | "
         f"BB:{bb['state']}(%B={bb['pct_b']:.2f}) | ADX:{adx_1h['adx']:.1f} | "
         f"1h국면:{regime_name} | Vol:{vol['ratio']:.2f}x | "
         f"Taker:{taker.get('bias','?')} | 청산:{liq.get('signal','none')} → {liq.get('favorable_direction','?')}"
