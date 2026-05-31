@@ -30,8 +30,43 @@ import config
 logger = logging.getLogger(__name__)
 
 _SENTIMENT_PREFIXES = (
-    "펀딩비+롱숏비율", "OI매트릭스(", "펀딩추세(", "스마트머니롱", "스마트머니숏",
+    "OI매트릭스(", "펀딩추세(", "스마트머니롱", "스마트머니숏",
 )
+
+_CANDLES = {"1H불핀바","1H베어핀바","1H불인걸핑","1H베어인걸핑",
+            "4H불핀바","4H베어핀바","4H불인걸핑","4H베어인걸핑",
+            "1D불핀바","1D베어핀바","1D불인걸핑","1D베어인걸핑"}
+
+def _calc_sentiment_mult(funding: dict, ls: dict, direction: str) -> float:
+    fr_b = funding.get("bias","neutral"); ls_b = ls.get("bias","neutral")
+    fr_fav = ((direction=="long" and fr_b=="long_favorable") or (direction=="short" and fr_b=="short_favorable"))
+    ls_fav = ((direction=="long" and ls_b in ("long_favorable","long_extreme")) or
+              (direction=="short" and ls_b in ("short_favorable","short_extreme")))
+    if fr_fav and ls_fav: return 1.08
+    if fr_fav or  ls_fav: return 1.04
+    return 1.00
+
+def _apply_bonus_subcaps(bonuses: list) -> list:
+    _momentum_names = {"눌림목강","눌림목약","눌림목미세","추세지속EMA+Taker"}
+    _momentum_pfx   = ("멀티TF모멘텀",)
+    _struct_names   = {"1h-BOS상승","1h-BOS하락","4h-BOS상승","4h-BOS하락","HigherLow","LowerHigh","돌파실패","붕괴실패"}
+    _sent_pfx       = ("스마트머니","OI매트릭스(","펀딩추세(")
+    _level_pfx      = ("피보","주간레벨(")
+    caps = {"momentum":config.BONUS_SUBCAP_MOMENTUM,"structure":config.BONUS_SUBCAP_STRUCTURE,
+            "candle":config.BONUS_SUBCAP_CANDLE,"sentiment":config.BONUS_SUBCAP_SENTIMENT,"level":config.BONUS_SUBCAP_LEVEL}
+    totals = {k:0 for k in caps}; result = []
+    for name, value in bonuses:
+        if name in _momentum_names or any(name.startswith(p) for p in _momentum_pfx): cat = "momentum"
+        elif name in _struct_names: cat = "structure"
+        elif name in _CANDLES: cat = "candle"
+        elif any(name.startswith(p) for p in _sent_pfx): cat = "sentiment"
+        elif any(name.startswith(p) for p in _level_pfx): cat = "level"
+        else: result.append((name,value)); continue
+        remaining = caps[cat] - totals[cat]
+        if remaining <= 0: continue
+        value = min(value, remaining); totals[cat] += value
+        if value > 0: result.append((name,value))
+    return result
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -96,9 +131,10 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
 
     rn           = regime.get("regime", "UNKNOWN")
     r4h_name     = r4h.get("regime", "UNKNOWN")
-    rsi15        = rsi.get("value", 50.0)
-    rsi1h        = rsi.get("value_4h", 50.0)
-    rsi4h        = rsi.get("value_1d", 50.0)
+    rsi15        = rsi.get("value",    50.0)   # 1H RSI (entry)
+    rsi1h        = rsi.get("value_4h", 50.0)   # 4H RSI
+    rsi4h        = rsi.get("value_1d", 50.0)   # 1D RSI
+    rsi_1d_slope = rsi.get("value_1d_slope") or 0.0
     bb_state     = bb.get("state", "")
     tb           = taker.get("bias", "neutral")
     ts           = taker.get("strength", "neutral")
@@ -142,12 +178,10 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
 
     # ── 가중합 원점수 ─────────────────────────────────────────
     scores = {
-        "rsi":              rsi.get(f"{d}_score", 50.0),
-        "bollinger":        bb.get(f"{d}_score", 50.0),
-        "funding_rate":     funding.get(f"{d}_score", 50.0),
-        "long_short_ratio": ls.get(f"{d}_score", 50.0),
-        "taker_volume":     taker.get(f"{d}_score", 50.0),
-        "volume":           vs,
+        "rsi":          rsi.get(f"{d}_score", 50.0),
+        "bollinger":    bb.get(f"{d}_score", 50.0),
+        "taker_volume": taker.get(f"{d}_score", 50.0),
+        "volume":       vs,
     }
     weights      = config.REGIME_SCORE_WEIGHTS.get(rn, config.SCORE_WEIGHTS)
     bb_rev_exempt = (
@@ -156,8 +190,6 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     )
     ema_all_rev  = (rev_cnt == 3)
 
-    if ema_all_rev and not bb_rev_exempt:
-        scores["long_short_ratio"] = 50.0
     if bb.get("squeeze"):
         if d == "short" and bb_state in ("near_upper","upper_zone","upper_breakout"):
             scores["bollinger"] = min(scores["bollinger"], 52.0)
@@ -167,10 +199,6 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         (d == "long"  and (bos_data.get("bos_bearish") or bos4.get("bos_bearish"))) or
         (d == "short" and (bos_data.get("bos_bullish") or bos4.get("bos_bullish")))
     )
-    if bos_rev:
-        lsv = scores["long_short_ratio"]
-        if not ((d=="long" and lsv<50) or (d=="short" and lsv>50)):
-            scores["long_short_ratio"] = 50.0
 
     raw_score  = sum(scores[k] * weights[k] for k in weights)
     ema_table  = config.REGIME_EMA_MULTIPLIERS.get(rn, config.EMA_MULTIPLIER)
@@ -182,7 +210,10 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         if original_ema < config.EXTREME_EMA_MULT_FLOOR:
             logger.info(f"[A-1/{d.upper()}] 극단 EMA배율 오버라이드: {original_ema:.2f}→{ema_mult:.2f}")
 
-    base_score = raw_score * ema_mult * gate_penalty
+    sent_mult = _calc_sentiment_mult(funding, ls, d)
+    base_score = raw_score * ema_mult * gate_penalty * sent_mult
+    if sent_mult != 1.0:
+        logger.info(f"[I-1/{d.upper()}] 심리배율 ×{sent_mult:.2f} (펀딩:{funding.get('bias','?')} LS:{ls.get('bias','?')})")
 
     # ── MTF RSI 패널티 ────────────────────────────────────────
     mtf_p = 1.0; mtf_r = None
@@ -266,11 +297,6 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     div_ok  = (d=="long" and rsi15 <= 38) or (d=="short" and rsi15 >= 65)
     if bb_ext and has_div and div_ok:
         bonuses.append(("볼린저극단+RSI다이버전스", config.BONUS_BB_RSI_ALIGN))
-
-    fr_b = funding.get("bias","neutral"); ls_b = ls.get("bias","neutral")
-    if ((d=="long"  and fr_b=="long_favorable"  and ls_b in ("long_favorable","long_extreme")) or
-        (d=="short" and fr_b=="short_favorable" and ls_b in ("short_favorable","short_extreme"))):
-        bonuses.append(("펀딩비+롱숏비율", config.BONUS_FUNDING_LS_ALIGN))
 
     liq_sig = liq.get("signal","none"); liq_large = liq.get("is_large", False)
     liq_api = micro_result and any(n=="LiqCascade" and p<0 for n,p,_ in micro_result.get("details",[]))
@@ -430,6 +456,18 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     elif _c2_short:
         bonuses.append(("4H+1H동시극단확인(숏)", config.BONUS_MTF_EXTREME_CONFIRM))
 
+    # ── [I-2] 4H 국면 기반 보너스 분기 ──────────────────────────
+    if r4h_name == "TRENDING" and rn in ("RANGING","SQUEEZE"):
+        _pb_set = {"눌림목강","눌림목약","눌림목미세","볼린저극단+RSI다이버전스","FVG강세진입","FVG약세진입"}
+        _ct_set = {"LowerHigh","HigherLow"}
+        bonuses = [(n, round(v*config.MTF_TREND_PULLBACK_MULT) if n in _pb_set else
+                       round(v*config.MTF_TREND_COUNTER_MULT)  if n in _ct_set else v) for n,v in bonuses]
+        logger.info(f"[I-2/{d.upper()}] 4H추세+1H조정 → 눌림목 ×{config.MTF_TREND_PULLBACK_MULT}")
+    elif r4h_name == "RANGING" and rn == "TRENDING":
+        _bos_set = {"1h-BOS상승","1h-BOS하락","4h-BOS상승","4h-BOS하락"}
+        bonuses = [(n, round(v*config.MTF_RANGE_FAKE_BREAK_MULT) if n in _bos_set else v) for n,v in bonuses]
+        logger.info(f"[I-2/{d.upper()}] 4H레인징+1H추세 → BOS ×{config.MTF_RANGE_FAKE_BREAK_MULT}")
+
     # ── 기존 보너스 조정 ──────────────────────────────────────
     if exh_mult < 1.0:
         _exc = {"LowerHigh","HigherLow","거래량약세다이버","거래량강세다이버",
@@ -440,18 +478,15 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     if ema_all_rev and not bb_rev_exempt:
         bonuses = [(n, round(v*0.25) if n in _rev_set else v) for n,v in bonuses]
 
-    _candles = {"1H불핀바","1H베어핀바","1H불인걸핑","1H베어인걸핑",
-                "4H불핀바","4H베어핀바","4H불인걸핑","4H베어인걸핑",
-                "1D불핀바","1D베어핀바","1D불인걸핑","1D베어인걸핑"}
     taker_against = (d=="long" and tb=="sell_dominant") or (d=="short" and tb=="buy_dominant")
     if taker_against:
-        bonuses = [(n, round(v*0.40) if n.startswith("1H") and n in _candles
-                         else round(v*0.60) if n.startswith("4H") and n in _candles
-                         else round(v*0.75) if n.startswith("1D") and n in _candles
+        bonuses = [(n, round(v*0.40) if n.startswith("1H") and n in _CANDLES
+                         else round(v*0.60) if n.startswith("4H") and n in _CANDLES
+                         else round(v*0.75) if n.startswith("1D") and n in _CANDLES
                          else v) for n,v in bonuses]
 
     if rn == "SQUEEZE":
-        bonuses = [(n, round(v*config.SQUEEZE_CANDLE_BONUS_MULT) if n in _candles else v) for n,v in bonuses]
+        bonuses = [(n, round(v*config.SQUEEZE_CANDLE_BONUS_MULT) if n in _CANDLES else v) for n,v in bonuses]
 
     _lvs = {"LowerHigh","HigherLow","돌파실패","붕괴실패","거래량강세다이버","거래량약세다이버","볼린저극단+RSI다이버전스"}
     if vs < config.VOLUME_PENALTY_MID_THRESHOLD:
@@ -467,6 +502,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         logger.info(f"[B-1/{d.upper()}] RANGING+역EMA → 심리보너스 ×{config.RANGING_SENTIMENT_MULT}")
 
     # ── 보너스 캡 계산 ────────────────────────────────────────
+    bonuses = _apply_bonus_subcaps(bonuses)
     bonus_raw = sum(v for _, v in bonuses)
 
     if is_extreme:
@@ -689,6 +725,29 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         if dur_adj:
             thr = min(90, thr + dur_adj)
             logger.info(f"[E-1/{d.upper()}] RANGING {dur_h:.1f}h → +{dur_adj}pt 임계:{thr}pt")
+
+    # [I-2] 4H 레인징+1H 추세 임계 추가
+    if r4h_name == "RANGING" and rn == "TRENDING" and not is_extreme:
+        thr = min(90, thr + config.MTF_RANGE_FAKE_BREAK_THR_ADJ)
+        logger.info(f"[I-2/{d.upper()}] 4H레인징+1H추세 → 임계+{config.MTF_RANGE_FAKE_BREAK_THR_ADJ}pt:{thr}pt")
+    # [I-7] 1D RSI 기울기 필터
+    if rsi_1d_slope != 0.0:
+        if d == "long" and rsi4h < 45 and rsi_1d_slope < -config.RSI_1D_SLOPE_THRESHOLD:
+            thr = min(90, thr + config.RSI_1D_SLOPE_ADJ)
+            logger.info(f"[I-7/{d.upper()}] 1D RSI 하락중({rsi_1d_slope:+.1f}) → 임계+{config.RSI_1D_SLOPE_ADJ}pt:{thr}pt")
+        elif d == "long" and rsi4h < 45 and rsi_1d_slope > config.RSI_1D_SLOPE_THRESHOLD:
+            thr = max(52, thr - config.RSI_1D_SLOPE_RELIEF)
+            logger.info(f"[I-7/{d.upper()}] 1D RSI 상승전환({rsi_1d_slope:+.1f}) → 임계-{config.RSI_1D_SLOPE_RELIEF}pt:{thr}pt")
+        elif d == "short" and rsi4h > 55 and rsi_1d_slope > config.RSI_1D_SLOPE_THRESHOLD:
+            thr = min(90, thr + config.RSI_1D_SLOPE_ADJ)
+            logger.info(f"[I-7/{d.upper()}] 1D RSI 상승중({rsi_1d_slope:+.1f}) → 임계+{config.RSI_1D_SLOPE_ADJ}pt:{thr}pt")
+        elif d == "short" and rsi4h > 55 and rsi_1d_slope < -config.RSI_1D_SLOPE_THRESHOLD:
+            thr = max(52, thr - config.RSI_1D_SLOPE_RELIEF)
+            logger.info(f"[I-7/{d.upper()}] 1D RSI 하락전환({rsi_1d_slope:+.1f}) → 임계-{config.RSI_1D_SLOPE_RELIEF}pt:{thr}pt")
+    # [I-8] 이중 RANGING 억제
+    if r4h_name == "RANGING" and rn == "RANGING":
+        thr = min(90, thr + config.DOUBLE_RANGING_ADJ)
+        logger.info(f"[I-8/{d.upper()}] 4H·1H 이중레인징 → 임계+{config.DOUBLE_RANGING_ADJ}pt:{thr}pt")
 
     if is_extreme and thr > config.EXTREME_THRESHOLD_CAP:
         logger.info(f"[A-3/{d.upper()}] 극단 임계값 캡: {thr}pt → {config.EXTREME_THRESHOLD_CAP}pt")
@@ -937,7 +996,7 @@ def run_scoring_pipeline(symbol, analysis, market_data=None):
 
     logger.info(
         f"  레짐:1h={rn} 4h={r4h.get('regime','?')} | 바이어스:{db.get('bias','?')} | "
-        f"RSI 15m:{rsi.get('value',0):.1f} 1h:{rsi.get('value_1h',0):.1f} 4h:{rsi.get('value_4h',0):.1f} | "
+        f"RSI 1h:{rsi.get('value',0):.1f} 4h:{rsi.get('value_4h',0):.1f} 1d:{rsi.get('value_1d',0) or '-'} | "
         f"MACD:{'🔴음수(hist'+str(round(macd.get('histogram',0),1))+')' if macd.get('bearish') else '🟢양수(hist'+str(round(macd.get('histogram',0),1))+')' if macd.get('bullish') else '중립'}"
     )
 
