@@ -144,17 +144,24 @@ def analyze_mtf_rsi(df_1h, df_4h, df_1d):
             (" ★눌림목숏(강)" if pss else " ★눌림목숏(약)" if psw else " ★눌림목숏(미)" if psm else ""))
     div_tag=((" 📊히든롱" if hbd else "")+(" 📊히든숏" if hsd else ""))
     logger.info(f"[MTF-RSI] 1h:{v1hs} 4h:{v4hs} 1d:{v1ds} 가중:{v_weighted:.1f} [{state}] 롱:{long_score:.1f} 숏:{short_score:.1f}"+pb_tag+div_tag)
+    rsi_1d_slope = None
+    if df_1d is not None and len(df_1d) >= config.RSI_PERIOD + 4:
+        _r1d = calculate_rsi(df_1d)
+        if len(_r1d) >= 4:
+            rsi_1d_slope = round(float(_r1d.iloc[-1]) - float(_r1d.iloc[-4]), 2)
     return {"value":round(v_entry,2),"value_1h":round(v_1h,2) if v_1h else None,
-            "value_4h":round(v_4h,2) if v_4h else None,"value_1d":round(v_1d,2) if v_1d else None,"value_weighted":round(v_weighted,2),
+            "value_4h":round(v_4h,2) if v_4h else None,"value_1d":round(v_1d,2) if v_1d else None,
+            "value_1d_slope":rsi_1d_slope,"value_weighted":round(v_weighted,2),
             "state":state,"long_score":long_score,"short_score":short_score,
             "bullish_divergence":bull_div,"bearish_divergence":bear_div,"hidden_bull_div":hbd,"hidden_bear_div":hsd,
             "pullback_long":pl,"pullback_short":ps,"pullback_long_strong":pls,"pullback_long_weak":plw,"pullback_long_micro":plm,
             "pullback_short_strong":pss,"pullback_short_weak":psw,"pullback_short_micro":psm}
 
 def _empty_rsi():
-    return {"value":50.0,"value_1h":None,"value_4h":None,"value_1d":None,"value_weighted":50.0,"state":"neutral",
-            "long_score":50.0,"short_score":50.0,"bullish_divergence":False,"bearish_divergence":False,
-            "hidden_bull_div":False,"hidden_bear_div":False,"pullback_long":False,"pullback_short":False,
+    return {"value":50.0,"value_1h":None,"value_4h":None,"value_1d":None,"value_1d_slope":None,
+            "value_weighted":50.0,"state":"neutral","long_score":50.0,"short_score":50.0,
+            "bullish_divergence":False,"bearish_divergence":False,"hidden_bull_div":False,
+            "hidden_bear_div":False,"pullback_long":False,"pullback_short":False,
             "pullback_long_strong":False,"pullback_long_weak":False,"pullback_long_micro":False,
             "pullback_short_strong":False,"pullback_short_weak":False,"pullback_short_micro":False}
 
