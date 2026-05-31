@@ -1,27 +1,29 @@
 """
-notification.py — 텔레그램 알림 (1h Bot v2.0)
+notification.py — 텔레그램 알림 (1h Bot v3.6)
 ──────────────────────────────────────────────────────────────────────────────
-[1h Bot 전환]
-  헤더에 "🕐 [1H]" 배지 → 15m봇 알림과 즉시 구분
-  RSI TF 표기: 15m/1h/4h → 1h/4h/1d
-  ADX 키: adx_15m → adx_1h
-  눌림목 설명: "4h RSI 강세 + 1h 과매도" (TF 시프트)
+[v2.x 기반]
+  헤더 "🕐 [1H]" 배지 / RSI TF 1h·4h·1d / 4h 메타레짐·일봉바이어스·세션·펀딩사이클
+  시각 KST(UTC+9) 통일
 
-[v2.0 추가 표시]
-  ① 4h 메타 레짐    → 시장 컨텍스트 섹션
-  ② 일봉 바이어스   → 시장 컨텍스트 섹션
-  ③ 4h BOS/CHoCH   → SMC 섹션 (1h 아래 추가)
-  ④ 거래 세션 필터  → 시장 컨텍스트 섹션 + 임계값 근거
-  ⑦ 펀딩비 사이클   → 시장 컨텍스트 섹션 + 임계값 근거
-  임계값 근거 표시  → 푸터에 조정 내역 전체 표시
+[v3.5 정합 — P0 RSI 키 정정]
+  analyze_mtf_rsi 반환 키가 value(1H)·value_4h(4H)·value_1d(1D)로 정정됨에 따라
+  알림 RSI 표기도 1h=value / 4h=value_4h / 1d=value_1d 로 매핑 수정.
+  value_1d_slope(1D RSI 기울기) 화살표 표기 추가.
 
-[v2.1]
-  시간 표시 전면 KST(한국 표준시) 기준으로 통일
-  UTC+9, 포맷: YYYY-MM-DD HH:MM KST
+[v3.6 신규 요소 노출 — II-1,2,3,4,5,6,8,9]
+  II-1 되돌림 깊이(4H)      → 시장 컨텍스트
+  II-2 ADX 기울기(가속/소진) → 기술 지표 ADX 라인
+  II-3 오더블록             → SMC 섹션
+  II-4 레짐 전환            → 시장 컨텍스트
+  II-5 추세 성숙도(4H)      → 시장 컨텍스트
+  II-6 레벨 컨플루언스       → SMC 태그 / 섹션
+  II-8 펀딩 쿨링            → 시장 심리(펀딩)
+  II-9 OI 추세 기울기        → 시장 심리(OI)
 
-[v3.7 유지]
-  EXPLOSIVE 준과매도/과매수 패널티 (P1)
-  청산 역방향 패널티 (P3)
+[v3.6 점수/패널티 섹션 재정합]
+  scoring_system.calculate_entry_score 실제 반환 키에 맞춰 재작성:
+    soft_penalty(합산)·macd_penalty·macd_hist_bonus·fvg_conflict_penalty·vol_penalty
+    pressure_adj·momentum_adj·c1_adj·ranging_dur_adj·consec_adj·c3_relief·squeeze_liq_relief
 ──────────────────────────────────────────────────────────────────────────────
 """
 import logging, time
@@ -181,31 +183,36 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     atr       = analysis.get("atr",            {})
     price     = analysis.get("current_price")
 
+    # [v3.6] 신규 분석 결과
+    order_blocks  = analysis.get("order_blocks",  {})   # II-3
+    maturity      = analysis.get("maturity",      {})   # II-5
+    retracement   = analysis.get("retracement",   {})   # II-1
+    oi_matrix     = analysis.get("oi_matrix",     {})   # II-9
+    funding_trend = analysis.get("funding_trend", {})   # II-8
+    prev_regime   = analysis.get("prev_regime",   "")   # II-4
+
     cs         = side_result.get("component_scores", {})
     bonuses    = side_result.get("bonuses",           [])
     gate       = side_result.get("gate_info",         {})
     regime_thr = side_result.get("regime_threshold",  64)
 
-    # v3.7 패널티
-    mtf_penalty             = side_result.get("mtf_penalty",              1.0)
-    exhaustion_mult         = side_result.get("exhaustion_mult",           1.0)
-    explosive_oversold_mult = side_result.get("explosive_oversold_mult",   1.0)
-    liq_reverse_mult        = side_result.get("liq_reverse_mult",          1.0)
-    candle_momentum_m       = side_result.get("candle_momentum_mult",      1.0)
-    choch_penalty           = side_result.get("choch_penalty",             1.0)
-    bos_conflict_penalty    = side_result.get("bos_conflict_penalty",      1.0)
-    explosive_bos_penalty   = side_result.get("explosive_bos_penalty",    1.0)
-    bonus_cap               = side_result.get("bonus_cap",                  36)
-    bonus_total             = side_result.get("bonus_total",                 0)
-    volume_penalty          = side_result.get("volume_penalty",              0)
+    # [v3.6] scoring_system 실제 반환 키 정합
+    soft_penalty   = side_result.get("soft_penalty",         1.0)  # MTF/소진/청산/BOS/CHoCH 등 합산
+    ema_mult_d     = side_result.get("ema_multiplier",       1.0)
+    macd_penalty   = side_result.get("macd_penalty",           0)
+    macd_hist_bonus= side_result.get("macd_hist_bonus",        0)
+    fvg_conf_pen   = side_result.get("fvg_conflict_penalty",   0)
+    vol_penalty    = side_result.get("vol_penalty",            0)
+    bonus_cap      = side_result.get("bonus_cap",             36)
+    bonus_total    = side_result.get("bonus_total",            0)
+    is_extreme     = side_result.get("is_extreme",         False)
+    trend_aligned  = side_result.get("trend_aligned",      False)
+    headwind       = side_result.get("headwind_pressure",      0)
 
-    # [v2.0] 신규 패널티 및 임계값 조정
-    choch_4h_penalty        = side_result.get("choch_4h_penalty",         1.0)
-    bos_4h_conflict_penalty = side_result.get("bos_4h_conflict_penalty",  1.0)
-    meta_adj                = side_result.get("meta_adj",                    0)
-    bias_adj                = side_result.get("bias_adj",                    0)
-    session_adj             = side_result.get("session_adj",                 0)
-    funding_cycle_adj       = side_result.get("funding_cycle_adj",           0)
+    # 임계값 조정 (존재하는 키만)
+    meta_adj    = side_result.get("meta_adj",    0)
+    bias_adj    = side_result.get("bias_adj",    0)
+    session_adj = side_result.get("session_adj", 0)
 
     # [v2.1] KST 시각
     now_str = _fmt_kst()
@@ -259,6 +266,24 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     if fibonacci.get("in_golden_pocket_long" if direction=="long" else "in_golden_pocket_short"):
         retr = fibonacci.get("long_retracement" if direction=="long" else "short_retracement")
         smc_tags.append(f"황금포켓({retr}%)" if retr else "황금포켓")
+    if order_blocks.get("in_bullish_ob" if direction=="long" else "in_bearish_ob"):
+        smc_tags.append("오더블록")
+
+    # [II-6] 레벨 컨플루언스 카운트 (피보황금포켓·FVG·오더블록·주간레벨)
+    weekly_lvl_info = pipeline_result.get("weekly_levels", {}) or analysis.get("weekly_levels", {})
+    confluence_n = 0
+    if direction == "long":
+        confluence_n += int(bool(fibonacci.get("in_golden_pocket_long")))
+        confluence_n += int(bool(fvg.get("in_bullish_fvg")))
+        confluence_n += int(bool(order_blocks.get("in_bullish_ob")))
+        confluence_n += int(bool(weekly_lvl_info.get("near_level") and not weekly_lvl_info.get("is_resistance", True)))
+    else:
+        confluence_n += int(bool(fibonacci.get("in_golden_pocket_short")))
+        confluence_n += int(bool(fvg.get("in_bearish_fvg")))
+        confluence_n += int(bool(order_blocks.get("in_bearish_ob")))
+        confluence_n += int(bool(weekly_lvl_info.get("near_level") and weekly_lvl_info.get("is_resistance", False)))
+    if confluence_n >= 2:
+        smc_tags.append(f"🎯컨플루언스{confluence_n}중첩")
 
     # ══════════════════════════════════════════════════════════
     # ── 헤더
@@ -314,15 +339,38 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     # 임계값 조정 내역
     base_thr = regime_info.get("threshold", 64)
     thr_parts = []
-    if meta_adj != 0:          thr_parts.append(f"메타레짐{meta_adj:+d}pt")
-    if bias_adj != 0:          thr_parts.append(f"바이어스{bias_adj:+d}pt")
-    if session_adj != 0:       thr_parts.append(f"세션{session_adj:+d}pt")
-    if funding_cycle_adj != 0: thr_parts.append(f"펀딩{funding_cycle_adj:+d}pt")
+    if meta_adj != 0:    thr_parts.append(f"메타레짐{meta_adj:+d}pt")
+    if bias_adj != 0:    thr_parts.append(f"바이어스{bias_adj:+d}pt")
+    if session_adj != 0: thr_parts.append(f"세션{session_adj:+d}pt")
     thr_summary = f"기본 {base_thr}pt → {' → '.join(thr_parts)} = {regime_thr}pt" if thr_parts else f"{regime_thr}pt"
 
     lines.append(f"🗺 <b>시장 컨텍스트</b>")
     lines.append(f"  4h국면: {regime_4h_icon} <b>{regime_4h_name}</b>  ×  1h국면: {regime_1h_icon} <b>{regime_1h_name}</b>")
     lines.append(f"  일봉바이어스: {bias_icon} <b>{bias_str}</b>  (강세{bias_bull}/3 약세{bias_bear}/3)")
+
+    # [v3.6] 추세성숙도(II-5) · 되돌림(II-1) · 레짐전환(II-4)
+    ctx_bits = []
+    mat_label = maturity.get("maturity", "none")
+    if mat_label not in ("none", ""):
+        mat_cnt  = maturity.get("bull_count", 0) if direction == "long" else maturity.get("bear_count", 0)
+        mat_icon = {"early": "🌱초기", "mid": "🌿중기", "late": "🍂성숙"}.get(mat_label, mat_label)
+        ctx_bits.append(f"4h성숙도 {mat_icon}(연속{mat_cnt})")
+    rz = retracement.get("long_zone" if direction == "long" else "short_zone", "none")
+    if rz not in ("none", ""):
+        rz_label = {"too_shallow": "얕음⚠️", "shallow": "얕음", "optimal": "적정✅",
+                    "deep": "깊음", "broken": "붕괴⚠️"}.get(rz, rz)
+        dep = retracement.get("long_depth" if direction == "long" else "short_depth")
+        ctx_bits.append(f"되돌림 {rz_label}" + (f"({dep*100:.0f}%)" if dep is not None else ""))
+    _trans = (prev_regime, regime_1h_name)
+    if _trans in (("SQUEEZE", "TRENDING"), ("SQUEEZE", "EXPLOSIVE")):
+        ctx_bits.append("🚀전환:압축해제")
+    elif _trans == ("RANGING", "TRENDING"):
+        ctx_bits.append("📦전환:박스돌파")
+    elif _trans in (("TRENDING", "RANGING"), ("EXPLOSIVE", "RANGING")):
+        ctx_bits.append("🪫전환:추세소진")
+    if ctx_bits:
+        lines.append(f"  {'  |  '.join(ctx_bits)}")
+
     lines.append(f"  세션: <b>{session_label}</b>  |  펀딩사이클: {funding_c_label}")
     lines.append(f"  <i>임계값: {thr_summary}</i>")
     lines.append("")
@@ -336,9 +384,11 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     # ── 기술 지표 ────────────────────────────────────────────
     lines.append("📈 <b>기술 지표</b>")
 
-    rsi_val = rsi.get("value",    50.0)
-    rsi_1h  = rsi.get("value_1h")
-    rsi_4h  = rsi.get("value_4h")
+    # [v3.5 P0 정합] value=1H / value_4h=4H / value_1d=1D
+    rsi_val   = rsi.get("value",   50.0)   # 1H
+    rsi_4h    = rsi.get("value_4h")        # 4H
+    rsi_1d    = rsi.get("value_1d")        # 1D
+    rsi_1d_sl = rsi.get("value_1d_slope")
     rsi_tag = ("⚡ 과매도" if rsi.get("state")=="oversold" else
                "⚡ 과매수" if rsi.get("state")=="overbought" else "— 중립")
 
@@ -351,8 +401,12 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
         elif rsi.get("bearish_divergence"): div_s = "  ✅약세다이버전스(반전)"
 
     rsi_tf = [f"1h:<code>{rsi_val:.0f}</code>"]
-    if rsi_1h is not None: rsi_tf.append(f"4h:<code>{rsi_1h:.0f}</code>")
-    if rsi_4h is not None: rsi_tf.append(f"1d:<code>{rsi_4h:.0f}</code>")
+    if rsi_4h is not None: rsi_tf.append(f"4h:<code>{rsi_4h:.0f}</code>")
+    if rsi_1d is not None:
+        _sl_arrow = ""
+        if rsi_1d_sl is not None and abs(rsi_1d_sl) >= config.RSI_1D_SLOPE_THRESHOLD:
+            _sl_arrow = "↑" if rsi_1d_sl > 0 else "↓"
+        rsi_tf.append(f"1d:<code>{rsi_1d:.0f}</code>{_sl_arrow}")
     lines.append(f"  RSI({config.RSI_PERIOD}) : {' / '.join(rsi_tf)}  {rsi_tag}{div_s}")
 
     bb_map = {
@@ -379,9 +433,13 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     lines.append(f"  EMA교차  : [{ema_str}]{ema_warn}")
 
     adx_map = {"strong":"🔥강한추세","normal":"📈추세중","weak":"〰약한추세","none":"💤횡보"}
+    adx_slope_v = adx.get("adx_slope", 0.0)
+    slope_tag = ""
+    if   adx_slope_v >= config.ADX_SLOPE_RISING:  slope_tag = f"  ⤴가속({adx_slope_v:+.0f})"
+    elif adx_slope_v <= config.ADX_SLOPE_FALLING: slope_tag = f"  ⤵소진({adx_slope_v:+.0f})"
     lines.append(
         f"  ADX(1h)  : <code>{adx.get('adx',0):.1f}</code>  "
-        f"{adx_map.get(adx.get('strength','none'),'—')}"
+        f"{adx_map.get(adx.get('strength','none'),'—')}{slope_tag}"
     )
     lines.append("")
 
@@ -391,7 +449,9 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
         bos_choch.get("bos_bullish") or bos_choch.get("bos_bearish") or
         bos_choch.get("choch_bullish") or bos_choch.get("choch_bearish") or
         fibonacci.get("in_golden_pocket_long") or fibonacci.get("in_golden_pocket_short") or
-        fibonacci.get("near_key_level_long")   or fibonacci.get("near_key_level_short")
+        fibonacci.get("near_key_level_long")   or fibonacci.get("near_key_level_short") or
+        order_blocks.get("in_bullish_ob") or order_blocks.get("in_bearish_ob") or
+        confluence_n >= 2
     )
     has_4h_smc = (
         bos_choch_4h.get("bos_bullish") or bos_choch_4h.get("bos_bearish") or
@@ -412,22 +472,37 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
         else:
             lines.append("  FVG        : — 외부")
 
-        def _bos_line(bos_data, tf_label, bos_penalty, choch_p):
+        # [II-3] 오더블록
+        if direction == "long" and order_blocks.get("in_bullish_ob"):
+            obr = order_blocks.get("bullish_ob")
+            lines.append(f"  오더블록   : ✅ 상승 OB 내부 (강도 {order_blocks.get('ob_strength',0):.1f})"
+                         + (f"  {_fmt_price(obr[0],symbol)}~{_fmt_price(obr[1],symbol)}" if obr else ""))
+        elif direction == "short" and order_blocks.get("in_bearish_ob"):
+            obr = order_blocks.get("bearish_ob")
+            lines.append(f"  오더블록   : ✅ 하락 OB 내부 (강도 {order_blocks.get('ob_strength',0):.1f})"
+                         + (f"  {_fmt_price(obr[0],symbol)}~{_fmt_price(obr[1],symbol)}" if obr else ""))
+
+        # [II-6] 레벨 컨플루언스
+        if confluence_n >= 2:
+            lines.append(f"  컨플루언스 : 🎯 <b>{confluence_n}개 레벨 중첩</b> — 지수적 지지/저항 (개별 보너스 통합)")
+
+        # 개별 BOS/CHoCH 역방향 배율은 soft_penalty(합산)에 포함되므로 수치 대신 ⛔ 표기
+        def _bos_line(bos_data, tf_label):
             if bos_data.get("bos_bullish"):
                 if direction == "short":
-                    return [f"  {tf_label}-BOS : ✅ 상승 BOS → 역추세 숏  ⛔ 패널티 ×{bos_penalty:.2f}"]
+                    return [f"  {tf_label}-BOS : ✅ 상승 BOS → 역추세 숏  ⛔ 역방향(soft 반영)"]
                 return [f"  {tf_label}-BOS : ✅ 상승 BOS 확증 — 상승 구조 지속"]
             elif bos_data.get("bos_bearish"):
                 if direction == "long":
-                    return [f"  {tf_label}-BOS : ✅ 하락 BOS → 역추세 롱  ⛔ 패널티 ×{bos_penalty:.2f}"]
+                    return [f"  {tf_label}-BOS : ✅ 하락 BOS → 역추세 롱  ⛔ 역방향(soft 반영)"]
                 return [f"  {tf_label}-BOS : ✅ 하락 BOS 확증 — 하락 구조 지속"]
             elif bos_data.get("choch_bullish"):
                 s = [f"  {tf_label}-CHoCH: ⚠️ 상승전환 경고 — 하락→상승 전환"]
-                if direction == "short": s.append(f"    └ ⛔ 숏 역방향 패널티 ×{choch_p:.2f}")
+                if direction == "short": s.append(f"    └ ⛔ 숏 역방향 (soft 반영)")
                 return s
             elif bos_data.get("choch_bearish"):
                 s = [f"  {tf_label}-CHoCH: ⚠️ 하락전환 경고 — 상승→하락 전환"]
-                if direction == "long": s.append(f"    └ ⛔ 롱 역방향 패널티 ×{choch_p:.2f}")
+                if direction == "long": s.append(f"    └ ⛔ 롱 역방향 (soft 반영)")
                 return s
             else:
                 sh = bos_data.get("last_swing_high"); sl_v = bos_data.get("last_swing_low")
@@ -436,9 +511,9 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
                 if sl_v: parts.append(f"저점:{_fmt_price(sl_v, symbol)}")
                 return [f"  {tf_label}-BOS : — 구조 유지  ({', '.join(parts)})"]
 
-        for ln in _bos_line(bos_choch,    "1h", bos_conflict_penalty, choch_penalty):
+        for ln in _bos_line(bos_choch,    "1h"):
             lines.append(ln)
-        for ln in _bos_line(bos_choch_4h, "4h", bos_4h_conflict_penalty, choch_4h_penalty):
+        for ln in _bos_line(bos_choch_4h, "4h"):
             lines.append(ln)
 
         if direction == "long":
@@ -472,6 +547,15 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
         f"  펀딩비   : {fr_icon} {fr_pct:+.4f}%  [{fr_bias}]"
         if funding.get("available") else "  펀딩비   : ⚪ N/A"
     )
+
+    # [II-8] 펀딩 극단누적 후 쿨링(과열 해소) 신호
+    ft_signal = funding_trend.get("signal", "neutral")
+    if ft_signal in ("cooling_long", "cooling_short"):
+        ft_fav = "long" if ft_signal == "cooling_long" else "short"
+        ft_icon = "🟢" if ft_fav == direction else "⚪"
+        lines.append(f"  └ {ft_icon} 펀딩쿨링: {funding_trend.get('detail','과열 해소 시작')}")
+    elif ft_signal in ("flip_long", "flip_short", "extreme_long_heat", "extreme_short_heat"):
+        lines.append(f"  └ ⚠️ 펀딩추세: {funding_trend.get('detail','')[:48]}")
 
     mf_detail = next((d for d in micro_details if d[0]=="MarkFunding"), None)
     if mf_detail and mf_detail[1] != 0:
@@ -507,6 +591,17 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
             f"매도{taker.get('sell_ratio',0.5)*100:.1f}%  [{tk_bias}]"
         )
 
+    # [II-9] OI 추세 (사분면 + 방향성 기울기)
+    if oi_matrix.get("available"):
+        quad = oi_matrix.get("quadrant", "neutral")
+        oi_sl = oi_matrix.get("oi_slope", 0.0)
+        oi_sign = oi_matrix.get("oi_slope_sign", 0)
+        if quad != "neutral" or oi_sign != 0:
+            quad_map = {"trend_long": "🟢 가격↑+OI↑ 신규매수", "trend_short": "🔴 가격↓+OI↑ 신규매도",
+                        "reversal_long": "🔄 가격↓+OI↓ 롱청산소진", "weak_bounce": "⚪ 숏커버 약반등"}
+            slope_txt = (f"  추세{('↑' if oi_sign>0 else '↓')}({oi_sl:+.1%})" if oi_sign != 0 else "")
+            lines.append(f"  OI       : {quad_map.get(quad, quad)}{slope_txt}")
+
     if liq.get("available") and liq.get("signal","none") != "none":
         liq_icon     = "💥" if liq.get("is_large") else "⚡"
         display_hint = liq.get("display_hint","")
@@ -526,11 +621,10 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     lines.append("📉 <b>지표별 점수</b>")
     regime_name    = regime_info.get("regime","UNKNOWN")
     actual_weights = config.REGIME_SCORE_WEIGHTS.get(regime_name, config.SCORE_WEIGHTS)
+    # [I-1] 펀딩비·롱숏비율은 원점수 가중에서 제외(심리배율로 이동) → 4지표만 표시
     label_map = {
         "rsi":              "RSI(1h)     ",
         "bollinger":        "볼린저(1h)  ",
-        "funding_rate":     "펀딩비      ",
-        "long_short_ratio": "롱숏비율    ",
         "taker_volume":     "Taker비율   ",
         "volume":           "거래량(1h)  ",
     }
@@ -538,45 +632,38 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
         s = cs.get(key,0.0); contrib = s * weight
         lines.append(f"  {label_map.get(key,key)}: {_bar(s,8)}  <i>({contrib:.1f}pt)</i>")
 
-    ema_m_d  = side_result.get("ema_multiplier", 1.0)
-    gate_p   = gate.get("funding_penalty",       1.0)
-    rsi_1h_v = rsi.get("value_1h") or 0
-    rsi_4h_v = rsi.get("value_4h") or 0
-    pct_b_v  = bb.get("pct_b", 0.5)
+    gate_p   = gate.get("funding_penalty", 1.0)
+    rsi_4h_v = rsi.get("value_4h") or 0   # 4H
+    rsi_1d_v = rsi.get("value_1d") or 0   # 1D
 
-    if ema_m_d              < 1.0: lines.append(f"  EMA역방향 배율              : ×{ema_m_d:.2f}")
-    if gate_p               < 1.0: lines.append(f"  복합 페널티                 : ×{gate_p:.2f}")
-    if mtf_penalty          < 1.0:
-        lines.append(f"  ⚠️ MTF RSI 과열 패널티    : ×{mtf_penalty:.2f}  (4h:{rsi_1h_v:.0f} 1d:{rsi_4h_v:.0f})")
-    if exhaustion_mult      < 1.0:
-        lines.append(f"  ⚠️ EXPLOSIVE 소진 패널티  : ×{exhaustion_mult:.2f}  (4h RSI:{rsi_1h_v:.0f})")
-    if explosive_oversold_mult < 1.0:
-        guard_tag = (
-            f"4h RSI:{rsi_1h_v:.0f}<{config.EXPLOSIVE_OVERSOLD_GUARD_RSI} + %B:{pct_b_v:.2f} 과매도 반등 위험"
-            if direction=="short" else
-            f"4h RSI:{rsi_1h_v:.0f}>{config.EXPLOSIVE_OVERBOUGHT_GUARD_RSI} + %B:{pct_b_v:.2f} 과매수 반락 위험"
-        )
-        lines.append(f"  ⚠️ EXPLOSIVE 타이밍 패널티: ×{explosive_oversold_mult:.2f}  {guard_tag}")
-    if liq_reverse_mult     < 1.0:
-        lines.append(f"  ⚠️ 청산 역방향 패널티      : ×{liq_reverse_mult:.2f}  (청산≠진입방향)")
-    if candle_momentum_m    < 1.0: lines.append(f"  ⚠️ 캔들 모멘텀 역방향      : ×{candle_momentum_m:.2f}")
-    if choch_penalty        < 1.0: lines.append(f"  ⚠️ 1h-CHoCH 역방향 패널티 : ×{choch_penalty:.2f}")
-    if choch_4h_penalty     < 1.0: lines.append(f"  ⚠️ 4h-CHoCH 역방향 패널티 : ×{choch_4h_penalty:.2f}  (강화)")
-    if bos_conflict_penalty < 1.0:
-        lines.append(f"  ⚠️ 1h-BOS 역방향 패널티   : ×{bos_conflict_penalty:.2f}")
-    if bos_4h_conflict_penalty < 1.0:
-        lines.append(f"  ⚠️ 4h-BOS 역방향 패널티   : ×{bos_4h_conflict_penalty:.2f}  (강화)")
-    if explosive_bos_penalty < 1.0:
-        combined = round(bos_conflict_penalty * bos_4h_conflict_penalty * explosive_bos_penalty, 3)
-        lines.append(f"  ⚠️ EXPLOSIVE+BOS 강화패널티: ×{explosive_bos_penalty:.2f}  (합산 ×{combined:.3f})")
+    # ── 배율/패널티 (scoring 실제 반환 키) ──
+    if ema_mult_d   < 1.0: lines.append(f"  EMA역방향 배율            : ×{ema_mult_d:.2f}")
+    if gate_p       < 1.0: lines.append(f"  복합 게이트 페널티        : ×{gate_p:.2f}")
+    if soft_penalty < 1.0:
+        lines.append(f"  ⚠️ 소프트 패널티(합산)    : ×{soft_penalty:.3f}  <i>(MTF RSI·소진·청산역·BOS/CHoCH 등)</i>")
+    if macd_penalty:    lines.append(f"  MACD 역방향 패널티        : {macd_penalty:+d}pt")
+    if macd_hist_bonus: lines.append(f"  MACD 히스토그램 전환      : +{macd_hist_bonus}pt")
+    if fvg_conf_pen:    lines.append(f"  FVG 역방향 패널티         : {fvg_conf_pen:+d}pt")
+    if vol_penalty:     lines.append(f"  거래량 페널티             : {vol_penalty:+d}pt")
 
-    base_threshold = regime_info.get("threshold", 64)
-    if regime_thr > base_threshold and reverse_count == 3:
-        ct_boost    = regime_thr - base_threshold
-        adx_val_cur = adx.get("adx", 0.0)
-        lines.append(f"  ⚠️ ADX 역추세 임계값 상향 : +{ct_boost}pt  (ADX:{adx_val_cur:.0f})")
-    if volume_penalty != 0:
-        lines.append(f"  거래량 페널티              : {volume_penalty:+d}pt")
+    # ── 임계값 조정 상세 (존재 키만) ──
+    adj_bits = []
+    if side_result.get("pressure_adj"):       adj_bits.append(f"역풍+{side_result['pressure_adj']}({headwind}요소)")
+    if side_result.get("momentum_adj"):       adj_bits.append(f"모멘텀+{side_result['momentum_adj']}")
+    if side_result.get("c1_adj"):             adj_bits.append(f"MA20위치+{side_result['c1_adj']}")
+    if side_result.get("ranging_dur_adj"):    adj_bits.append(f"레인징지속+{side_result['ranging_dur_adj']}")
+    if side_result.get("consec_adj"):         adj_bits.append(f"연속신호+{side_result['consec_adj']}")
+    if side_result.get("c3_relief"):          adj_bits.append(f"4H극단-{side_result['c3_relief']}")
+    if side_result.get("squeeze_liq_relief"): adj_bits.append(f"스퀴즈청산-{side_result['squeeze_liq_relief']}")
+    if meta_adj:    adj_bits.append(f"메타{meta_adj:+d}")
+    if bias_adj:    adj_bits.append(f"바이어스{bias_adj:+d}")
+    if session_adj: adj_bits.append(f"세션{session_adj:+d}")
+    if is_extreme:  adj_bits.append("🔥극단완화")
+    if adj_bits:
+        lines.append(f"  임계값 조정               : {', '.join(adj_bits)}")
+    if trend_aligned:
+        lines.append(f"  ✅ 추세정합 진입 (역풍필터 완화)")
+
     if micro_total != 0:
         cap_sfx = f" (raw:{micro_raw:+d}pt→cap)" if micro_raw!=micro_total else ""
         lines.append(f"  🔬 마이크로구조 합계       : {micro_total:+d}pt{cap_sfx}")
@@ -609,7 +696,7 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     pb_any = rsi.get("pullback_long" if direction=="long" else "pullback_short", False)
     if pb_any:
         grade    = "강" if pb_strong else ("약" if pb_weak else "미세")
-        rsi_4h_s = f"{rsi_1h_v:.1f}" if rsi_1h_v else "-"
+        rsi_4h_s = f"{rsi_4h_v:.1f}" if rsi_4h_v else "-"
         reasons.append(f"★ 눌림목({grade}) — 4h RSI({rsi_4h_s})+1h({rsi_val:.0f})")
 
     if direction=="long"  and rsi.get("hidden_bull_div"): reasons.append("★ 히든 강세 다이버전스 — 추세 지속 (1h)")
@@ -634,9 +721,22 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     elif direction=="short" and bos_choch.get("bos_bearish"):
         reasons.append("★ 1h-BOS 하락 확증")
     elif direction=="long"  and bos_choch_4h.get("bos_bearish"):
-        reasons.append(f"⚠️ 4h-BOS 하락 역추세 롱 — 강화 패널티 ×{bos_4h_conflict_penalty:.2f}")
+        reasons.append("⚠️ 4h-BOS 하락 역추세 롱 — 강화 패널티 적용(soft 반영)")
     elif direction=="short" and bos_choch_4h.get("bos_bullish"):
-        reasons.append(f"⚠️ 4h-BOS 상승 역추세 숏 — 강화 패널티 ×{bos_4h_conflict_penalty:.2f}")
+        reasons.append("⚠️ 4h-BOS 상승 역추세 숏 — 강화 패널티 적용(soft 반영)")
+
+    # [v3.6] 신규 근거 (II-1/3/4/6/8)
+    if confluence_n >= 2:
+        reasons.append(f"🎯 레벨 {confluence_n}중첩 컨플루언스 — 강력 지지/저항")
+    if direction=="long"  and order_blocks.get("in_bullish_ob"):  reasons.append("오더블록 상승 구간 — 기관 매수 주문대")
+    elif direction=="short" and order_blocks.get("in_bearish_ob"): reasons.append("오더블록 하락 구간 — 기관 매도 주문대")
+    _rz2 = retracement.get("long_zone" if direction=="long" else "short_zone", "none")
+    if   _rz2 == "optimal":     reasons.append("4h 적정 되돌림(35~65%) — 황금 눌림 구간")
+    elif _rz2 == "too_shallow": reasons.append("⚠️ 4h 되돌림 부족 — 추세 초기/노이즈 위험")
+    if   _trans in (("SQUEEZE","TRENDING"),("SQUEEZE","EXPLOSIVE")): reasons.append("🚀 레짐전환 압축해제 — 스윙 최적 진입")
+    elif _trans == ("RANGING","TRENDING"):                          reasons.append("📦 레짐전환 박스돌파 확인")
+    if funding_trend.get("signal") in ("cooling_long","cooling_short"):
+        reasons.append("펀딩 과열 해소(쿨링) — 역방향 반전 타이밍")
 
     taker_bias = taker.get("bias","neutral"); vol_strong = analysis.get("volume",{}).get("strong",False)
     bb_state_n = bb.get("state",""); st = rsi.get("state","neutral")
