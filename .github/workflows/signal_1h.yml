@@ -69,6 +69,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           SINGLE_SYMBOL:      ${{ matrix.symbol }}
+          # [v4.0] Notion 신호 기록 & 성공/실패 자동 평가 (선택 — 미설정 시 자동 비활성)
+          NOTION_TOKEN:          ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID:    ${{ secrets.NOTION_DATABASE_ID }}
+          NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
         run: python src/main.py
 
       - name: Save bot state cache
