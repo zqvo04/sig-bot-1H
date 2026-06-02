@@ -1,9 +1,43 @@
-# 1H Signal Bot (sig-bot-1H) — v3.6
+# 1H Signal Bot (sig-bot-1H) — v4.0
 
 OKX 무기한 선물(USDT-Swap) **1시간봉 스윙 매매** 신호 봇.
 멀티 타임프레임(1H·4H·1D) 지표·시장구조·심리·마이크로구조를 종합해 국면(Regime)별 가중 점수를 산출하고, 임계값을 넘는 롱/숏 신호를 텔레그램으로 발송합니다. GitHub Actions에서 매시 정각 +5분에 심볼별 병렬 실행됩니다.
 
+**v4.0 핵심**: ① 신호 보수성 완화(임계 하향 + 누적 인플레이션 캡) ② 추세추종·추세전환(CHoCH) 포착 강화 ③ **TP/SL 자동 산출** ④ **Notion 자동 기록 + 성공/실패 자동 판정**.
+
 > ⚠️ **참고용 신호입니다. 투자 결정과 그 결과는 전적으로 본인 책임입니다.**
+
+---
+
+## 🆕 v4.0 — 대대적 개선 (스윙 최적화 + 자동 성과 추적)
+
+### A. 신호 보수성 완화 (너무 적게 오던 문제 해결)
+| 항목 | 변경 | 효과 |
+|------|------|------|
+| 기본 임계값 | TRENDING 64→**59**, EXPLOSIVE 66→**60**, RANGING 63→**61**, SQUEEZE 66→**63** | 추세 구간 신호 빈도 ↑ |
+| **임계 순(純) 인플레이션 캡** | 비극단·비역추세 신호는 `기본임계 ±(−12 / +10)` 이내로 제한 | 수십 개 가산 필터가 누적돼 임계가 80~90까지 치솟아 신호가 질식되던 문제 해소 |
+| 세션 조정 | 주말 +6→**+2**, 아시아 +4→**+2** | 크립토 24/7 특성 반영, 비주력 세션 과잉 억제 제거 |
+| 보너스 비율 캡 | `0.55→0.65 × base` | 보너스 흡수폭 확대 |
+
+### B. 추세추종 / 추세전환 포착 강화
+- **추세정합 진입 완화**: 레짐 TRENDING/EXPLOSIVE + EMA 순방향 + MACD 정합(`_trend_aligned`) → 임계 **−5pt**(초·중기 추세 추가 −2pt). 확정 추세를 적극 포착.
+- **추세 성숙도 과잉 억제 완화**: 성숙추세 임계 가산 6→**3pt**.
+- **CHoCH(추세전환) 정합 보너스 신설**: 진입 방향과 같은 방향으로의 시장구조 전환에 1h **+8** / 4h **+12pt** (기존엔 역방향 패널티만 존재해 전환 초입을 놓침).
+- **극단 반전 임계 완화**: 추세전환(반전) 인식 RSI 임계를 소폭 완화해 반전 세팅을 더 자주 포착.
+
+### C. TP/SL 자동 산출 (`trade_levels.py`)
+- 손절 = `max(ATR×2.0, 가격×1.2%)` (상한 5%), 직전 스윙 고/저점이 합리적이면 **구조 손절** 우선.
+- 익절 = 손절거리 × **R배수**(등급별 STRONG 2.5 / GOOD 2.0 / WATCH 1.8R).
+- 텔레그램 메시지에 진입·SL·TP·리스크% 표기.
+
+### D. Notion 자동 기록 + 성공/실패 자동 판정 (`notion_logger.py`)
+- 신호 발생 → Notion DB에 한 행 기록(`Result=OPEN`, 진입/SL/TP/점수/레짐/근거).
+- **매 실행마다** OPEN 신호를 1H 캔들로 점검 → **TP 도달 WIN / SL 도달 LOSS** 자동 판정(동시 터치 시 SL 우선).
+- 최대 보유 72h 초과 시 시장가 손익부호로 판정(EXPIRED_WIN/LOSS).
+- `R Multiple`·`Hold(h)`·`Exit Reason` 기록 → Notion에서 승률·기대값·레짐별 성과를 그룹·필터로 분석.
+- 같은 심볼·방향 OPEN 신호가 있으면 중복 기록 방지.
+
+> 📂 **Notion 셋업**: 아래 [Notion 연동](#notion-연동-v40) 참조. 토큰 미설정 시 자동 비활성화되어 봇 본체는 그대로 동작합니다.
 
 ---
 
@@ -213,15 +247,49 @@ sig-bot-1H/
 ├── .github/workflows/signal_1h.yml   # 매시 실행 워크플로우 (심볼 병렬)
 ├── requirements.txt
 ├── src/
-│   ├── main.py                       # 진입점 (단일 심볼 처리)
-│   ├── config.py                     # 전역 설정/파라미터
+│   ├── main.py                       # 진입점 (단일 심볼 처리 + Notion 평가/기록)
+│   ├── config.py                     # 전역 설정/파라미터 (v4.0 포함)
 │   ├── data_pipeline.py              # OKX 데이터 수집 (CCXT + REST)
 │   ├── analysis_engine.py            # 지표/SMC/심리 분석
-│   ├── scoring_system.py             # 점수 산출·임계 판정·쿨다운
+│   ├── scoring_system.py             # 점수 산출·임계 판정·쿨다운 (v4.0 로직)
 │   ├── microstructure_analyzer.py    # 마이크로구조 페널티
-│   └── notification.py               # 텔레그램 알림 빌더/발송
+│   ├── trade_levels.py               # [v4.0] TP/SL 산출
+│   ├── notion_logger.py              # [v4.0] Notion 기록 + 성공/실패 자동 평가
+│   └── notification.py               # 텔레그램 알림 빌더/발송 (TP/SL 표기)
 └── README.md
 ```
+
+---
+
+## Notion 연동 (v4.0)
+
+신호 기록·성과 분석은 Notion DB에 자동 저장됩니다. **봇은 Notion 내부 통합(Integration) 토큰으로 REST API에 직접 기록**하므로, 다음 3단계 셋업이 필요합니다(미설정 시 자동 비활성, 봇 본체는 정상 동작).
+
+### 1) Notion 통합(Integration) 생성
+1. https://www.notion.so/my-integrations → **New integration** 생성
+2. **Internal Integration Secret**(`ntn_...` 또는 `secret_...`) 복사 → 이것이 `NOTION_TOKEN`
+
+### 2) DB 공유
+이미 생성된 **`1H Signal Log`** 데이터베이스(부모 페이지: *📈 1H 시그봇 트레이딩 로그*)를 위 통합에 공유합니다.
+- DB(또는 부모 페이지) 우상단 **···** → **연결(Connections)** → 방금 만든 통합 선택
+- 데이터베이스 ID(`NOTION_DATABASE_ID`): URL의 `notion.so/<workspace>/<32자리ID>?v=...` 중 32자리 ID
+  - 본 워크스페이스 기준: **`aff12b160ec941ada0ce13b01b689e7c`**
+
+> 또는 `NOTION_DATABASE_ID` 대신 `NOTION_PARENT_PAGE_ID`만 주면, 봇이 해당 페이지 하위에 `1H Signal Log` DB를 **자동 생성/재사용**합니다.
+
+### 3) GitHub Secrets 등록
+저장소 **Settings → Secrets and variables → Actions** 에 추가:
+
+| Secret | 값 |
+|--------|----|
+| `NOTION_TOKEN` | 통합 시크릿 토큰 |
+| `NOTION_DATABASE_ID` | `aff12b160ec941ada0ce13b01b689e7c` (또는 자동생성 사용 시 생략) |
+| `NOTION_PARENT_PAGE_ID` | (선택) 자동 생성용 부모 페이지 ID |
+
+### DB 스키마 (자동 기록 필드)
+`Result`(OPEN/WIN/LOSS) · `Symbol` · `Direction` · `Grade` · `Score` · `Threshold` · `Regime 1H/4H` · `Entry` · `Stop Loss` · `Take Profit` · `Exit Price` · `R Multiple` · `ATR %` · `Entry/Resolved Time` · `Hold (h)` · `Exit Reason`(TP_HIT/SL_HIT/EXPIRED_*) · `Reasons` · `Signal ID`
+
+> 승률·기대값 분석: Notion에서 `Result`로 그룹화하거나 `R Multiple` 합계 보드를 만들면 누적 성과를 한눈에 볼 수 있습니다.
 
 ---
 

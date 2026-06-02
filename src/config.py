@@ -196,12 +196,13 @@ EMA_DISTANCE_EXTREME_ADJ    = +5
 # ══════════════════════════════════════════════════════════════════════
 # 극단 과매도/과매수
 # ══════════════════════════════════════════════════════════════════════
-EXTREME_OVERSOLD_15M  = 32
-EXTREME_OVERSOLD_1H   = 32
-EXTREME_OVERSOLD_4H   = 32   # [I-3] 1D RSI기준 엄격화 (was 38)
-EXTREME_OVERBOUGHT_15M = 68
-EXTREME_OVERBOUGHT_1H  = 68
-EXTREME_OVERBOUGHT_4H  = 68   # [I-3] (was 62)
+# [v4.0] 극단 반전(추세전환) 포착 임계 완화 — 반전 세팅 더 자주 인식
+EXTREME_OVERSOLD_15M  = 34   # was 32
+EXTREME_OVERSOLD_1H   = 34   # was 32
+EXTREME_OVERSOLD_4H   = 36   # was 32
+EXTREME_OVERBOUGHT_15M = 66  # was 68
+EXTREME_OVERBOUGHT_1H  = 66  # was 68
+EXTREME_OVERBOUGHT_4H  = 64  # was 68
 
 BB_STREAK_SUPPRESS_RSI_EXEMPT = 28
 
@@ -296,8 +297,8 @@ WEAK_BASE_SCORE_THRESHOLD     = 55.0
 WEAK_BASE_BONUS_THRESHOLD     = 25
 WEAK_BASE_BONUS_CAP           = 18
 
-MAX_BONUS_TO_BASE_RATIO       = 0.55
-MIN_BONUS_FLOOR               = 10
+MAX_BONUS_TO_BASE_RATIO       = 0.65   # [v4.0] 0.55 → 0.65 (보너스 흡수폭 확대)
+MIN_BONUS_FLOOR               = 12     # [v4.0] 10 → 12
 
 RANGING_DURATION_ADJ_MID      = 2
 RANGING_DURATION_ADJ_LONG     = 4
@@ -386,10 +387,11 @@ MARKET_STRUCT_SWING_THRESHOLD = 0.005
 # 신호 임계값
 # ══════════════════════════════════════════════════════════════════════
 REGIME_THRESHOLDS = {
-    "SQUEEZE":   66,
-    "TRENDING":  64,
-    "RANGING":   63,
-    "EXPLOSIVE": 66,
+    # [v4.0] 보수성 완화 — 기본 임계 하향 (스윙 신호 빈도 ↑)
+    "SQUEEZE":   63,   # was 66
+    "TRENDING":  59,   # was 64  (추세추종 신호 적극 포착)
+    "RANGING":   61,   # was 63
+    "EXPLOSIVE": 60,   # was 66  (변동성 폭발 구간 진입 강화)
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -446,11 +448,12 @@ META_REGIME_THRESHOLD_ADJ: dict = {
 DAILY_BIAS_THRESHOLD_ADJ_ALIGN   = -3
 DAILY_BIAS_THRESHOLD_ADJ_AGAINST = +7
 
+# [v4.0] 세션 조정 완화 — 크립토는 24/7, 비주력 세션 과도 억제 제거
 SESSION_ADJ_OVERLAP = -3
 SESSION_ADJ_NY      = -2
 SESSION_ADJ_LONDON  =  0
-SESSION_ADJ_ASIA    = +4
-SESSION_ADJ_WEEKEND = +6
+SESSION_ADJ_ASIA    = +2   # was +4
+SESSION_ADJ_WEEKEND = +2   # was +6
 
 FUNDING_CYCLE_ADJ   = +3
 FUNDING_CYCLE_HOURS = [23, 0, 7, 8, 15, 16]
@@ -513,7 +516,7 @@ REGIME_EXHAUSTION_THR_ADJ        = 10   # TRENDING/EXPLOSIVE→RANGING 추세추
 MATURITY_LOOKBACK     = 100  # 4H 스윙 탐색 범위
 MATURITY_EARLY_MAX    = 2    # 1~2: 초기 추세
 MATURITY_MID_MAX      = 4    # 3~4: 중기 추세 / 5+: 성숙 추세
-MATURITY_LATE_THR_ADJ = 6    # 성숙 추세 추세추종 → 임계 상향
+MATURITY_LATE_THR_ADJ = 3    # [v4.0] 6 → 3 (추세추종 과잉 억제 완화)
 MATURITY_EARLY_RELIEF = 2    # 초기 추세 추세추종 → 임계 완화
 
 # ── [II-6] 레벨 컨플루언스 스코어 ───────────────────────────────────
@@ -529,3 +532,52 @@ FUNDING_COOLING_MIN_CONSEC = 3  # 직전 연속 극단 최소 횟수
 OI_TREND_MIN_POINTS     = 4      # 기울기 계산 최소 포인트
 OI_TREND_SLOPE_THRESHOLD = 0.015 # OI 추세 유효 변화율 (윈도우 누적 1.5%)
 BONUS_OI_TREND_SLOPE    = 5      # OI 추세+가격 정합 → 보너스
+
+# ══════════════════════════════════════════════════════════════════════
+# [v4.0] 대대적 개선 — 보수성 완화 · 추세추종/전환 강화 · TP/SL · Notion
+# ══════════════════════════════════════════════════════════════════════
+
+# ── [v4.0-1] 임계값 순(純) 인플레이션 캡 ──────────────────────────────
+# 수많은 가산 필터가 누적되어 임계값이 80~90까지 치솟아 신호가 질식되던 문제.
+# 비극단·비역추세(EMA 3역방향 아님) 신호는 기본임계 + 캡 이내로 제한한다.
+THRESHOLD_NET_INFLATION_CAP   = 10   # 기본임계 대비 최대 +10pt까지만 상승 허용
+THRESHOLD_NET_INFLATION_FLOOR = 12   # 기본임계 대비 최대 -12pt까지 완화 허용
+
+# ── [v4.0-2] 추세정합 진입 임계 완화 ─────────────────────────────────
+# 레짐 TRENDING/EXPLOSIVE + EMA 순방향 + MACD 정합(_trend_aligned)인
+# "확정 추세추종" 진입은 적극 포착한다.
+TREND_ALIGNED_THR_RELIEF      = 5    # _trend_aligned → 임계 -5pt
+TREND_ALIGNED_EARLY_EXTRA     = 2    # + 초기/중기 추세면 추가 -2pt
+
+# ── [v4.0-3] 추세전환(CHoCH/극단반전) 포착 강화 ──────────────────────
+# 1h/4h CHoCH(전환)가 진입 방향과 "정합"일 때 보너스 부여(기존엔 역방향 패널티만 존재).
+BONUS_CHOCH_ALIGN_1H          = 8    # 진입방향과 같은 CHoCH(전환) → 보너스
+BONUS_CHOCH_ALIGN_4H          = 12
+
+# ── [v4.0-4] TP/SL 산출 (성공/실패 자동 판정 기준) ───────────────────
+# 스윙(1h, 최대 3일 보유) 기준 ATR·구조 결합 손절/익절.
+TPSL_ATR_SL_MULT      = 2.0     # 손절 거리 = ATR × 배수
+TPSL_MIN_SL_PCT       = 0.012   # 손절 최소 1.2%
+TPSL_MAX_SL_PCT       = 0.050   # 손절 최대 5.0%
+TPSL_TP_R_MULTIPLE    = 2.0     # 익절 = 손절거리 × R배수 (기본 2R)
+TPSL_USE_STRUCTURE    = True    # 직전 스윙 고/저점을 손절에 우선 반영
+TPSL_STRUCTURE_BUFFER = 0.001   # 구조 손절 버퍼 0.1%
+
+# 신호 등급별 익절 R 배수 (강한 신호일수록 더 멀리)
+TPSL_TP_R_BY_GRADE = {"STRONG": 2.5, "GOOD": 2.0, "WATCH": 1.8}
+
+# ── [v4.0-5] 성공/실패 자동 평가 ─────────────────────────────────────
+EVAL_MAX_HOLD_HOURS   = 72      # 최대 보유 72h(3일) 경과 → 시장가 청산 판정
+EVAL_SL_PRIORITY      = True    # 한 캔들 내 TP·SL 동시 터치 시 SL 우선(보수적)
+
+# ── [v4.0-6] Notion 연동 ─────────────────────────────────────────────
+# Secrets(GitHub Actions) 또는 환경변수로 주입.
+#   NOTION_TOKEN          : Notion 내부 통합(Integration) 시크릿 토큰
+#   NOTION_DATABASE_ID    : 신호 로그 DB ID (없으면 NOTION_PARENT_PAGE_ID 하위에 자동 생성)
+#   NOTION_PARENT_PAGE_ID : (선택) DB 자동 생성용 부모 페이지 ID
+NOTION_TOKEN          = os.getenv("NOTION_TOKEN", "")
+NOTION_DATABASE_ID    = os.getenv("NOTION_DATABASE_ID", "")
+NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID", "")
+NOTION_DB_TITLE       = "1H Signal Log"
+NOTION_API_VERSION    = "2022-06-28"
+NOTION_ENABLED        = bool(NOTION_TOKEN)

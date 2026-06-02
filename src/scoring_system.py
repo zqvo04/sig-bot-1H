@@ -50,7 +50,7 @@ def _apply_bonus_subcaps(bonuses: list) -> list:
     _momentum_names = {"눌림목강","눌림목약","눌림목미세","추세지속EMA+Taker","ADX가속"}
     _momentum_pfx   = ("멀티TF모멘텀","되돌림")                                  # II-1 되돌림 = 모멘텀 카테고리
     _struct_names   = {"1h-BOS상승","1h-BOS하락","4h-BOS상승","4h-BOS하락","HigherLow","LowerHigh","돌파실패","붕괴실패"}
-    _struct_pfx     = ("레짐전환",)                                              # II-4 전환 보너스 = 구조 카테고리
+    _struct_pfx     = ("레짐전환", "CHoCH전환")                                  # II-4 전환 + v4.0 CHoCH 전환 = 구조 카테고리
     _sent_pfx       = ("스마트머니","OI매트릭스(","펀딩추세(")
     _level_pfx      = ("피보","주간레벨(","오더블록","레벨컨플루언스")            # II-3/II-6
     caps = {"momentum":config.BONUS_SUBCAP_MOMENTUM,"structure":config.BONUS_SUBCAP_STRUCTURE,
@@ -382,6 +382,17 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         if rn == "SQUEEZE":
             logger.info(f"[개선5/SHORT] SQUEEZE 4h-BOS 보너스 삭감: {config.BONUS_BOS_CONFIRM_4H}→{bos4_bonus}pt")
 
+    # ── [v4.0-3] CHoCH(추세전환) 정합 보너스 ───────────────────
+    # 진입 방향과 같은 방향으로의 시장구조 전환(CHoCH) = 추세전환 초입 포착.
+    # (역방향 CHoCH는 기존 choch_p 소프트패널티로 이미 억제됨 → 대칭)
+    _choch_mult = config.SQUEEZE_BOS_BONUS_MULT if rn == "SQUEEZE" else 1.0
+    if (d=="long" and bos_data.get("choch_bullish")) or (d=="short" and bos_data.get("choch_bearish")):
+        bonuses.append(("CHoCH전환1h", round(config.BONUS_CHOCH_ALIGN_1H * _choch_mult)))
+        logger.info(f"[v4.0/{d.upper()}] 1h-CHoCH 전환 정합 → +{round(config.BONUS_CHOCH_ALIGN_1H * _choch_mult)}pt")
+    if (d=="long" and bos4.get("choch_bullish")) or (d=="short" and bos4.get("choch_bearish")):
+        bonuses.append(("CHoCH전환4h", round(config.BONUS_CHOCH_ALIGN_4H * _choch_mult)))
+        logger.info(f"[v4.0/{d.upper()}] 4h-CHoCH 전환 정합 → +{round(config.BONUS_CHOCH_ALIGN_4H * _choch_mult)}pt")
+
     fib = analysis.get("fibonacci", {})
     if d=="long":
         if fib.get("in_golden_pocket_long"):  bonuses.append(("피보황금포켓롱", config.BONUS_FIB_GOLDEN_POCKET))
@@ -660,6 +671,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     # 임계값 조정
     # ════════════════════════════════════════════
     thr = regime.get("threshold", config.REGIME_THRESHOLDS.get("TRENDING", 64))
+    base_thr0 = thr   # [v4.0] 인플레이션 캡 기준 기본임계
 
     if bb.get("squeeze") and thr < 66:
         thr = min(66, thr + 2)
@@ -881,6 +893,26 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
             consec_adj = min(config.CONSECUTIVE_SIGNAL_MAX_ADJ, (cnt-1) * adj_per)
             thr = min(90, thr + consec_adj)
             logger.info(f"[⑥E/{d.upper()}] 연속{cnt}회×{adj_per}pt → +{consec_adj}pt 임계:{thr}pt")
+
+    # ── [v4.0-2] 추세정합 진입 임계 완화 ──────────────────────
+    # 레짐 추세 + EMA 순방향 + MACD 정합 = 확정 추세추종 → 적극 포착
+    if _trend_aligned and not is_extreme:
+        relief = config.TREND_ALIGNED_THR_RELIEF
+        _mat_self = maturity.get("bull_count", 0) if d == "long" else maturity.get("bear_count", 0)
+        if 1 <= _mat_self <= config.MATURITY_MID_MAX:
+            relief += config.TREND_ALIGNED_EARLY_EXTRA
+        thr = max(52, thr - relief)
+        logger.info(f"[v4.0/{d.upper()}] 추세정합 진입 → 임계 -{relief}pt → {thr}pt")
+
+    # ── [v4.0-1] 임계값 순(純) 인플레이션 캡 ──────────────────
+    # 비극단·비역추세 신호가 누적 가산으로 질식되지 않도록 기본임계 대비 변동폭 제한
+    if not is_extreme and not (ema_all_rev and not bb_rev_exempt):
+        _hi = base_thr0 + config.THRESHOLD_NET_INFLATION_CAP
+        _lo = base_thr0 - config.THRESHOLD_NET_INFLATION_FLOOR
+        _clamped = min(max(thr, _lo), _hi)
+        if _clamped != thr:
+            logger.info(f"[v4.0/{d.upper()}] 임계 인플레이션 캡: {thr}pt → {_clamped}pt (기본:{base_thr0})")
+            thr = _clamped
 
     # ── 신호 판정 ────────────────────────────────────────────
     signal = (final_score >= thr)
@@ -1135,6 +1167,16 @@ def run_scoring_pipeline(symbol, analysis, market_data=None):
         logger.info(f"[Pipeline] {symbol} 신호 없음 — 롱:{signals['long']['final_score']:.1f} 숏:{signals['short']['final_score']:.1f}")
 
     _save_prev_regime(symbol, rn)
+
+    # [v4.0] TP/SL 산출 (성공/실패 자동 판정 기준)
+    levels = {"available": False}
+    if primary:
+        try:
+            from trade_levels import compute_trade_levels
+            levels = compute_trade_levels(analysis, primary, ps)
+        except Exception as e:
+            logger.warning(f"[Pipeline] TP/SL 산출 실패: {e}")
+
     return {
         "symbol": symbol, "should_notify": should_notify,
         "direction": primary, "score": ps,
@@ -1142,4 +1184,5 @@ def run_scoring_pipeline(symbol, analysis, market_data=None):
         "regime": analysis.get("regime", {}), "regime_4h": r4h, "daily_bias": db,
         "scored_at": dt.datetime.now(timezone.utc).isoformat(),
         "micro_result": ml if primary=="long" else ms_,
+        "levels": levels,
     }

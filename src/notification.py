@@ -304,6 +304,19 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
         lines.append(f"🏛 SMC 확인: <b>{' | '.join(smc_tags)}</b>")
     # [v2.1] KST 시각
     lines.append(f"🕐 {now_str}")
+
+    # [v4.0] 거래 레벨 (TP/SL) — 성공/실패 자동 판정 기준
+    levels = pipeline_result.get("levels", {}) or {}
+    if levels.get("available"):
+        rr = levels.get("r_multiple", 2.0)
+        lines.append(
+            f"🎯 진입 <b>{_fmt_price(levels.get('entry'), symbol)}</b>  "
+            f"🛑 SL <b>{_fmt_price(levels.get('stop_loss'), symbol)}</b>  "
+            f"🏁 TP <b>{_fmt_price(levels.get('take_profit'), symbol)}</b>"
+        )
+        lines.append(
+            f"   <i>리스크 {levels.get('risk_pct',0):.2f}% · 목표 {rr}R · ATR {levels.get('atr_pct',0):.2f}%</i>"
+        )
     lines.append("")
 
     # ── 마이크로구조 필터 ─────────────────────────────────────

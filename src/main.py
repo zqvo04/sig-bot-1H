@@ -27,6 +27,7 @@ from data_pipeline   import create_exchange, collect_all_data
 from analysis_engine import run_full_analysis
 from scoring_system  import run_scoring_pipeline
 from notification    import notify_signal, send_error_alert
+import notion_logger
 
 
 # ══════════════════════════════════════════════
@@ -157,6 +158,16 @@ def main():
                 f"일봉바이어스={daily_bias.get('bias','?')}"
             )
 
+            # 3.5 [v4.0] Notion — 기존 OPEN 신호 성공/실패 자동 평가 (매 실행)
+            if notion_logger.enabled():
+                try:
+                    df_1h_eval = collected.get("ohlcv", {}).get("1h")
+                    notion_logger.evaluate_open_signals(
+                        single_symbol, df_1h_eval, collected.get("price", 0.0)
+                    )
+                except Exception as e:
+                    logger.warning(f"[{single_symbol}] Notion 평가 오류: {e}")
+
             # 4. 알림 발송
             if pipeline["should_notify"]:
                 sent = notify_signal(pipeline, analysis)
@@ -167,6 +178,12 @@ def main():
                         f"{pipeline['score']:.1f}pt — 1H봇 알림 발송 완료"
                     )
                     counter["signals"] += 1
+                    # [v4.0] Notion에 신호 기록 (OPEN)
+                    if notion_logger.enabled():
+                        try:
+                            notion_logger.log_signal(pipeline, analysis, pipeline.get("levels", {}))
+                        except Exception as e:
+                            logger.warning(f"[{single_symbol}] Notion 기록 오류: {e}")
             else:
                 long_s  = pipeline["signal_result"]["long"]["final_score"]
                 short_s = pipeline["signal_result"]["short"]["final_score"]
