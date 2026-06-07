@@ -174,6 +174,39 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     )
     is_extreme = is_ext_oversold or is_ext_overbought
 
+    # ── [v5.0-A] 거시 추세 앵커 → 진입 트랙 분기 ──────────────────────
+    macro            = analysis.get("macro_trend", {}) or {}
+    mt               = macro.get("trend", "NEUTRAL")
+    is_with_trend    = (d == "long" and mt == "UP")   or (d == "short" and mt == "DOWN")
+    is_counter_trend = (d == "long" and mt == "DOWN") or (d == "short" and mt == "UP")
+
+    # ── [v5.0-B] 반전 확인 게이트 ─────────────────────────────────────
+    # 역추세 극단 진입의 면죄부는 "단순 과매도"가 아니라 구조적 전환 확인을 요구.
+    rev_confirms = 0; _gate_parts = []
+    if ((d == "long"  and (bos_data.get("choch_bullish") or bos4.get("choch_bullish"))) or
+        (d == "short" and (bos_data.get("choch_bearish") or bos4.get("choch_bearish")))):
+        rev_confirms += 1; _gate_parts.append("CHoCH")
+    if (d == "long" and macd_hist > 0) or (d == "short" and macd_hist < 0):
+        rev_confirms += 1; _gate_parts.append("MACD전환")
+    if ((d == "long"  and (candle_1h.get("bullish_engulf") or candle_1h.get("bullish_pin"))) or
+        (d == "short" and (candle_1h.get("bearish_engulf") or candle_1h.get("bearish_pin")))):
+        rev_confirms += 1; _gate_parts.append("반전캔들")
+    if liq.get("is_large") and (
+        (d == "long"  and liq.get("signal") == "short_liq_detected") or
+        (d == "short" and liq.get("signal") == "long_liq_detected")):
+        rev_confirms += 1; _gate_parts.append("대량역청산")
+    reversal_gate_passed = rev_confirms >= config.REVERSAL_GATE_MIN_CONFIRMS
+
+    # 극단 면죄부(패널티 면제) = 추세추종/중립 극단은 유지, 역추세 극단은 게이트 통과 시에만.
+    extreme_amnesty = bool(is_extreme and (not is_counter_trend or reversal_gate_passed))
+    if is_extreme and is_counter_trend and not reversal_gate_passed:
+        logger.info(
+            f"[v5.0/{d.upper()}] 역추세 극단 + 반전게이트 미충족"
+            f"({rev_confirms}/{config.REVERSAL_GATE_MIN_CONFIRMS}) → 면죄부 박탈 ⛔떨어지는칼차단"
+        )
+    elif is_counter_trend and reversal_gate_passed:
+        logger.info(f"[v5.0/{d.upper()}] 역추세 반전게이트 통과 [{'+'.join(_gate_parts)}] → 진입 허용")
+
     # [v3.3-D] 추세 순방향 판정
     _trend_aligned = (
         rn in ("TRENDING", "EXPLOSIVE") and
@@ -210,7 +243,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     ema_table  = config.REGIME_EMA_MULTIPLIERS.get(rn, config.EMA_MULTIPLIER)
     ema_mult   = ema_table.get(rev_cnt, 1.0)
 
-    if is_extreme:
+    if extreme_amnesty:
         original_ema = ema_mult
         ema_mult = max(ema_mult, config.EXTREME_EMA_MULT_FLOOR)
         if original_ema < config.EXTREME_EMA_MULT_FLOOR:
@@ -238,7 +271,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         elif rsi1h <= config.MTF_RSI_OVERSOLD_1H_MILD:
             mtf_p = config.MTF_RSI_PENALTY_MILD;  mtf_r = f"RSI약과매도({rsi1h:.0f})"
 
-    if is_extreme and mtf_p < 1.0:
+    if extreme_amnesty and mtf_p < 1.0:
         logger.info(f"[A-5/{d.upper()}] 극단 MTF RSI 패널티 면제: {mtf_r}({mtf_p:.2f}→1.0)")
         mtf_p = 1.0; mtf_r = None
     elif _trend_aligned and mtf_p < 1.0:
@@ -280,7 +313,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     choch4_p = config.CHOCH_4H_AGAINST_PENALTY if ((d=="long" and bos4.get("choch_bearish"))     or (d=="short" and bos4.get("choch_bullish")))     else 1.0
     bos4_p   = config.BOS_4H_CONFLICT_PENALTY  if ((d=="long" and bos4.get("bos_bearish"))       or (d=="short" and bos4.get("bos_bullish")))       else 1.0
 
-    if is_extreme:
+    if extreme_amnesty:
         bos_p    = min(1.0, bos_p    + config.EXTREME_BOS_RELIEF)
         bos4_p   = min(1.0, bos4_p   + config.EXTREME_BOS_RELIEF)
         choch_p  = min(1.0, choch_p  + config.EXTREME_CHOCH_RELIEF)
@@ -541,7 +574,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         bonuses = [(n, round(v*0.5) if n in _lvs else v) for n,v in bonuses]
 
     entry_against = (d=="long" and entry_ema_tf=="bearish") or (d=="short" and entry_ema_tf=="bullish")
-    if rn == "RANGING" and entry_against and not is_extreme:
+    if rn == "RANGING" and entry_against and not extreme_amnesty:
         bonuses = [
             (n, round(v * config.RANGING_SENTIMENT_MULT)
              if any(n.startswith(p) for p in _SENTIMENT_PREFIXES) else v)
@@ -575,7 +608,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     bonuses = _apply_bonus_subcaps(bonuses)
     bonus_raw = sum(v for _, v in bonuses)
 
-    if is_extreme:
+    if extreme_amnesty:
         bonus_cap = _tiered_bonus_cap(base_score)
         logger.info(f"[보너스캡 극단면제/{d.upper()}] tiered={bonus_cap}pt")
     else:
@@ -622,7 +655,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
             * choch_p * choch4_p * bos_p * bos4_p * rbw * exp_bos_p)
     micro_pen = micro_result.get("total_penalty", 0) if micro_result else 0
 
-    if is_extreme and micro_pen < config.EXTREME_MICRO_CAP:
+    if extreme_amnesty and micro_pen < config.EXTREME_MICRO_CAP:
         logger.info(f"[A-6/{d.upper()}] 극단 마이크로패널티 캡: {micro_pen}→{config.EXTREME_MICRO_CAP}pt")
         micro_pen = config.EXTREME_MICRO_CAP
 
@@ -646,7 +679,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
 
     # [v3.1-③ + v3.3-A8] FVG 역방향 패널티
     fvg_pen = 0
-    _fvg_mult = config.EXTREME_FVG_PENALTY_MULT if is_extreme else 1.0
+    _fvg_mult = config.EXTREME_FVG_PENALTY_MULT if extreme_amnesty else 1.0
     if d == "long":
         if bfv and not bf:
             fvg_pen = round(config.BEARISH_FVG_LONG_PENALTY * _fvg_mult)
@@ -686,7 +719,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     if meta_adj: thr = min(88, max(52, thr + meta_adj))
 
     bias_adj = db.get(f"threshold_adj_{d}", 0)
-    if is_extreme and bias_adj > 0:
+    if extreme_amnesty and bias_adj > 0:
         original_bias = bias_adj
         bias_adj = max(0, bias_adj - config.EXTREME_BIAS_RELIEF)
         logger.info(f"[A-4/{d.upper()}] 극단 바이어스 완화: {original_bias}→{bias_adj}pt")
@@ -704,7 +737,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     # ── [개선 2 + 아이디어 1/2/4] A-2 역풍 카운터 (비극단 시) ─────
     p_adj = 0; mom_adj = 0; c1_adj = 0
     pressure = 0
-    if not is_extreme:
+    if not extreme_amnesty:
         if d == "long":
             # [아이디어 1] MACD hist 양전환 중이면 MACD pressure 면제
             _macd_headwind = (macd_1h.get("bearish") and
@@ -737,19 +770,23 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
                 if weekly_lvl.get("long_score_adj", 0) > 0:                 pressure += 1
 
         # [아이디어 2/4] SQUEEZE 구간: A-2 상한 절반, A-3/C-1 면제
+        # [v5.0-C1] with-trend(추세추종) 풀백도 동일 완화 — 눌림목 재진입의
+        #   진입조건(역EMA·price<MA20)이 곧 역풍필터에 걸려 자기상쇄되던 문제 해소.
         _in_squeeze = (rn == "SQUEEZE")
+        _relax_headwind = ((_in_squeeze and config.SQUEEZE_HEADWIND_A3_C1_EXEMPT) or
+                           (is_with_trend and config.WITH_TREND_HEADWIND_EXEMPT))
         _a2_max = (config.HEADWIND_PRESSURE_MAX_ADJ // config.SQUEEZE_HEADWIND_MAX_DIVISOR
-                   if (_in_squeeze and config.SQUEEZE_HEADWIND_A3_C1_EXEMPT)
+                   if _relax_headwind
                    else config.HEADWIND_PRESSURE_MAX_ADJ)
 
         p_adj = min(pressure * config.HEADWIND_PRESSURE_PER_FACTOR, _a2_max)
         if p_adj > 0:
             thr = min(90, thr + p_adj)
             logger.info(f"[A-2/{d.upper()}] 역풍 {pressure}요소×{config.HEADWIND_PRESSURE_PER_FACTOR}pt"
-                        f"=+{p_adj}pt(상한:{_a2_max}{'🔄SQUEEZE완화' if _in_squeeze else ''}) → 임계:{thr}pt")
+                        f"=+{p_adj}pt(상한:{_a2_max}{'🔄완화(스퀴즈/추세추종)' if _relax_headwind else ''}) → 임계:{thr}pt")
 
-        # [v3.2-A3] 하락 모멘텀 컨텍스트 — [아이디어 4] SQUEEZE 시 면제
-        if not (_in_squeeze and config.SQUEEZE_HEADWIND_A3_C1_EXEMPT):
+        # [v3.2-A3] 하락 모멘텀 컨텍스트 — SQUEEZE/추세추종 시 면제
+        if not _relax_headwind:
             if d == "long":
                 if bear3 >= 2 and ma20 > 0 and cp < ma20 and macd_1h.get("bearish") and ma20_slope < 0:
                     mom_adj = config.MOMENTUM_CONTEXT_ADJ
@@ -762,10 +799,10 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
                     thr = min(90, thr + mom_adj)
                     logger.info(f"[A-3/{d.upper()}] 상승모멘텀 → +{mom_adj}pt 임계:{thr}pt")
         else:
-            logger.info(f"[A-3/{d.upper()}] SQUEEZE 구간 → 하락모멘텀 컨텍스트 면제")
+            logger.info(f"[A-3/{d.upper()}] SQUEEZE/추세추종 → 하락모멘텀 컨텍스트 면제")
 
-        # [v3.2-C1] MA20 위치 + 기울기 — [아이디어 4] SQUEEZE 시 면제
-        if not (_in_squeeze and config.SQUEEZE_HEADWIND_A3_C1_EXEMPT):
+        # [v3.2-C1] MA20 위치 + 기울기 — SQUEEZE/추세추종 시 면제
+        if not _relax_headwind:
             if d == "long" and ma20 > 0 and cp < ma20 and ma20_slope < 0:
                 c1_adj = config.EMA20_POSITION_ADJ
                 thr = min(90, thr + c1_adj)
@@ -775,7 +812,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
                 thr = min(90, thr + c1_adj)
                 logger.info(f"[C-1/{d.upper()}] price>MA20+slope양 → +{c1_adj}pt 임계:{thr}pt")
         else:
-            logger.info(f"[C-1/{d.upper()}] SQUEEZE 구간 → MA20위치 임계 조정 면제")
+            logger.info(f"[C-1/{d.upper()}] SQUEEZE/추세추종 → MA20위치 임계 조정 면제")
 
         # [아이디어 2] A-2+A-3+C-1 합산 절대 상한
         _total_headwind = p_adj + mom_adj + c1_adj
@@ -785,7 +822,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
             logger.info(f"[아이디어2/{d.upper()}] 역풍합산 {_total_headwind}pt > 상한{config.HEADWIND_TOTAL_MAX_ADJ}pt → -{_excess}pt 조정 임계:{thr}pt")
 
     else:
-        logger.info(f"[A-2/{d.upper()}] 극단 조건 → v3.2 역풍필터(A2/A3/C1) 전체 면제")
+        logger.info(f"[A-2/{d.upper()}] 극단(면죄부) 조건 → v3.2 역풍필터(A2/A3/C1) 전체 면제")
 
     # [v3.2-E1] RANGING 지속시간
     dur_adj = 0
@@ -798,7 +835,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
             logger.info(f"[E-1/{d.upper()}] RANGING {dur_h:.1f}h → +{dur_adj}pt 임계:{thr}pt")
 
     # [I-2] 4H 레인징+1H 추세 임계 추가
-    if r4h_name == "RANGING" and rn == "TRENDING" and not is_extreme:
+    if r4h_name == "RANGING" and rn == "TRENDING" and not extreme_amnesty:
         thr = min(90, thr + config.MTF_RANGE_FAKE_BREAK_THR_ADJ)
         logger.info(f"[I-2/{d.upper()}] 4H레인징+1H추세 → 임계+{config.MTF_RANGE_FAKE_BREAK_THR_ADJ}pt:{thr}pt")
     # [I-7] 1D RSI 기울기 필터
@@ -822,7 +859,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
 
     # ── [v3.6] II 시리즈 임계 조정 (비극단 시) ─────────────────
     # 극단 반전은 면제 — 추세추종 억제/얕은눌림 페널티가 정상 반전을 막지 않도록
-    if not is_extreme:
+    if not extreme_amnesty:
         # [II-1] 4H 추세에서 되돌림 깊이 기반 임계
         if r4h_name in ("TRENDING", "EXPLOSIVE"):
             _rz = retracement.get(f"{d}_zone", "none")
@@ -857,7 +894,7 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
                 thr = max(52, thr - config.MATURITY_EARLY_RELIEF)
                 logger.info(f"[II-5/{d.upper()}] 초기추세(연속{_mat}) → 임계-{config.MATURITY_EARLY_RELIEF}pt:{thr}pt")
 
-    if is_extreme and thr > config.EXTREME_THRESHOLD_CAP:
+    if extreme_amnesty and thr > config.EXTREME_THRESHOLD_CAP:
         logger.info(f"[A-3/{d.upper()}] 극단 임계값 캡: {thr}pt → {config.EXTREME_THRESHOLD_CAP}pt")
         thr = config.EXTREME_THRESHOLD_CAP
 
@@ -889,10 +926,17 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
     if sym:
         cnt = get_consecutive_signal_count(sym, d)
         if cnt >= 2:
-            adj_per = config.CONSECUTIVE_SIGNAL_ADJ_TREND if _trend_aligned else config.CONSECUTIVE_SIGNAL_ADJ
-            consec_adj = min(config.CONSECUTIVE_SIGNAL_MAX_ADJ, (cnt-1) * adj_per)
-            thr = min(90, thr + consec_adj)
-            logger.info(f"[⑥E/{d.upper()}] 연속{cnt}회×{adj_per}pt → +{consec_adj}pt 임계:{thr}pt")
+            if is_with_trend:
+                # [v5.0-C] 추세추종 재진입 = 피라미딩 → 처벌이 아니라 완화
+                # (과밀 진입 방지는 동적 쿨다운/가격밴드 쿨다운이 담당)
+                consec_adj = -min(config.REENTRY_MAX_RELIEF, (cnt - 1) * config.REENTRY_RELIEF_PER)
+                thr = max(50, thr + consec_adj)
+                logger.info(f"[v5.0재진입/{d.upper()}] 추세추종 연속{cnt}회 → 임계{consec_adj}pt(피라미딩) 임계:{thr}pt")
+            else:
+                adj_per = config.CONSECUTIVE_SIGNAL_ADJ_TREND if _trend_aligned else config.CONSECUTIVE_SIGNAL_ADJ
+                consec_adj = min(config.CONSECUTIVE_SIGNAL_MAX_ADJ, (cnt-1) * adj_per)
+                thr = min(90, thr + consec_adj)
+                logger.info(f"[⑥E/{d.upper()}] 연속{cnt}회×{adj_per}pt → +{consec_adj}pt 임계:{thr}pt")
 
     # ── [v4.0-2] 추세정합 진입 임계 완화 ──────────────────────
     # 레짐 추세 + EMA 순방향 + MACD 정합 = 확정 추세추종 → 적극 포착
@@ -904,21 +948,38 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         thr = max(52, thr - relief)
         logger.info(f"[v4.0/{d.upper()}] 추세정합 진입 → 임계 -{relief}pt → {thr}pt")
 
-    # ── [v4.0-1] 임계값 순(純) 인플레이션 캡 ──────────────────
-    # 비극단·비역추세 신호가 누적 가산으로 질식되지 않도록 기본임계 대비 변동폭 제한
-    if not is_extreme and not (ema_all_rev and not bb_rev_exempt):
-        _hi = base_thr0 + config.THRESHOLD_NET_INFLATION_CAP
-        _lo = base_thr0 - config.THRESHOLD_NET_INFLATION_FLOOR
+    # ── [v5.0-D] 방향성 트랙 임계 (거시추세 정합 비대칭) ───────
+    if is_with_trend and not extreme_amnesty:
+        thr = max(50, thr - config.THR_WITH_TREND_RELIEF)
+        logger.info(f"[v5.0/{d.upper()}] 추세추종 트랙(거시:{mt}) → 임계 -{config.THR_WITH_TREND_RELIEF}pt → {thr}pt")
+    counter_blocked = bool(is_counter_trend and not reversal_gate_passed)
+    if counter_blocked:
+        thr = min(95, thr + config.THR_COUNTER_NOGATE_ADJ)
+        logger.info(f"[v5.0/{d.upper()}] 역추세(거시:{mt})+게이트미충족 → 임계 +{config.THR_COUNTER_NOGATE_ADJ}pt → {thr}pt ⛔")
+
+    # ── [v5.0-D] 트랙별 순(純) 인플레이션 캡 (방향성 인지) ─────
+    # 추세추종은 완화 쪽으로, 역추세는 상향 쪽으로 비대칭 허용.
+    # (극단 면죄부는 EXTREME_THRESHOLD_CAP 가 별도 관리 → 여기선 제외)
+    if not extreme_amnesty and not (ema_all_rev and not bb_rev_exempt):
+        if is_with_trend:
+            _hi = base_thr0 + config.TRACK_WITH_TREND_HI
+            _lo = base_thr0 - config.TRACK_WITH_TREND_LO
+        elif is_counter_trend:
+            _hi = base_thr0 + config.TRACK_COUNTER_HI
+            _lo = base_thr0 - config.TRACK_COUNTER_LO
+        else:
+            _hi = base_thr0 + config.TRACK_NEUTRAL_HI
+            _lo = base_thr0 - config.TRACK_NEUTRAL_LO
         _clamped = min(max(thr, _lo), _hi)
         if _clamped != thr:
-            logger.info(f"[v4.0/{d.upper()}] 임계 인플레이션 캡: {thr}pt → {_clamped}pt (기본:{base_thr0})")
+            logger.info(f"[v5.0/{d.upper()}] 트랙 인플레캡({'추세' if is_with_trend else '역추세' if is_counter_trend else '중립'}): {thr}pt → {_clamped}pt (기본:{base_thr0})")
             thr = _clamped
 
     # ── 신호 판정 ────────────────────────────────────────────
     signal = (final_score >= thr)
 
     triple_blocked = False
-    if signal and not is_extreme:
+    if signal and not extreme_amnesty:
         triple_long  = d=="long"  and macd_1h.get("bearish") and entry_ema_tf=="bearish" and tb=="sell_dominant"
         triple_short = d=="short" and macd_1h.get("bullish") and entry_ema_tf=="bullish" and tb=="buy_dominant"
         if triple_long or triple_short:
@@ -930,6 +991,9 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
 
     # ── 로그 요약 ─────────────────────────────────────────────
     adj_p = []
+    adj_p.append(f"거시{mt}{'↗추종' if is_with_trend else '↘역추세' if is_counter_trend else '·중립'}")
+    if is_counter_trend:
+        adj_p.append(f"반전게이트{rev_confirms}/{config.REVERSAL_GATE_MIN_CONFIRMS}{'✅' if reversal_gate_passed else '⛔'}")
     if meta_adj:    adj_p.append(f"메타{meta_adj:+d}")
     if bias_adj:    adj_p.append(f"바이어스{bias_adj:+d}")
     if sess_adj:    adj_p.append(f"세션{sess_adj:+d}")
@@ -972,6 +1036,9 @@ def calculate_entry_score(analysis: dict, direction: str, micro_result: dict = N
         "gate_info": gate, "bb_suppressed": False, "regime": regime,
         "regime_threshold": thr, "triple_blocked": triple_blocked,
         "is_extreme": is_extreme, "trend_aligned": _trend_aligned,
+        "macro_trend": mt, "with_trend": is_with_trend, "counter_trend": is_counter_trend,
+        "reversal_confirms": rev_confirms, "reversal_gate_passed": reversal_gate_passed,
+        "extreme_amnesty": extreme_amnesty,
         "headwind_pressure": pressure,
         "pressure_adj": p_adj, "momentum_adj": mom_adj, "c1_adj": c1_adj,
         "ranging_dur_adj": dur_adj, "consec_adj": consec_adj,
@@ -1034,20 +1101,26 @@ def _save_state(state: dict) -> None:
         with open(config.SIGNAL_STATE_FILE, "w") as f: json.dump(state, f)
     except Exception as e: logger.warning(f"[State] 저장 실패: {e}")
 
-def _effective_cooldown(symbol, direction, current_price):
+def _effective_cooldown(symbol, direction, current_price, with_trend=False):
     lp = _load_state().get(f"{symbol}_{direction}_last_price", 0)
     if not lp: return config.SIGNAL_COOLDOWN_MINUTES
     dm = (current_price - lp) / lp * (1 if direction=="long" else -1)
+    # [v5.0-C2] 추세추종 재진입(피라미딩): 유리한 이동 후 봉쇄(480/300분) 대신
+    #   짧은 쿨다운만 적용. 추세가 진행됐다면 눌림에서 재진입을 허용한다.
+    #   (동일가격 과밀 재진입은 가격밴드 쿨다운 1%가 별도로 차단)
+    if with_trend:
+        if dm <= config.PRICE_MOVE_RESET_THRESHOLD: return 0
+        return config.REENTRY_COOLDOWN_MINUTES
     if dm >= config.PRICE_MOVE_SUPPRESS_STRONG: return config.COOLDOWN_SUPPRESSED_STRONG
     if dm >= config.PRICE_MOVE_SUPPRESS_MILD:   return config.COOLDOWN_SUPPRESSED_MILD
     if dm <= config.PRICE_MOVE_RESET_THRESHOLD: return 0
     # [v3.4] 최소 쿨다운 보장
     return max(config.SIGNAL_COOLDOWN_MINUTES_MIN, config.SIGNAL_COOLDOWN_MINUTES)
 
-def is_in_cooldown(symbol, direction, current_price=0.0) -> bool:
+def is_in_cooldown(symbol, direction, current_price=0.0, with_trend=False) -> bool:
     last = _load_state().get(f"{symbol}_{direction}")
     if not last: return False
-    em = _effective_cooldown(symbol, direction, current_price)
+    em = _effective_cooldown(symbol, direction, current_price, with_trend)
     if em == 0: return False
     elapsed = datetime.now(timezone.utc) - datetime.fromisoformat(last)
     cd = timedelta(minutes=em)
@@ -1107,6 +1180,60 @@ def _save_prev_regime(symbol, rn):
     st = _load_state(); st[f"{symbol}_prev_regime"] = rn; _save_state(st)
 
 
+def _apply_regime_hysteresis(symbol, raw_regime):
+    """[v5.0-E] 1H 레짐 깜빡임 제거.
+    새 레짐이 REGIME_HYSTERESIS_CONFIRM회 연속 관측돼야 확정 전환을 인정한다.
+    그 전까지는 직전 확정 레짐을 유지(가중치·임계 출렁임 방지)."""
+    st = _load_state()
+    confirmed = st.get(f"{symbol}_confirmed_regime")
+    pending   = st.get(f"{symbol}_pending_regime")
+    pcount    = st.get(f"{symbol}_pending_count", 0)
+
+    # [v5.0-C3] EXPLOSIVE(변동성 폭발)는 즉시 포착해야 하므로 평활 면제 → 즉시 확정.
+    if raw_regime in config.REGIME_HYSTERESIS_BYPASS:
+        if confirmed != raw_regime:
+            logger.info(f"[레짐히스테리시스] {symbol} {confirmed}→{raw_regime} 즉시확정(평활면제)")
+        st[f"{symbol}_confirmed_regime"] = raw_regime
+        st[f"{symbol}_pending_regime"] = None
+        st[f"{symbol}_pending_count"] = 0
+        _save_state(st)
+        return raw_regime
+
+    if confirmed is None:
+        st[f"{symbol}_confirmed_regime"] = raw_regime
+        st[f"{symbol}_pending_regime"] = None
+        st[f"{symbol}_pending_count"] = 0
+        _save_state(st)
+        return raw_regime
+
+    if raw_regime == confirmed:
+        st[f"{symbol}_pending_regime"] = None
+        st[f"{symbol}_pending_count"] = 0
+        _save_state(st)
+        return confirmed
+
+    # 새 레짐 관측 — 연속성 카운트
+    if raw_regime == pending:
+        pcount += 1
+    else:
+        pending = raw_regime; pcount = 1
+
+    need = config.REGIME_HYSTERESIS_CONFIRM
+    if pcount >= need:
+        st[f"{symbol}_confirmed_regime"] = raw_regime
+        st[f"{symbol}_pending_regime"] = None
+        st[f"{symbol}_pending_count"] = 0
+        _save_state(st)
+        logger.info(f"[레짐히스테리시스] {symbol} {confirmed}→{raw_regime} 확정({pcount}회 연속)")
+        return raw_regime
+    else:
+        st[f"{symbol}_pending_regime"] = pending
+        st[f"{symbol}_pending_count"] = pcount
+        _save_state(st)
+        logger.info(f"[레짐히스테리시스] {symbol} {raw_regime} 관측({pcount}/{need}) → 확정레짐 {confirmed} 유지")
+        return confirmed
+
+
 # ════════════════════════════════════════════════
 # 파이프라인
 # ════════════════════════════════════════════════
@@ -1115,12 +1242,27 @@ def run_scoring_pipeline(symbol, analysis, market_data=None):
     logger.info(f"{'─'*55}")
     logger.info(f"🎯 점수 산출 [v3.6]: {symbol}")
 
+    # [v5.0-E] 레짐 히스테리시스 — 1H 레짐 깜빡임 평활(가중치·임계 출렁 방지)
+    _raw_regime = analysis.get("regime", {}).get("regime", "UNKNOWN")
+    _smoothed   = _apply_regime_hysteresis(symbol, _raw_regime)
+    if _smoothed != _raw_regime:
+        analysis["regime"]["regime"] = _smoothed
+        analysis["regime"]["threshold"] = config.REGIME_THRESHOLDS.get(_smoothed, analysis["regime"].get("threshold", 64))
+
     rn   = analysis.get("regime", {}).get("regime", "UNKNOWN")
     r4h  = analysis.get("regime_4h", {})
     db   = analysis.get("daily_bias", {})
     macd = analysis.get("macd_1h", {})
     es   = analysis.get("ema_structure", {})
     rsi  = analysis.get("rsi", {})
+
+    # [v5.0-A] 거시 추세 앵커 산출 → analysis 에 주입(트랙 분기의 최상위 기준)
+    try:
+        from directional_bias import compute_macro_trend
+        analysis["macro_trend"] = compute_macro_trend(analysis)
+    except Exception as e:
+        logger.warning(f"[Pipeline] 거시추세 산출 실패: {e}")
+        analysis["macro_trend"] = {"trend": "NEUTRAL", "strength": 0, "score": 0.0, "components": []}
 
     logger.info(
         f"  레짐:1h={rn} 4h={r4h.get('regime','?')} | 바이어스:{db.get('bias','?')} | "
@@ -1156,7 +1298,8 @@ def run_scoring_pipeline(symbol, analysis, market_data=None):
     cooldown = False; should_notify = False
 
     if primary:
-        if is_in_cooldown(symbol, primary, cp): cooldown = True
+        _prim_with_trend = bool(signals[primary].get("with_trend", False))
+        if is_in_cooldown(symbol, primary, cp, _prim_with_trend): cooldown = True
         elif is_in_price_band_cooldown(symbol, primary, cp): cooldown = True
         else:
             should_notify = True
@@ -1173,6 +1316,13 @@ def run_scoring_pipeline(symbol, analysis, market_data=None):
     if primary:
         try:
             from trade_levels import compute_trade_levels
+            _pr = signals[primary]
+            analysis["_entry_meta"] = {
+                "with_trend":           _pr.get("with_trend", False),
+                "trend_aligned":        _pr.get("trend_aligned", False),
+                "reversal_gate_passed": _pr.get("reversal_gate_passed", False),
+                "macro_trend":          _pr.get("macro_trend", "NEUTRAL"),
+            }
             levels = compute_trade_levels(analysis, primary, ps)
         except Exception as e:
             logger.warning(f"[Pipeline] TP/SL 산출 실패: {e}")
@@ -1182,6 +1332,7 @@ def run_scoring_pipeline(symbol, analysis, market_data=None):
         "direction": primary, "score": ps,
         "signal_result": signals, "cooldown_skip": cooldown,
         "regime": analysis.get("regime", {}), "regime_4h": r4h, "daily_bias": db,
+        "macro_trend": analysis.get("macro_trend", {}),
         "scored_at": dt.datetime.now(timezone.utc).isoformat(),
         "micro_result": ml if primary=="long" else ms_,
         "levels": levels,

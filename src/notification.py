@@ -223,9 +223,11 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     reverse_count = ema.get("reverse_count", 0)
 
     # ── 등급 ──────────────────────────────────────────────────
-    if score >= 85:
+    # [v5.0] 등급은 trade_levels 의 트랙 인지 등급을 우선 사용(거시추세 정합 가산 반영)
+    _lvl_grade = (pipeline_result.get("levels", {}) or {}).get("grade")
+    if _lvl_grade == "STRONG" or (_lvl_grade is None and score >= config.GRADE_STRONG_SCORE):
         grade_icon, grade_label, grade_desc = "🔥🔥", "STRONG", "매우 강한 신호 — 즉시 대응 권장"
-    elif score >= 72:
+    elif _lvl_grade == "GOOD" or (_lvl_grade is None and score >= config.GRADE_GOOD_SCORE):
         grade_icon, grade_label, grade_desc = "🔥",   "GOOD",   "좋은 신호 — 표준 진입"
     else:
         grade_icon, grade_label, grade_desc = "📊",   "WATCH",  "기준 통과 — 확인 후 진입"
@@ -357,7 +359,23 @@ def build_signal_message(pipeline_result: dict, analysis: dict) -> str:
     if session_adj != 0: thr_parts.append(f"세션{session_adj:+d}pt")
     thr_summary = f"기본 {base_thr}pt → {' → '.join(thr_parts)} = {regime_thr}pt" if thr_parts else f"{regime_thr}pt"
 
+    # [v5.0] 거시추세 앵커 & 진입 트랙
+    macro_info = pipeline_result.get("macro_trend", {}) or {}
+    macro_t    = macro_info.get("trend", "NEUTRAL")
+    macro_str  = macro_info.get("strength", 0)
+    macro_icon = {"UP": "📈", "DOWN": "📉", "NEUTRAL": "➖"}.get(macro_t, "➖")
+    with_trend = side_result.get("with_trend", False)
+    counter_tr = side_result.get("counter_trend", False)
+    if with_trend:    track_label = "🟩 추세추종(with-trend)"
+    elif counter_tr:  track_label = "🟧 역추세반전(counter)"
+    else:             track_label = "⬜ 중립"
+    rev_pass = side_result.get("reversal_gate_passed", False)
+    rev_cnt  = side_result.get("reversal_confirms", 0)
+
     lines.append(f"🗺 <b>시장 컨텍스트</b>")
+    lines.append(f"  🧭 거시추세: {macro_icon} <b>{macro_t}</b>(강도{macro_str})  →  진입트랙: <b>{track_label}</b>")
+    if counter_tr:
+        lines.append(f"     반전게이트: {'✅통과' if rev_pass else '⛔미충족'} ({rev_cnt}/{config.REVERSAL_GATE_MIN_CONFIRMS} 확인)")
     lines.append(f"  4h국면: {regime_4h_icon} <b>{regime_4h_name}</b>  ×  1h국면: {regime_1h_icon} <b>{regime_1h_name}</b>")
     lines.append(f"  일봉바이어스: {bias_icon} <b>{bias_str}</b>  (강세{bias_bull}/3 약세{bias_bear}/3)")
 

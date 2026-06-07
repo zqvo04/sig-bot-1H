@@ -581,3 +581,72 @@ NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID", "")
 NOTION_DB_TITLE       = "1H Signal Log"
 NOTION_API_VERSION    = "2022-06-28"
 NOTION_ENABLED        = bool(NOTION_TOKEN)
+
+# ══════════════════════════════════════════════════════════════════════
+# [v5.0] Trend-First, Reversal-Gated 대대적 개편
+# ══════════════════════════════════════════════════════════════════════
+# 진단: 봇이 "추세추종"이 아니라 "역추세 바닥잡기" 기계였다.
+#   ① 멀티TF 과매도(is_extreme)가 만능 면죄부 → 하락추세에서 떨어지는 칼 매수
+#   ② 반전을 RSI 과매도만으로 정의(구조 확인 게이트 부재)
+#   ③ 추세 재진입(피라미딩)을 오히려 처벌(연속/성숙도/ADX 패널티)
+#   ④ 임계 인플레캡이 방향성을 모름(direction-blind)
+#   ⑤ 1H 레짐 깜빡임으로 가중치·임계 출렁
+# 해법: Daily+4H 거시추세 앵커 → 추세추종/역추세 두 트랙 분기.
+
+# ── [A] 거시 추세 앵커 가중치 (directional_bias.py) ──────────────────
+MACRO_W_EMA4          = 1.0    # 4H EMA(9/21) 방향
+MACRO_W_EMA1D         = 1.0    # 1D EMA(9/21) 방향
+MACRO_W_DAILY         = 1.0    # 일봉 바이어스(BULL/BEAR)
+MACRO_W_ESTRUCT       = 1.0    # 1D EMA 정배열/역배열 구조
+MACRO_W_MATURITY      = 0.5    # 4H HH/HL vs LH/LL 우세
+MACRO_W_BOS4          = 0.5    # 4H 시장구조 돌파(BOS)
+MACRO_TREND_THRESHOLD = 1.5    # |score| ≥ 1.5 → UP/DOWN, 그 외 NEUTRAL
+MACRO_STRENGTH_DIVISOR = 1.5   # 강도 = |score| / divisor (0~3)
+
+# ── [B] 반전 확인 게이트 (역추세 진입 면죄부 조건) ───────────────────
+# 역추세 방향 극단 진입은 아래 확인요소 중 최소 N개 충족해야 면죄부(패널티 면제).
+# 미충족 시 단순 과매도는 추세 패널티를 그대로 받아 사실상 발사되지 않는다.
+#   요소: CHoCH정합 / MACD히스토그램 전환 / 반전 캔들(핀바·인걸핑) / 대량 역청산
+REVERSAL_GATE_MIN_CONFIRMS = 2
+
+# ── [C] 추세 재진입(피라미딩) — 연속신호 처벌을 완화로 반전 ──────────
+# 추세추종 트랙에서는 같은 방향 연속 신호 = 추세 확정 → 임계 완화.
+# (과밀 방지는 기존 동적 쿨다운/가격밴드가 담당)
+REENTRY_RELIEF_PER  = 2    # 연속 1회당 임계 완화폭
+REENTRY_MAX_RELIEF  = 6    # 재진입 완화 상한
+
+# ── [D] 방향성 임계 (트랙별 비대칭) ──────────────────────────────────
+THR_WITH_TREND_RELIEF   = 4    # 추세추종 트랙 추가 임계 완화
+THR_COUNTER_NOGATE_ADJ  = 14   # 역추세 + 게이트 미충족 → 임계 대폭 상향(차단)
+# 트랙별 순(純) 인플레이션 캡 (기본임계 대비 허용 변동폭)
+TRACK_WITH_TREND_HI   = 4      # 추세추종: 최대 base+4 까지만 상승
+TRACK_WITH_TREND_LO   = 14     # 추세추종: 최대 base-14 까지 완화
+TRACK_COUNTER_HI      = 16     # 역추세: 최대 base+16 까지 상승(게이트 미충족 차단 수용)
+TRACK_COUNTER_LO      = 6      # 역추세(게이트 통과): 최대 base-6 까지만 완화
+TRACK_NEUTRAL_HI      = 10     # 중립 추세: 기존 v4.0 캡 유지
+TRACK_NEUTRAL_LO      = 12
+
+# ── [E] 레짐 히스테리시스 (1H 레짐 깜빡임 제거) ──────────────────────
+# 새 레짐이 N회 연속 관측돼야 전환 인정. 그 전까지는 확정 레짐 유지.
+REGIME_HYSTERESIS_CONFIRM = 2
+
+# ── [F] 등급 산정 (트랙·게이트 반영) ─────────────────────────────────
+# 추세추종+확정정합 = 등급 상향(STRONG 더 자주), 역추세 게이트 최소충족 = WATCH 유지.
+GRADE_WITH_TREND_BONUS    = 8   # 추세추종(_trend_aligned)·게이트2+ 시 등급용 점수 가산
+GRADE_STRONG_SCORE        = 80
+GRADE_GOOD_SCORE          = 70
+
+# ══════════════════════════════════════════════════════════════════════
+# [v5.0.1] 감사(self-audit) 후속 — 기존 로직과의 충돌 해소 (C1/C2/C3)
+# ══════════════════════════════════════════════════════════════════════
+# [C1] 추세추종 풀백 재진입의 진입조건(역EMA·price<MA20)이 그대로 역풍필터
+#   (A-2/A-3/C-1)에 걸려 v5.0 완화를 자기상쇄하던 문제 → with-trend 트랙에서
+#   SQUEEZE와 동일하게 역풍필터 완화/면제.
+WITH_TREND_HEADWIND_EXEMPT = True
+
+# [C2] 동적 쿨다운이 "유리한 이동 후" 재진입을 480/300분 봉쇄해 피라미딩을
+#   막던 문제 → 추세추종 재진입은 짧은 고정 쿨다운만 적용(과밀은 가격밴드 1%가 차단).
+REENTRY_COOLDOWN_MINUTES   = 180   # 추세추종 재진입 최소 간격(3h ≈ 3캔들)
+
+# [C3] EXPLOSIVE(변동성 폭발)는 즉시 포착해야 하므로 레짐 히스테리시스 평활 면제.
+REGIME_HYSTERESIS_BYPASS   = ("EXPLOSIVE",)

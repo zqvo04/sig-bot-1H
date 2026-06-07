@@ -16,9 +16,19 @@ logger = logging.getLogger(__name__)
 
 
 def grade_of(score: float) -> str:
-    if score >= 85: return "STRONG"
-    if score >= 72: return "GOOD"
+    if score >= config.GRADE_STRONG_SCORE: return "STRONG"
+    if score >= config.GRADE_GOOD_SCORE:   return "GOOD"
     return "WATCH"
+
+
+def _effective_grade_score(analysis: dict, score: float) -> float:
+    """[v5.0-F] 등급 산정용 유효점수. 거시추세 정합 + 확정 추세추종이면 가산.
+    (강한 추세숏이 단순 점수만으로 WATCH에 머무르던 문제 교정)"""
+    meta = analysis.get("_entry_meta", {}) or {}
+    eff = score
+    if meta.get("with_trend") and meta.get("trend_aligned"):
+        eff += config.GRADE_WITH_TREND_BONUS
+    return eff
 
 
 def compute_trade_levels(analysis: dict, direction: str, score: float) -> dict:
@@ -57,7 +67,8 @@ def compute_trade_levels(analysis: dict, direction: str, score: float) -> dict:
                 if price * config.TPSL_MIN_SL_PCT <= struct_risk <= price * config.TPSL_MAX_SL_PCT:
                     risk = struct_risk
 
-    r_mult = config.TPSL_TP_R_BY_GRADE.get(grade_of(score), config.TPSL_TP_R_MULTIPLE)
+    grade  = grade_of(_effective_grade_score(analysis, score))
+    r_mult = config.TPSL_TP_R_BY_GRADE.get(grade, config.TPSL_TP_R_MULTIPLE)
 
     if direction == "long":
         sl = price - risk
@@ -79,5 +90,5 @@ def compute_trade_levels(analysis: dict, direction: str, score: float) -> dict:
         "risk_pct": round(risk_pct, 4),
         "r_multiple": r_mult,
         "atr_pct": round(atr_pct, 4),
-        "grade": grade_of(score),
+        "grade": grade,
     }
