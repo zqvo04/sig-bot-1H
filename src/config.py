@@ -650,3 +650,18 @@ REENTRY_COOLDOWN_MINUTES   = 180   # 추세추종 재진입 최소 간격(3h ≈
 
 # [C3] EXPLOSIVE(변동성 폭발)는 즉시 포착해야 하므로 레짐 히스테리시스 평활 면제.
 REGIME_HYSTERESIS_BYPASS   = ("EXPLOSIVE",)
+
+# ══════════════════════════════════════════════════════════════════════
+# [학습] Research Logger — 상태 중심 학습 데이터 적재 (신호와 독립)
+# ══════════════════════════════════════════════════════════════════════
+# 매시간을 1표본으로, (시장 상태, 이후 72h 차트 경로)를 JSONL로 적재한다.
+# 신호 발생 여부와 무관. 라벨은 저장된 경로에서 오프라인 파생(수집 시 박제 안 함).
+# 상세 설계: docs/LEARNING_DATA_DESIGN.md
+RESEARCH_LOGGER_ENABLED = True                  # False(또는 env=0) 시 완전 no-op
+RESEARCH_DATA_DIR       = "data/research"        # repo 루트 기준 상대경로
+RESEARCH_PATH_HOURS     = 72                      # 경로 캡처 길이(=성숙 기준 캔들 수)
+RESEARCH_FEATURE_VERSION = 1                      # 스키마 버전(피처 추가는 nullable로만)
+RESEARCH_FP_RSI_ZONES   = (35.0, 65.0)           # 지문 RSI존 경계 OS/MID/OB
+RESEARCH_FP_VOL_SQUEEZE = 0.85                    # bb_width/avg < 이값 → SQUEEZE
+RESEARCH_FP_VOL_EXPAND  = 1.20                    # bb_width/avg > 이값 → EXPANDED
+RESEARCH_PATH_ROUND     = 6                       # 경로 상대변화율 반올림 자리수
