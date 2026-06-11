@@ -30,12 +30,155 @@ logger = logging.getLogger(__name__)
 
 def enabled() -> bool:
     return bool(config.NOTION_ENABLED and config.NOTION_TOKEN
-                and config.NOTION_RESEARCH_DB_ID
                 and getattr(config, "NOTION_RESEARCH_ENABLED", True))
 
 
 def _p_chk(v):
     return {"checkbox": bool(v)}
+
+
+# ════════════════════════════════════════════════════════════════════
+# DB 확보 — 접근 검증 → 검색 → 자동 생성 (셀프 힐링)
+# ════════════════════════════════════════════════════════════════════
+# 주의: DB가 존재해도 봇 통합(Integration)에 공유되지 않았으면 Notion API는
+# 404를 반환한다. 그 경우 토큰이 접근 가능한 동명 DB를 검색하고, 없으면
+# 기존 신호 DB(1H Signal Log)의 부모 페이지 아래에 자동 생성한다.
+# (신호 DB가 동작 중이라면 그 부모에는 반드시 쓰기 권한이 있다)
+
+_RESEARCH_DB_TITLE = "1H Research Snapshots"
+_db_cache = None          # 검증 완료된 DB ID (런 내 캐시)
+_db_failed = False        # 확보 실패 시 런 내 재시도 방지
+
+_NUM_PROPS = [
+    "FV", "P0",
+    "RSI 1H", "RSI 4H", "RSI 1D", "RSI 1D Slope", "RSI Wtd",
+    "BB Pos", "BB Width Ratio", "MA20 Slope",
+    "ADX", "ADX Slope", "ADX 4H", "DI Diff",
+    "EMA 1H", "EMA 4H", "EMA 1D", "MACD Hist Pct", "MACD Cross",
+    "Vol Ratio", "ATR Pct", "ATR Ratio",
+    "BOS", "CHoCH", "BOS 4H", "CHoCH 4H", "FVG", "OB Sign", "OB Strength",
+    "Fib GP", "Fib Key", "Weekly Lvl", "Maturity Net", "Struct", "Failed Break",
+    "Candle 1H", "Candle 4H", "Candle 1D", "Vol Div",
+    "Funding Pct", "LS Long", "Taker Buy", "OI Chg", "OI Slope", "Smart Div",
+    "Hour UTC", "DOW",
+    "Score L", "Score S", "Thr L", "Thr S",
+    "Ret 4h", "Ret 12h", "Ret 24h", "Ret 48h", "Ret 72h",
+    "MFE 72h", "MAE 72h", "Ret 24h ATR", "Ret 72h ATR",
+    "TT Peak", "TT Trough", "Path Eff",
+]
+
+_SEL_PROPS = {
+    "Symbol":  [("BTC/USDT", "orange"), ("ETH/USDT", "blue"), ("HYPE/USDT", "purple")],
+    "Outcome": [("PENDING", "gray"), ("DONE", "green"), ("EXPIRED", "red")],
+    "FP Key":  [],
+    "Regime 1H": [("TRENDING", "green"), ("RANGING", "gray"),
+                  ("EXPLOSIVE", "red"), ("SQUEEZE", "yellow"), ("UNKNOWN", "default")],
+    "Regime 4H": [("TRENDING", "green"), ("RANGING", "gray"),
+                  ("EXPLOSIVE", "red"), ("SQUEEZE", "yellow"), ("UNKNOWN", "default")],
+    "Bias 1D":  [("BULL", "green"), ("BEAR", "red"), ("NEUTRAL", "gray")],
+    "RSI Zone": [("OS", "blue"), ("MID", "gray"), ("OB", "orange"), ("NA", "default")],
+    "Vol Zone": [("SQUEEZE", "yellow"), ("NORMAL", "gray"),
+                 ("EXPANDED", "red"), ("NA", "default")],
+    "Retrace L": [("none", "default"), ("too_shallow", "gray"), ("shallow", "yellow"),
+                  ("optimal", "green"), ("deep", "orange"), ("broken", "red")],
+    "Retrace S": [("none", "default"), ("too_shallow", "gray"), ("shallow", "yellow"),
+                  ("optimal", "green"), ("deep", "orange"), ("broken", "red")],
+    "Funding Bias": [], "Funding Signal": [], "LS Bias": [], "Taker Bias": [],
+    "OI Quadrant": [], "Smart Dir": [], "Liq Signal": [], "Liq Fav": [],
+    "Direction": [("long", "green"), ("short", "red")],
+    "Class 24h": [("UP", "green"), ("DOWN", "red"), ("FLAT", "gray")],
+    "Class 72h": [("UP", "green"), ("DOWN", "red"), ("FLAT", "gray")],
+}
+
+
+def _db_schema() -> dict:
+    props = {"Name": {"title": {}},
+             "TS": {"date": {}}, "Resolved At": {"date": {}},
+             "Snapshot ID": {"rich_text": {}},
+             "BB Squeeze": {"checkbox": {}}, "Signal": {"checkbox": {}}}
+    for n in _NUM_PROPS:
+        props[n] = {"number": {}}
+    for n, opts in _SEL_PROPS.items():
+        props[n] = {"select": {"options": [{"name": o, "color": c} for o, c in opts]}}
+    return props
+
+
+def _db_accessible(db_id: str) -> bool:
+    return bool(db_id and _request("GET", f"/databases/{db_id}"))
+
+
+def _find_db_by_title() -> str:
+    res = _request("POST", "/search", {
+        "query": _RESEARCH_DB_TITLE,
+        "filter": {"property": "object", "value": "database"},
+    })
+    for obj in (res or {}).get("results", []):
+        title = "".join(t.get("plain_text", "") for t in obj.get("title", []))
+        if title.strip() == _RESEARCH_DB_TITLE:
+            return obj.get("id")
+    return None
+
+
+def _signal_db_parent_page() -> str:
+    """기존 신호 DB의 부모 페이지 ID — 봇 토큰이 확실히 접근 가능한 위치."""
+    if config.NOTION_PARENT_PAGE_ID:
+        return config.NOTION_PARENT_PAGE_ID
+    if not config.NOTION_DATABASE_ID:
+        return None
+    db = _request("GET", f"/databases/{config.NOTION_DATABASE_ID}")
+    parent = (db or {}).get("parent", {})
+    return parent.get("page_id")
+
+
+def _create_db() -> str:
+    parent = _signal_db_parent_page()
+    if not parent:
+        logger.warning("[Notion/Research] DB 자동 생성 불가 — 접근 가능한 부모 페이지 없음")
+        return None
+    created = _request("POST", "/databases", {
+        "parent": {"type": "page_id", "page_id": parent},
+        "title": [{"type": "text", "text": {"content": _RESEARCH_DB_TITLE}}],
+        "properties": _db_schema(),
+    })
+    if created and created.get("id"):
+        logger.info(f"[Notion/Research] 신규 DB 자동 생성: {created['id']} (부모: {parent})")
+        return created["id"]
+    logger.warning("[Notion/Research] DB 자동 생성 실패")
+    return None
+
+
+def _ensure_db() -> str:
+    """사용할 DB ID 반환. 지정 ID 검증 → 동명 DB 검색 → 자동 생성 순."""
+    global _db_cache, _db_failed
+    if _db_cache:
+        return _db_cache
+    if _db_failed:
+        return None
+
+    cand = config.NOTION_RESEARCH_DB_ID
+    if _db_accessible(cand):
+        _db_cache = cand
+        return _db_cache
+    if cand:
+        logger.warning(
+            f"[Notion/Research] 지정 DB({cand}) 접근 불가 — 봇 통합에 공유되지 않았을 가능성. "
+            f"Notion에서 해당 DB(또는 상위 페이지) ··· → 연결 에 봇 통합을 추가하면 그대로 사용됩니다. "
+            f"우선 토큰이 접근 가능한 동명 DB를 탐색/생성합니다."
+        )
+
+    found = _find_db_by_title()
+    if found:
+        logger.info(f"[Notion/Research] 접근 가능한 기존 DB 재사용: {found}")
+        _db_cache = found
+        return _db_cache
+
+    created = _create_db()
+    if created:
+        _db_cache = created
+        return _db_cache
+
+    _db_failed = True
+    return None
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -148,8 +291,8 @@ def _build_properties(state: dict) -> dict:
     }
 
 
-def _snapshot_exists(snapshot_id: str) -> bool:
-    res = _request("POST", f"/databases/{config.NOTION_RESEARCH_DB_ID}/query", {
+def _snapshot_exists(db_id: str, snapshot_id: str) -> bool:
+    res = _request("POST", f"/databases/{db_id}/query", {
         "filter": {"property": "Snapshot ID", "rich_text": {"equals": snapshot_id}},
         "page_size": 1,
     })
@@ -158,11 +301,15 @@ def _snapshot_exists(snapshot_id: str) -> bool:
 
 def log_snapshot(state: dict) -> bool:
     """상태 스냅샷 1행 생성 (Outcome=PENDING). 동일 snapshot_id 존재 시 skip(멱등)."""
-    if _snapshot_exists(state["snapshot_id"]):
+    db_id = _ensure_db()
+    if not db_id:
+        logger.warning("[Notion/Research] 사용 가능한 DB 없음 — 스냅샷 기록 skip")
+        return False
+    if _snapshot_exists(db_id, state["snapshot_id"]):
         logger.debug(f"[Notion/Research] 중복 스냅샷 skip: {state['snapshot_id']}")
         return False
     res = _request("POST", "/pages", {
-        "parent": {"database_id": config.NOTION_RESEARCH_DB_ID},
+        "parent": {"database_id": db_id},
         "properties": _build_properties(state),
     })
     ok = bool(res and res.get("id"))
@@ -241,9 +388,12 @@ def update_outcomes(symbol: str, df_1h: pd.DataFrame) -> int:
     """봉시각+72h 지난 PENDING 행에 결과 라벨 기입. 갱신 행 수 반환."""
     if df_1h is None or len(df_1h) == 0:
         return 0
+    db_id = _ensure_db()
+    if not db_id:
+        return 0
     cutoff = (datetime.now(timezone.utc)
               - timedelta(hours=config.RESEARCH_PATH_HOURS)).isoformat()
-    res = _request("POST", f"/databases/{config.NOTION_RESEARCH_DB_ID}/query", {
+    res = _request("POST", f"/databases/{db_id}/query", {
         "filter": {"and": [
             {"property": "Symbol",  "select": {"equals": symbol}},
             {"property": "Outcome", "select": {"equals": "PENDING"}},
