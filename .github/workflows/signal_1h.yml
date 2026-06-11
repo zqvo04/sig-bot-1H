@@ -24,6 +24,9 @@ on:
     - cron: '5 * * * *'   # 매시 5분 (UTC) — 1h 봉 마감 후 딜레이 흡수
   workflow_dispatch:        # 수동 실행 (테스트/디버그용)
 
+permissions:
+  contents: write           # [학습] research 데이터(JSONL) 커밋/푸시용
+
 jobs:
   signal:
     runs-on: ubuntu-latest
@@ -74,6 +77,32 @@ jobs:
           NOTION_DATABASE_ID:    ${{ secrets.NOTION_DATABASE_ID }}
           NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
         run: python src/main.py
+
+      # [학습] research 데이터(JSONL) 커밋/푸시 — 심볼별 파일이라 병렬 잡 충돌 없음.
+      # push 경합은 fetch+rebase 후 재시도(지수 백오프)로 해소.
+      - name: Commit research data
+        if: always()
+        run: |
+          if [ -z "$(git status --porcelain data/research 2>/dev/null)" ]; then
+            echo "변경된 research 데이터 없음 — 커밋 생략"; exit 0
+          fi
+          git config user.name  "sig-bot-research"
+          git config user.email "actions@users.noreply.github.com"
+          BRANCH="${GITHUB_REF_NAME}"
+          git add data/research
+          git commit -m "data(research): ${SINGLE_SYMBOL} 학습 스냅샷/경로 갱신 [skip ci]"
+          for i in 1 2 3 4 5; do
+            git fetch origin "$BRANCH" || true
+            git rebase "origin/$BRANCH" || git rebase --abort || true
+            if git push origin "HEAD:$BRANCH"; then
+              echo "✅ push 성공 (시도 $i)"; exit 0
+            fi
+            echo "⚠️ push 실패 — ${i}회차, 백오프 후 재시도"
+            sleep $((2 ** i))
+          done
+          echo "❌ research 데이터 push 최종 실패(비치명적)"; exit 0
+        env:
+          SINGLE_SYMBOL: ${{ matrix.symbol }}
 
       - name: Save bot state cache
         uses: actions/cache/save@v4

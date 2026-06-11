@@ -28,6 +28,7 @@ from analysis_engine import run_full_analysis
 from scoring_system  import run_scoring_pipeline
 from notification    import notify_signal, send_error_alert
 import notion_logger
+import research_logger
 
 
 # ══════════════════════════════════════════════
@@ -157,6 +158,19 @@ def main():
                 f"4h={regime_4h.get('regime','?')} × 1h={regime_1h.get('regime','?')} | "
                 f"일봉바이어스={daily_bias.get('bias','?')}"
             )
+
+            # 3.4 [학습] Research Logger — 상태 스냅샷 기록 + 성숙 경로 캡처 (신호와 독립)
+            if research_logger.enabled():
+                try:
+                    state = research_logger.build_state(
+                        single_symbol, analysis, pipeline, collected
+                    )
+                    research_logger.record_snapshot(state)
+                    research_logger.capture_paths(
+                        single_symbol, collected.get("ohlcv", {}).get("1h")
+                    )
+                except Exception as e:
+                    logger.warning(f"[{single_symbol}] Research 로거 오류: {e}")
 
             # 3.5 [v4.0] Notion — 기존 OPEN 신호 성공/실패 자동 평가 (매 실행)
             if notion_logger.enabled():
