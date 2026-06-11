@@ -186,4 +186,66 @@ def main():
                     except Exception as e:
                         logger.warning(f"[{single_symbol}] Notion Research 오류: {e}")
 
-            # 3.5 [v4.0] Notion — 기존
+            # 3.5 [v4.0] Notion — 기존 OPEN 신호 성공/실패 자동 평가 (매 실행)
+            if notion_logger.enabled():
+                try:
+                    df_1h_eval = collected.get("ohlcv", {}).get("1h")
+                    notion_logger.evaluate_open_signals(
+                        single_symbol, df_1h_eval, collected.get("price", 0.0)
+                    )
+                except Exception as e:
+                    logger.warning(f"[{single_symbol}] Notion 평가 오류: {e}")
+
+            # 4. 알림 발송
+            if pipeline["should_notify"]:
+                sent = notify_signal(pipeline, analysis)
+                result["notified"] = sent
+                if sent:
+                    logger.info(
+                        f"[{single_symbol}] 🚨 {pipeline['direction'].upper()} "
+                        f"{pipeline['score']:.1f}pt — 1H봇 알림 발송 완료"
+                    )
+                    counter["signals"] += 1
+                    # [v4.0] Notion에 신호 기록 (OPEN)
+                    if notion_logger.enabled():
+                        try:
+                            notion_logger.log_signal(pipeline, analysis, pipeline.get("levels", {}))
+                        except Exception as e:
+                            logger.warning(f"[{single_symbol}] Notion 기록 오류: {e}")
+            else:
+                long_s  = pipeline["signal_result"]["long"]["final_score"]
+                short_s = pipeline["signal_result"]["short"]["final_score"]
+                logger.info(
+                    f"[{single_symbol}] 신호 없음 — "
+                    f"롱:{long_s:.1f}pt / 숏:{short_s:.1f}pt"
+                )
+
+    except Exception as e:
+        err_msg = traceback.format_exc()
+        logger.error(f"[{single_symbol}] 처리 오류:\n{err_msg}")
+        result["error"] = str(e)
+
+    elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+    logger.info("\n" + "=" * 55)
+    logger.info(f"🕐 1H봇 실행 완료 — {elapsed:.1f}초")
+    status = "✅" if result["success"] else "❌"
+    notif  = f"🚨{result['direction'].upper()}" if result["notified"] else "—"
+    score  = f"{result['score']:.1f}pt" if result["success"] else result.get("error","?")
+    logger.info(f"   {status} {single_symbol:<12} {score:<10} {notif}")
+    logger.info(f"   누적 신호: {counter['signals']}건")
+    logger.info("=" * 55)
+
+    if result["error"]:
+        send_error_alert(
+            f"[1H봇] {single_symbol}: {result['error']}",
+            context=f"run #{run_num}"
+        )
+
+    _save_counter(counter)
+
+    if result["error"]:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
