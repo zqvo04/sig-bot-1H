@@ -29,6 +29,7 @@ from scoring_system  import run_scoring_pipeline
 from notification    import notify_signal, send_error_alert
 import notion_logger
 import research_logger
+import notion_research
 
 
 # ══════════════════════════════════════════════
@@ -159,18 +160,31 @@ def main():
                 f"일봉바이어스={daily_bias.get('bias','?')}"
             )
 
-            # 3.4 [학습] Research Logger — 상태 스냅샷 기록 + 성숙 경로 캡처 (신호와 독립)
-            if research_logger.enabled():
+            # 3.4 [학습] Research Logger — 상태 스냅샷 + 사후 결과 (신호와 독립)
+            #   · git JSONL: 풀 피처 + 72h 전체 경로 (research_logger)
+            #   · Notion DB: 같은 스냅샷 + 핵심 결과 라벨 미러 (notion_research)
+            if research_logger.enabled() or notion_research.enabled():
+                _df_1h_r = collected.get("ohlcv", {}).get("1h")
+                _state = None
                 try:
-                    state = research_logger.build_state(
+                    _state = research_logger.build_state(
                         single_symbol, analysis, pipeline, collected
                     )
-                    research_logger.record_snapshot(state)
-                    research_logger.capture_paths(
-                        single_symbol, collected.get("ohlcv", {}).get("1h")
-                    )
                 except Exception as e:
-                    logger.warning(f"[{single_symbol}] Research 로거 오류: {e}")
+                    logger.warning(f"[{single_symbol}] Research 상태 빌드 오류: {e}")
+                if _state is not None and research_logger.enabled():
+                    try:
+                        research_logger.record_snapshot(_state)
+                        research_logger.capture_paths(single_symbol, _df_1h_r)
+                    except Exception as e:
+                        logger.warning(f"[{single_symbol}] Research 로거 오류: {e}")
+                if notion_research.enabled():
+                    try:
+                        if _state is not None:
+                            notion_research.log_snapshot(_state)
+                        notion_research.update_outcomes(single_symbol, _df_1h_r)
+                    except Exception as e:
+                        logger.warning(f"[{single_symbol}] Notion Research 오류: {e}")
 
             # 3.5 [v4.0] Notion — 기존 OPEN 신호 성공/실패 자동 평가 (매 실행)
             if notion_logger.enabled():

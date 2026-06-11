@@ -76,6 +76,8 @@ jobs:
           NOTION_TOKEN:          ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID:    ${{ secrets.NOTION_DATABASE_ID }}
           NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
+          # [학습] Research Snapshots DB — 미설정 시 config 기본 ID 사용
+          NOTION_RESEARCH_DB_ID: ${{ secrets.NOTION_RESEARCH_DB_ID }}
         run: python src/main.py
 
       # [학습] research 데이터(JSONL) 커밋/푸시 — 심볼별 파일이라 병렬 잡 충돌 없음.

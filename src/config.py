@@ -665,3 +665,10 @@ RESEARCH_FP_RSI_ZONES   = (35.0, 65.0)           # 지문 RSI존 경계 OS/MID/O
 RESEARCH_FP_VOL_SQUEEZE = 0.85                    # bb_width/avg < 이값 → SQUEEZE
 RESEARCH_FP_VOL_EXPAND  = 1.20                    # bb_width/avg > 이값 → EXPANDED
 RESEARCH_PATH_ROUND     = 6                       # 경로 상대변화율 반올림 자리수
+
+# ── Notion 미러 (1H Research Snapshots DB) ──────────────────────────
+# 매시 L1/L2/L3 1행 기록 + 72h 후 차트 움직임 결과 라벨 자동 기입.
+# 원시 72h 경로 전체는 git JSONL이 보관, Notion은 필터·그룹 분석용 핵심 라벨만.
+NOTION_RESEARCH_DB_ID   = (os.getenv("NOTION_RESEARCH_DB_ID")
+                           or "530210d9989a43f39dcd89cc8a72eb07")
+NOTION_RESEARCH_ENABLED = os.getenv("NOTION_RESEARCH_ENABLED", "1") not in ("0", "false", "False")
