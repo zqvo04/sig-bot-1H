@@ -325,18 +325,22 @@ def log_snapshot(state: dict) -> bool:
 # ════════════════════════════════════════════════════════════════════
 
 def _compute_outcome(p0: float, atr_pct, ts: pd.Timestamp, df_1h: pd.DataFrame):
-    """(properties dict | None, status) — status: 'done'/'expired'/'immature'."""
+    """(properties dict | None, status) — status: 'done'/'partial'/'expired'/'immature'.
+
+    4h 이상 경과 시부터 가용 구간 부분 기입 (partial).
+    72h 완성 시 Outcome=DONE + Resolved At 기입.
+    """
     H = config.RESEARCH_PATH_HOURS
     later = df_1h[df_1h.index > ts]
-    if len(later) < H:
-        # 윈도가 슬라이드해 초기 캔들이 유실된 고아 행 → EXPIRED
-        if len(later) == 0 or (later.index[0] - ts).total_seconds() / 3600.0 > H:
-            return None, "expired"
-        return None, "immature"
-    if (later.index[0] - ts).total_seconds() / 3600.0 > H:
+
+    if len(later) == 0 or (later.index[0] - ts).total_seconds() / 3600.0 > H:
         return None, "expired"
     if not p0 or p0 <= 0:
         return None, "expired"
+
+    # 최소 4h 미만이면 아직 아무 라벨도 계산 불가 → skip
+    if len(later) < 4:
+        return None, "immature"
 
     seg = later.iloc[:H]
     c = [float(x) / p0 - 1.0 for x in seg["close"].values]
@@ -363,8 +367,8 @@ def _compute_outcome(p0: float, atr_pct, ts: pd.Timestamp, df_1h: pd.DataFrame):
             return "FLAT"
         return "UP" if r_pct > 0 else "DOWN"
 
+    done = len(c) >= H
     props = {
-        "Outcome":     _p_sel("DONE"),
         "Ret 4h":      _p_num(ret.get(4)),
         "Ret 12h":     _p_num(ret.get(12)),
         "Ret 24h":     _p_num(ret.get(24)),
@@ -379,20 +383,27 @@ def _compute_outcome(p0: float, atr_pct, ts: pd.Timestamp, df_1h: pd.DataFrame):
         "TT Peak":     _p_num(tt_peak),
         "TT Trough":   _p_num(tt_trough),
         "Path Eff":    _p_num(path_eff),
-        "Resolved At": _p_date(datetime.now(timezone.utc).isoformat()),
     }
-    return props, "done"
+    if done:
+        props["Outcome"] = _p_sel("DONE")
+        props["Resolved At"] = _p_date(datetime.now(timezone.utc).isoformat())
+    return props, "done" if done else "partial"
 
 
 def update_outcomes(symbol: str, df_1h: pd.DataFrame) -> int:
-    """봉시각+72h 지난 PENDING 행에 결과 라벨 기입. 갱신 행 수 반환."""
+    """4h 이상 경과한 PENDING 행에 가용 라벨 순차 기입. 갱신 행 수 반환.
+
+    · partial: 4h~71h 경과 — 계산 가능한 Ret/MFE/MAE만 기입, Outcome 유지(PENDING)
+    · done:    72h 완성   — 전체 기입 + Outcome=DONE + Resolved At
+    · expired: 초기 캔들 유실 — Outcome=EXPIRED
+    """
     if df_1h is None or len(df_1h) == 0:
         return 0
     db_id = _ensure_db()
     if not db_id:
         return 0
-    cutoff = (datetime.now(timezone.utc)
-              - timedelta(hours=config.RESEARCH_PATH_HOURS)).isoformat()
+    # 최소 4h 지난 행부터 처리 (PENDING 전체 대상, 72h 제한 제거)
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
     res = _request("POST", f"/databases/{db_id}/query", {
         "filter": {"and": [
             {"property": "Symbol",  "select": {"equals": symbol}},
@@ -422,6 +433,8 @@ def update_outcomes(symbol: str, df_1h: pd.DataFrame) -> int:
             if status == "expired":
                 out_props = {"Outcome": _p_sel("EXPIRED"),
                              "Resolved At": _p_date(datetime.now(timezone.utc).isoformat())}
+            if out_props is None:
+                continue
             r = _request("PATCH", f"/pages/{page['id']}", {"properties": out_props})
             if r:
                 updated += 1
