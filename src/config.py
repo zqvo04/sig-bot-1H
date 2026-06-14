@@ -659,8 +659,11 @@ REGIME_HYSTERESIS_BYPASS   = ("EXPLOSIVE",)
 # 상세 설계: docs/LEARNING_DATA_DESIGN.md
 RESEARCH_LOGGER_ENABLED = True                  # False(또는 env=0) 시 완전 no-op
 RESEARCH_DATA_DIR       = "data/research"        # repo 루트 기준 상대경로
-RESEARCH_PATH_HOURS     = 72                      # 경로 캡처 길이(=성숙 기준 캔들 수)
-RESEARCH_FEATURE_VERSION = 1                      # 스키마 버전(피처 추가는 nullable로만)
+RESEARCH_PATH_HOURS     = 72                      # 경로 캡처 길이(=완성 기준 캔들 수)
+RESEARCH_PATH_MIN_HOURS = 4                       # [P1] 이 시간 이상 경과 시부터 부분 경로 증분 저장
+# [P4] 스키마 버전. L1 피처 화이트리스트(research_logger.build_state)·경로 포맷을
+#      바꿀 때마다 +1 한다. v2 = 상태 중심(LEARNING_DATA_DESIGN.md) + 경로에 open(o) 포함.
+RESEARCH_FEATURE_VERSION = 2
 RESEARCH_FP_RSI_ZONES   = (35.0, 65.0)           # 지문 RSI존 경계 OS/MID/OB
 RESEARCH_FP_VOL_SQUEEZE = 0.85                    # bb_width/avg < 이값 → SQUEEZE
 RESEARCH_FP_VOL_EXPAND  = 1.20                    # bb_width/avg > 이값 → EXPANDED
