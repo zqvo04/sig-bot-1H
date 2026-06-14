@@ -307,17 +307,32 @@ def record_snapshot(state: dict) -> bool:
 # ════════════════════════════════════════════════════════════════════
 
 def _compute_path(p0: float, seg: pd.DataFrame) -> dict:
+    """seg(미래 캔들)의 open/high/low/close 상대경로(기준가 p0 대비)를 계산.
+
+    [P2] open(o)을 함께 저장 → 오프라인에서 '다음 봉 시가 체결'(o[0]) 등 현실적
+         진입 기준으로 백테스트 가능. (p0=스냅샷 봉 close, 봇 실거래는 :06 진입이라
+         p0 기준만으론 ~6분 빠른 체결을 가정하게 되던 불일치 해소)
+    """
     if not p0 or p0 <= 0:
         return None
     rnd = getattr(config, "RESEARCH_PATH_ROUND", 6)
+    o = [round(float(x) / p0 - 1.0, rnd) for x in seg["open"].values]
     c = [round(float(x) / p0 - 1.0, rnd) for x in seg["close"].values]
     h = [round(float(x) / p0 - 1.0, rnd) for x in seg["high"].values]
     l = [round(float(x) / p0 - 1.0, rnd) for x in seg["low"].values]
-    return {"n": len(c), "c": c, "h": h, "l": l}
+    return {"n": len(c), "o": o, "c": c, "h": h, "l": l}
 
 
 def _label_file(path: str, df_1h: pd.DataFrame, horizon: int) -> int:
-    """한 월별 파일의 미캡처 행을 검사해 경로를 채운다. 갱신 행 수 반환."""
+    """한 월별 파일의 미완성 행 경로를 채운다(증분). 갱신 행 수 반환.
+
+    [P1] 올오어낫싱(72h 일괄) → 증분(incremental) 전환:
+      · 스냅샷 후 RESEARCH_PATH_MIN_HOURS(기본 4h) 이상이면 가용분까지 부분 경로 저장
+      · 매 실행마다 캔들이 늘면 경로를 갱신, 72h(horizon) 도달 시 complete=True 고정
+      · 같은 길이(새 캔들 없음)면 재기록 생략 → 불필요한 diff/커밋 방지
+      · 윈도 슬라이드로 초기 경로가 유실된 고아 행만 expired 처리
+    이로써 GHA가 72h 정각을 놓쳐도 데이터가 통째로 유실되지 않는다.
+    """
     if not os.path.exists(path):
         return 0
     rows = []
@@ -331,27 +346,40 @@ def _label_file(path: str, df_1h: pd.DataFrame, horizon: int) -> int:
         logger.warning(f"[Research] 파일 읽기 실패 {path}: {e}")
         return 0
 
+    min_h = getattr(config, "RESEARCH_PATH_MIN_HOURS", 4)
     updated = 0
     for row in rows:
-        if row.get("path") is not None:
+        pth = row.get("path")
+        # 완성·유실 확정 행은 더 손대지 않음(멱등)
+        if pth is not None and (pth.get("complete") or pth.get("expired")):
             continue
         ts = pd.Timestamp(row["ts"])
         later = df_1h[df_1h.index > ts]          # 스냅샷 봉 이후(미래) 캔들만
-        if len(later) < horizon:
-            continue                              # 아직 미성숙
+        if len(later) == 0:
+            continue                              # 방금 기록한 행 등 — 미래봉 없음
         # 정합성 가드: 첫 미래봉이 스냅샷 직후(약 1h)여야 함.
         # 윈도가 슬라이드해 초기 경로가 유실된 고아 행은 경로 기록 불가로 표기.
         gap_h = (later.index[0] - ts).total_seconds() / 3600.0
         if gap_h > horizon:
-            row["path"] = {"n": 0, "c": [], "h": [], "l": [], "expired": True}
-            updated += 1
+            # 단, 이미 부분 경로가 있으면 그 길이만큼은 유효 → complete=False로 보존
+            if pth is None:
+                row["path"] = {"n": 0, "o": [], "c": [], "h": [], "l": [],
+                               "expired": True, "complete": False}
+                updated += 1
             continue
-        seg = later.iloc[:horizon]
-        pth = _compute_path(row.get("p0"), seg)
-        if pth is None:
+        avail = min(len(later), horizon)
+        if avail < min_h:
+            continue                              # 아직 너무 이름(부분 경로도 보류)
+        old_n = (pth or {}).get("n", -1)
+        if avail <= old_n:
+            continue                              # 새 캔들 없음 → 재기록 생략
+        seg = later.iloc[:avail]
+        new_pth = _compute_path(row.get("p0"), seg)
+        if new_pth is None:
             continue
-        pth["captured_at"] = pd.Timestamp.now(tz=timezone.utc).isoformat()
-        row["path"] = pth
+        new_pth["complete"] = bool(avail >= horizon)
+        new_pth["captured_at"] = pd.Timestamp.now(tz=timezone.utc).isoformat()
+        row["path"] = new_pth
         updated += 1
 
     if updated:

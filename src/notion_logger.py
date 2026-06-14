@@ -278,8 +278,14 @@ def _candles_after(df_1h, entry_dt):
 
 
 def _evaluate_one(direction, entry, sl, tp, candles, current_price, entry_dt, now):
-    """단일 신호 판정 → (result, exit_reason, exit_price, resolved_dt) 또는 None(미체결)."""
+    """단일 신호 판정 → (result, exit_reason, exit_price, resolved_dt) 또는 None(미체결).
+
+    [P3] 만기(EXPIRED) 판정을 결정적으로: 봇 실행 시점의 실시간가(current_price)가 아니라
+         entry+EVAL_MAX_HOLD_HOURS 시점 봉의 종가로 청산한다. 72h 정각 실행을 놓쳐도
+         라벨이 실행 타이밍에 흔들리지 않는다. (만기 봉 미도달 시 None → OPEN 유지)
+    """
     d = direction.lower()
+    expire_at = entry_dt + timedelta(hours=config.EVAL_MAX_HOLD_HOURS)
     for ts, hi, lo, cl in candles:
         sl_hit = (lo <= sl) if d == "long" else (hi >= sl)
         tp_hit = (hi >= tp) if d == "long" else (lo <= tp)
@@ -292,11 +298,16 @@ def _evaluate_one(direction, entry, sl, tp, candles, current_price, entry_dt, no
             return ("LOSS", "SL_HIT", sl, ts)
         if tp_hit:
             return ("WIN", "TP_HIT", tp, ts)
+        # SL/TP 미터치 상태로 만기 봉에 도달 → 그 봉 종가로 결정적 청산
+        if ts >= expire_at:
+            pnl = (cl - entry) if d == "long" else (entry - cl)
+            return ("WIN" if pnl >= 0 else "LOSS",
+                    "EXPIRED_WIN" if pnl >= 0 else "EXPIRED_LOSS", cl, ts)
 
-    # 보유시간 초과 → 시장가 청산 판정
+    # 폴백: 만기 봉이 아직 캔들에 없지만 벽시계상 크게 초과(데이터 지연 등) → 실시간가로 청산
     held_h = (now - entry_dt).total_seconds() / 3600.0
-    if held_h >= config.EVAL_MAX_HOLD_HOURS and current_price > 0:
-        pnl = (current_price - entry) if direction.lower() == "long" else (entry - current_price)
+    if held_h >= config.EVAL_MAX_HOLD_HOURS + 6 and current_price > 0:
+        pnl = (current_price - entry) if d == "long" else (entry - current_price)
         if pnl >= 0:
             return ("WIN", "EXPIRED_WIN", current_price, now)
         return ("LOSS", "EXPIRED_LOSS", current_price, now)
