@@ -1,250 +1,205 @@
+"""main.py — WRF-4 진입점 (페이퍼 전용·무상태).
+
+모드:
+  signal (기본, 매시 :05) — 수집 → 측정 → btc_macro → 엔진(L0~L4) → 발사(페이퍼)
+                            → schema v3 스냅샷 적재 → Notion 미러. ALERT_ENABLED 시 알림.
+  score  (매 :*/15)       — 성숙 경로 채움(JSONL) + triple-barrier 신호판정(Notion)
+                            + 스냅샷 파생라벨 백필.
+
+라이브 본체는 절대 학습하지 않는다(calibration_table.json만 읽음). 엔진 전체가
+try/except로 격리되어, 분석/로깅 실패가 프로세스를 죽이지 않는다.
 """
-main.py — 1h Bot v2.0  (Matrix 전략 연동)
-각 Job은 단일 심볼만 처리 (GitHub Actions가 병렬화)
-
-[1h Bot 변경]
-  - 로그/알림에 "1H봇" 명시 → 15m봇과 구분
-  - run_scoring_pipeline에 market_data 전달 (마이크로구조 계산)
-  - regime_4h, daily_bias 로그 표시
-
-[Cron: 매시 5분]
-  5 * * * *
-  1h 봉 마감(:00) → 5분 대기 → GHA 실행 (~:06-08)
-  캔들 마감 후 총 지연: ~6-10분 (봉 길이 대비 10~17%)
-"""
-
-import json
+import argparse
 import logging
 import os
 import sys
+import time
 import traceback
-from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 import config
-from data_pipeline   import create_exchange, collect_all_data
+from data_pipeline import create_exchange, collect, collect_ohlcv
 from analysis_engine import run_full_analysis
-from scoring_system  import run_scoring_pipeline
-from notification    import notify_signal, send_error_alert
-import notion_logger
-import research_logger
-import notion_research
+from notification import send_message, send_error_alert
+
+from wrf import engine as wrf_engine
+from wrf import schema as wrf_schema
+from wrf import logger as wrf_logger
+from wrf import notion_wrf
+from wrf.btc_macro import classify_btc_macro
+
+logger = logging.getLogger(__name__)
 
 
-# ══════════════════════════════════════════════
-# 로깅 초기화
-# ══════════════════════════════════════════════
-
-def setup_logging() -> logging.Logger:
-    log_dir = os.path.join(os.path.dirname(__file__), '..', 'logs')
-    os.makedirs(log_dir, exist_ok=True)
-
-    fmt = logging.Formatter(
-        "%(asctime)s [%(levelname)-8s] %(name)s — %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+def setup_logging():
+    fmt = logging.Formatter("%(asctime)s [%(levelname)-7s] %(name)s — %(message)s",
+                            datefmt="%Y-%m-%d %H:%M:%S")
     root = logging.getLogger()
-    root.setLevel(getattr(logging, config.LOG_LEVEL, logging.INFO))
+    root.setLevel(getattr(logging, getattr(config, "LOG_LEVEL", "INFO"), logging.INFO))
+    if not root.handlers:
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setFormatter(fmt)
+        root.addHandler(ch)
+        try:
+            log_dir = os.path.join(os.path.dirname(__file__), "..", "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            fh = logging.FileHandler(os.path.join(log_dir, "bot.log"), encoding="utf-8")
+            fh.setFormatter(fmt)
+            root.addHandler(fh)
+        except Exception:
+            pass
 
-    ch = logging.StreamHandler(sys.stdout)
-    ch.setFormatter(fmt)
-    root.addHandler(ch)
+
+def _btc_macro_for(symbol: str, exchange, own_ohlcv: dict) -> str:
+    """심볼이 BTC면 자기 1D, 아니면 BTC/USDT 1D를 별도 수집해 거시방향 태깅."""
+    try:
+        if symbol == "BTC/USDT":
+            return classify_btc_macro(own_ohlcv.get("1d"))
+        btc = collect_ohlcv(exchange, "BTC/USDT")
+        return classify_btc_macro(btc.get("1d"))
+    except Exception as e:
+        logger.warning(f"[main] btc_macro 수집 실패 → CHOP: {e}")
+        return "CHOP"
+
+
+def _alert(cand: dict, engine_out: dict):
+    """ALERT_ENABLED일 때만 텔레그램 발송(학습기간엔 OFF·기록만)."""
+    if not getattr(config, "ALERT_ENABLED", False):
+        return
+    ctx = engine_out["ctx"]
+    arrow = "🟢 LONG" if cand["dir"] == "long" else "🔴 SHORT"
+    msg = (
+        f"<b>[WRF-4] {engine_out['symbol']} {cand['setup']} {arrow}</b>\n"
+        f"P̂ = <b>{cand['p_hat']:.2f}</b> ({cand['p_source']}) ≥ floor {cand['win_floor']:.2f}\n"
+        f"Regime {ctx.get('regime_1h')}/{ctx.get('regime_4h')} · Macro {ctx.get('btc_macro')}\n"
+        f"Entry {cand['entry']} · TP {cand['tp']} · SL {cand['sl']} · RR {cand['rr']}\n"
+        f"Size {cand['size']} · {cand.get('reason', '')}")
+    try:
+        send_message(msg)
+    except Exception as e:
+        logger.warning(f"[main] 알림 실패(격리): {e}")
+
+
+def run_signal(symbol: str, exchange) -> None:
+    """signal 모드: 한 심볼 전체 파이프라인. 엔진 본체는 try/except 격리."""
+    collected = collect(exchange, symbol)
+    ticker = collected.get("ticker") or {}
+    if not ticker.get("available"):
+        logger.warning(f"[main] {symbol} 티커 불가 — skip")
+        return
+    ohlcv = collected.get("ohlcv", {})
 
     try:
-        log_path = os.path.join(log_dir, 'bot.log')
-        fh = logging.FileHandler(log_path, encoding='utf-8')
-        fh.setFormatter(fmt)
-        root.addHandler(fh)
-    except Exception:
-        pass
+        measures = run_full_analysis(symbol, collected)
+        # 펀딩 백분위 입력 주입(있으면)
+        fh = (collected.get("funding_history") or {}).get("rates")
+        if fh:
+            measures["_funding_hist_rates"] = fh
 
-    return logging.getLogger("main")
+        btc_macro = _btc_macro_for(symbol, exchange, ohlcv)
+        out = wrf_engine.run_engine(symbol, measures, ohlcv, collected, btc_macro)
+
+        logger.info(
+            f"[WRF] {symbol} {out['ctx']['fp_key']} | 후보 {len(out['candidates'])} "
+            f"발사 {len(out['fired'])} | 전역베토 {out['global_veto']}")
+
+        # schema v3 스냅샷 적재(전량 기록) + 경로 캡처
+        row = wrf_schema.build_row(out)
+        wrf_logger.record_snapshot(row)
+        wrf_logger.capture_paths(symbol, ohlcv.get("1h"))
+
+        # Notion 미러 + OPEN 신호 판정
+        notion_wrf.log_snapshot(out)
+        notion_wrf.evaluate_open_signals(symbol, ohlcv.get("1h"))
+
+        # 발사(페이퍼): Notion 기록 + (ALERT 시) 알림
+        for cand in out["fired"]:
+            notion_wrf.log_signal(cand, out)
+            _alert(cand, out)
+    except Exception as e:
+        logger.error(f"[main] {symbol} 엔진 실패(격리): {e}\n{traceback.format_exc()}")
 
 
-# ══════════════════════════════════════════════
-# 실행 카운터
-# ══════════════════════════════════════════════
-
-_COUNTER_FILE = "/tmp/bot_state/bot_run_counter.json"
-
-def _load_counter() -> dict:
+def run_score(symbol: str, exchange) -> None:
+    """score 모드: 성숙 경로 채움 + 신호판정 + 스냅샷 라벨 백필."""
+    ohlcv = collect_ohlcv(exchange, symbol)
+    df_1h = ohlcv.get("1h")
     try:
-        if os.path.exists(_COUNTER_FILE):
-            with open(_COUNTER_FILE) as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {"runs": 0, "signals": 0}
+        n = wrf_logger.capture_paths(symbol, df_1h)
+        logger.info(f"[score] {symbol} 경로 캡처 {n}건")
+        notion_wrf.evaluate_open_signals(symbol, df_1h)
+        _backfill_snapshot_labels(symbol)
+    except Exception as e:
+        logger.error(f"[score] {symbol} 실패(격리): {e}\n{traceback.format_exc()}")
 
 
-def _save_counter(data: dict) -> None:
+def _backfill_snapshot_labels(symbol: str) -> None:
+    """JSONL(경로 포함) → 파생라벨 → Notion 스냅샷 백필."""
+    if not notion_wrf.enabled():
+        return
     try:
-        with open(_COUNTER_FILE, "w") as f:
-            json.dump(data, f)
-    except Exception:
-        pass
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "analysis"))
+        import build_dataset as bd
+        import labels as lab
+        rows = bd.load_snapshots(getattr(config, "RESEARCH_DATA_DIR", "data/research"),
+                                 symbols=[symbol])
+        btc_rows = bd.load_snapshots(getattr(config, "RESEARCH_DATA_DIR", "data/research"))
+        btc_map = lab.build_btc_ret_map(btc_rows)
+        label_map = {}
+        for r in rows:
+            path = r.get("path")
+            if not path or not path.get("c"):
+                continue
+            ts = r.get("ts")
+            ld = {}
+            for h in (4, 12, 24, 48, 72):
+                ld[f"ret_{h}h"] = bd.fwd_ret(path, h)
+            ld["exret_24h"] = lab.exret(path, ts, btc_map, 24)
+            mfe, mae = bd.mfe_mae(path, k=72)
+            ld["mfe"], ld["mae"] = mfe, mae
+            ld["path_eff"] = bd.path_efficiency(path)
+            ttp, ttt = bd.time_to_extreme(path)
+            ld["tt_peak"], ld["tt_trough"] = ttp, ttt
+            ld["class_24h"] = lab.classify(ld["exret_24h"])
+            ex72 = lab.exret(path, ts, btc_map, 72)
+            ld["class_72h"] = lab.classify(ex72)
+            ld["outcome"] = "DONE" if path.get("complete") else (
+                "EXPIRED" if path.get("expired") else "DONE")
+            label_map[r.get("snapshot_id")] = ld
+        notion_wrf.update_snapshots(symbol, label_map)
+    except Exception as e:
+        logger.warning(f"[score] 스냅샷 라벨 백필 실패(격리): {e}")
 
-
-# ══════════════════════════════════════════════
-# 메인 실행
-# ══════════════════════════════════════════════
 
 def main():
-    logger = setup_logging()
-    start_time = datetime.now(timezone.utc)
+    setup_logging()
+    ap = argparse.ArgumentParser(description="WRF-4 봇")
+    ap.add_argument("--mode", choices=["signal", "score"], default="signal")
+    ap.add_argument("--symbol", default=os.getenv("SINGLE_SYMBOL", ""))
+    args = ap.parse_args()
 
-    single_symbol = os.getenv("SINGLE_SYMBOL")
-    if not single_symbol:
-        logger.error("❌ SINGLE_SYMBOL 환경변수 없음")
-        sys.exit(1)
-
-    logger.info("=" * 55)
-    logger.info(f"🕐 1H봇 실행 시작 — {start_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    logger.info(f"   심볼: {single_symbol} (Matrix Job)")
-    logger.info(f"   봉 주기: 1h | 타임프레임: 1h/4h/1d")
-    logger.info("=" * 55)
-
-    counter = _load_counter()
-    counter["runs"] += 1
-    run_num = counter["runs"]
-
+    symbols = [args.symbol] if args.symbol else getattr(config, "SYMBOLS", ["BTC/USDT"])
+    t0 = time.time()
+    logger.info(f"{'─' * 50}\n🤖 WRF-4 [{args.mode}] 심볼={symbols} "
+                f"ALERT={getattr(config, 'ALERT_ENABLED', False)}")
     try:
         exchange = create_exchange()
     except Exception as e:
-        msg = f"[1H봇] OKX 클라이언트 생성 실패: {e}"
-        logger.critical(msg)
-        send_error_alert(msg, context="create_exchange()")
+        logger.error(f"[main] 거래소 초기화 실패: {e}")
+        try:
+            send_error_alert(str(e), "WRF create_exchange")
+        except Exception:
+            pass
         sys.exit(1)
 
-    result = {
-        "symbol":    single_symbol,
-        "success":   False,
-        "notified":  False,
-        "direction": None,
-        "score":     0.0,
-        "error":     None,
-    }
-
-    try:
-        logger.info(f"\n{'─'*50}")
-        logger.info(f"🔄 처리 중: {single_symbol}")
-        logger.info(f"{'─'*50}\n")
-
-        # 1. 데이터 수집
-        collected = collect_all_data(exchange, single_symbol)
-
-        if not collected.get("ticker", {}).get("available", False):
-            logger.warning(f"[{single_symbol}] 티커 수집 실패 (available=False) — 스킵")
-            result["error"] = "티커 수집 실패"
+    for sym in symbols:
+        if args.mode == "signal":
+            run_signal(sym, exchange)
         else:
-            # 2. 기술적 분석
-            analysis = run_full_analysis(single_symbol, collected)
+            run_score(sym, exchange)
 
-            # 3. 점수 산출 (market_data 전달 → 마이크로구조 계산 활성화)
-            pipeline = run_scoring_pipeline(
-                single_symbol, analysis,
-                market_data=collected   # ← 마이크로구조 패널티 계산용
-            )
-            result["score"]     = pipeline["score"]
-            result["direction"] = pipeline["direction"]
-            result["success"]   = True
-
-            # [v2.0] 컨텍스트 로그
-            regime_4h   = pipeline.get("regime_4h",   {})
-            daily_bias  = pipeline.get("daily_bias",   {})
-            regime_1h   = pipeline.get("regime",       {})
-            logger.info(
-                f"[{single_symbol}] 컨텍스트: "
-                f"4h={regime_4h.get('regime','?')} × 1h={regime_1h.get('regime','?')} | "
-                f"일봉바이어스={daily_bias.get('bias','?')}"
-            )
-
-            # 3.4 [학습] Research Logger — 상태 스냅샷 + 사후 결과 (신호와 독립)
-            #   · git JSONL: 풀 피처 + 72h 전체 경로 (research_logger)
-            #   · Notion DB: 같은 스냅샷 + 핵심 결과 라벨 미러 (notion_research)
-            if research_logger.enabled() or notion_research.enabled():
-                _df_1h_r = collected.get("ohlcv", {}).get("1h")
-                _state = None
-                try:
-                    _state = research_logger.build_state(
-                        single_symbol, analysis, pipeline, collected
-                    )
-                except Exception as e:
-                    logger.warning(f"[{single_symbol}] Research 상태 빌드 오류: {e}")
-                if _state is not None and research_logger.enabled():
-                    try:
-                        research_logger.record_snapshot(_state)
-                        research_logger.capture_paths(single_symbol, _df_1h_r)
-                    except Exception as e:
-                        logger.warning(f"[{single_symbol}] Research 로거 오류: {e}")
-                if notion_research.enabled():
-                    try:
-                        if _state is not None:
-                            notion_research.log_snapshot(_state)
-                        notion_research.update_outcomes(single_symbol, _df_1h_r)
-                    except Exception as e:
-                        logger.warning(f"[{single_symbol}] Notion Research 오류: {e}")
-
-            # 3.5 [v4.0] Notion — 기존 OPEN 신호 성공/실패 자동 평가 (매 실행)
-            if notion_logger.enabled():
-                try:
-                    df_1h_eval = collected.get("ohlcv", {}).get("1h")
-                    notion_logger.evaluate_open_signals(
-                        single_symbol, df_1h_eval, collected.get("price", 0.0)
-                    )
-                except Exception as e:
-                    logger.warning(f"[{single_symbol}] Notion 평가 오류: {e}")
-
-            # 4. 알림 발송
-            if pipeline["should_notify"]:
-                sent = notify_signal(pipeline, analysis)
-                result["notified"] = sent
-                if sent:
-                    logger.info(
-                        f"[{single_symbol}] 🚨 {pipeline['direction'].upper()} "
-                        f"{pipeline['score']:.1f}pt — 1H봇 알림 발송 완료"
-                    )
-                    counter["signals"] += 1
-                    # [v4.0] Notion에 신호 기록 (OPEN)
-                    if notion_logger.enabled():
-                        try:
-                            notion_logger.log_signal(pipeline, analysis, pipeline.get("levels", {}))
-                        except Exception as e:
-                            logger.warning(f"[{single_symbol}] Notion 기록 오류: {e}")
-            else:
-                long_s  = pipeline["signal_result"]["long"]["final_score"]
-                short_s = pipeline["signal_result"]["short"]["final_score"]
-                logger.info(
-                    f"[{single_symbol}] 신호 없음 — "
-                    f"롱:{long_s:.1f}pt / 숏:{short_s:.1f}pt"
-                )
-
-    except Exception as e:
-        err_msg = traceback.format_exc()
-        logger.error(f"[{single_symbol}] 처리 오류:\n{err_msg}")
-        result["error"] = str(e)
-
-    elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-    logger.info("\n" + "=" * 55)
-    logger.info(f"🕐 1H봇 실행 완료 — {elapsed:.1f}초")
-    status = "✅" if result["success"] else "❌"
-    notif  = f"🚨{result['direction'].upper()}" if result["notified"] else "—"
-    score  = f"{result['score']:.1f}pt" if result["success"] else result.get("error","?")
-    logger.info(f"   {status} {single_symbol:<12} {score:<10} {notif}")
-    logger.info(f"   누적 신호: {counter['signals']}건")
-    logger.info("=" * 55)
-
-    if result["error"]:
-        send_error_alert(
-            f"[1H봇] {single_symbol}: {result['error']}",
-            context=f"run #{run_num}"
-        )
-
-    _save_counter(counter)
-
-    if result["error"]:
-        sys.exit(1)
+    logger.info(f"✅ WRF-4 [{args.mode}] 완료 — {time.time() - t0:.1f}s")
 
 
 if __name__ == "__main__":

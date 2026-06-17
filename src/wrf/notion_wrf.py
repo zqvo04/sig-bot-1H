@@ -303,3 +303,51 @@ def log_snapshot(engine_out: dict) -> bool:
     except Exception as e:  # pragma: no cover
         logger.warning(f"[NotionWRF] log_snapshot 실패(격리): {e}")
         return False
+
+
+def update_snapshots(symbol: str, label_map: dict) -> int:
+    """PENDING 스냅샷 행에 파생라벨 백필. label_map: {snapshot_id: {라벨...}}.
+
+    라벨 dict 키: ret_4h/12h/24h/48h/72h, exret_24h, mfe, mae, path_eff,
+    tt_peak, tt_trough, class_24h, class_72h, outcome(DONE/EXPIRED).
+    main(score 모드)이 analysis.labels로 파생해 넘긴다. (Notion은 핵심만 보관)
+    """
+    if not enabled() or not label_map:
+        return 0
+    try:
+        db = ensure_snapshots_db()
+        if not db:
+            return 0
+        res = _request("POST", f"/databases/{db}/query", {
+            "filter": {"and": [
+                {"property": "Symbol", "select": {"equals": symbol}},
+                {"property": "Outcome", "select": {"equals": "PENDING"}}]}, "page_size": 100})
+        if not res:
+            return 0
+        updated = 0
+        for page in res.get("results", []):
+            sid = _get_txt(page.get("properties", {}), "Snapshot ID")
+            lab = label_map.get(sid)
+            if not lab:
+                continue
+            props = {"Outcome": _p_sel(lab.get("outcome", "DONE"))}
+            for h in (4, 12, 24, 48, 72):
+                if lab.get(f"ret_{h}h") is not None:
+                    props[f"Ret {h}h"] = _p_num(lab[f"ret_{h}h"])
+            for k, col in [("exret_24h", "exRet 24h"), ("mfe", "MFE"), ("mae", "MAE"),
+                           ("path_eff", "Path Eff"), ("tt_peak", "TT Peak"),
+                           ("tt_trough", "TT Trough")]:
+                if lab.get(k) is not None:
+                    props[col] = _p_num(lab[k])
+            if lab.get("class_24h"):
+                props["Class 24h"] = _p_sel(lab["class_24h"])
+            if lab.get("class_72h"):
+                props["Class 72h"] = _p_sel(lab["class_72h"])
+            if _request("PATCH", f"/pages/{page['id']}", {"properties": props}):
+                updated += 1
+        if updated:
+            logger.info(f"[NotionWRF] 🏷️ 스냅샷 라벨 백필 {symbol}: {updated}건")
+        return updated
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[NotionWRF] update_snapshots 실패(격리): {e}")
+        return 0
