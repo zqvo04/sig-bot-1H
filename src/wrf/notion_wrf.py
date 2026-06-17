@@ -92,35 +92,38 @@ def _ensure_db(cache_attr: str, db_id_cfg: str, title: str, props: dict):
     if cached:
         return cached
     db_id = getattr(config, db_id_cfg, "")
-    if db_id:
-        result = db_id
-    else:
+    result = db_id or _find_db_by_title(title)   # ID 우선, 없으면 제목 검색(부모 불필요)
+    if not result:
+        # ID·제목검색 모두 실패 → 부모 페이지가 있으면 신규 생성
         parent = getattr(config, "NOTION_PARENT_PAGE_ID", "")
         if not parent:
-            logger.warning(f"[NotionWRF] {title}: DB ID·부모페이지 둘 다 없음 → 비활성")
+            logger.warning(f"[NotionWRF] {title}: DB ID·제목검색·부모페이지 모두 없음 → 비활성")
             return None
-        res = _request("POST", "/search", {"query": title,
-            "filter": {"property": "object", "value": "database"}})
-        result = None
-        if res:
-            for obj in res.get("results", []):
-                t = "".join(x.get("plain_text", "") for x in obj.get("title", []))
-                if t.strip() == title:
-                    result = obj["id"]
-                    break
-        if not result:
-            created = _request("POST", "/databases", {
-                "parent": {"type": "page_id", "page_id": parent},
-                "title": [{"type": "text", "text": {"content": title}}],
-                "properties": props})
-            result = created.get("id") if created else None
-            if result:
-                logger.info(f"[NotionWRF] {title} 신규 생성: {result}")
+        created = _request("POST", "/databases", {
+            "parent": {"type": "page_id", "page_id": parent},
+            "title": [{"type": "text", "text": {"content": title}}],
+            "properties": props})
+        result = created.get("id") if created else None
+        if result:
+            logger.info(f"[NotionWRF] {title} 신규 생성: {result}")
     if cache_attr == "sig":
         _SIG_CACHE = result
     else:
         _SNAP_CACHE = result
     return result
+
+
+def _find_db_by_title(title: str):
+    """통합에 공유된 DB를 제목으로 검색(부모 페이지 불필요). 없으면 None."""
+    res = _request("POST", "/search", {"query": title,
+        "filter": {"property": "object", "value": "database"}})
+    if not res:
+        return None
+    for obj in res.get("results", []):
+        t = "".join(x.get("plain_text", "") for x in obj.get("title", []))
+        if t.strip() == title:
+            return obj["id"]
+    return None
 
 
 def ensure_signals_db():
