@@ -1,20 +1,19 @@
-# WRF-4 신호 워크플로우 — 매시 :05 (페이퍼 전용)
+# WRF-4 채점 워크플로우 — 매 :*/15 (성숙 경로 채움 + 신호 판정)
 #
-# 1H 캔들 마감(:00) → :05 실행 → 수집·측정·엔진(L0~L4)·발사(페이퍼)·스냅샷 적재.
-# 학습기간엔 ALERT_ENABLED=false(기록만). 심볼별 병렬, JSONL은 심볼별 파일이라
-# 충돌 없음(push 경합은 fetch+rebase 백오프 재시도).
-name: WRF Signal
+# 성숙한 스냅샷의 72h 경로를 증분 캡처(JSONL)하고, OPEN 페이퍼 신호를
+# triple-barrier로 WIN/LOSS/TIMEOUT 판정(Notion). 스냅샷 파생라벨도 백필.
+name: WRF Scoring
 
 on:
   schedule:
-    - cron: '5 * * * *'
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  signal:
+  score:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     strategy:
@@ -29,22 +28,18 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - run: pip install -r requirements.txt
-      - name: Run WRF signal — ${{ matrix.symbol }}
+      - name: Run WRF scoring — ${{ matrix.symbol }}
         env:
           OKX_API_KEY:        ${{ secrets.OKX_API_KEY }}
           OKX_API_SECRET:     ${{ secrets.OKX_API_SECRET }}
           OKX_PASSPHRASE:     ${{ secrets.OKX_PASSPHRASE }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           SINGLE_SYMBOL:      ${{ matrix.symbol }}
-          # 학습기간 알림 OFF·기록만 (커버리지 충족 후 Variable로 true)
-          ALERT_ENABLED:      ${{ vars.ALERT_ENABLED }}
           NOTION_TOKEN:           ${{ secrets.NOTION_TOKEN }}
           NOTION_PARENT_PAGE_ID:  ${{ secrets.NOTION_PARENT_PAGE_ID }}
           NOTION_SIGNALS_DB_ID:   ${{ secrets.NOTION_SIGNALS_DB_ID }}
           NOTION_SNAPSHOTS_DB_ID: ${{ secrets.NOTION_SNAPSHOTS_DB_ID }}
-        run: python src/main.py --mode signal
-      - name: Commit research data
+        run: python src/main.py --mode score
+      - name: Commit path updates
         if: always()
         run: |
           if [ -z "$(git status --porcelain data/research 2>/dev/null)" ]; then
@@ -54,20 +49,13 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           BRANCH="${GITHUB_REF_NAME}"
           git add data/research
-          git commit -m "data(research): ${SINGLE_SYMBOL} v3 스냅샷 적재 [skip ci]"
+          git commit -m "data(research): ${SINGLE_SYMBOL} 경로 채점 갱신 [skip ci]"
           for i in 1 2 3 4 5; do
             git fetch origin "$BRANCH" || true
             git rebase "origin/$BRANCH" || git rebase --abort || true
             if git push origin "HEAD:$BRANCH"; then echo "✅ push (시도 $i)"; exit 0; fi
-            echo "⚠️ push 실패 ${i}회 — 백오프"; sleep $((2 ** i))
+            sleep $((2 ** i))
           done
           echo "❌ push 최종 실패(비치명적)"; exit 0
         env:
           SINGLE_SYMBOL: ${{ matrix.symbol }}
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-${{ matrix.symbol }}-${{ github.run_id }}
-          path: logs/
-          retention-days: 3
