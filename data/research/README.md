@@ -1,7 +1,13 @@
 # Research 데이터셋 — 상태 중심 학습 데이터
 
-`src/research_logger.py`가 매시간 적재하는 **상태 중심(state-centric)** 학습 데이터입니다.
-신호 발생 여부와 무관하게 (시장 상태, 이후 72h 차트 경로)를 1행씩 쌓습니다.
+매시간 1행으로 (시장 상태, 이후 72h 차트 경로)를 쌓습니다. 신호 발생과 무관하게 전량 기록.
+
+> **schema v3 (WRF-4)**: `src/wrf/logger.py`가 적재. 행 = `{snapshot_id, ts, symbol,
+> schema_version:3, p0, raw, ctx, candidates[], meta, path}`. 라벨은 박제하지 않고
+> `analysis/labels.py`가 경로에서 triple-barrier(`tb_win`)·exret(BTC초과)·class로 파생합니다.
+> 과거 v1/v2 행(`f`/`fp`/`meta`)도 같은 파일에 공존하며, 경로(o/c/h/l) 포맷은 호환됩니다.
+
+아래는 레거시 v2 스키마 설명입니다(경로 포맷·통계 주의는 v3에도 그대로 적용).
 
 ## 파일 구조
 
