@@ -76,7 +76,8 @@ SNAP_SEL = {
 
 
 def _snapshots_props() -> dict:
-    props = {"Name": {"title": {}}, "TS": {"date": {}}, "FP Key": {"rich_text": {}},
+    # FP Key는 기존 DB와 동일하게 select(옵션은 기록 시 자동 생성). Snapshot ID는 text.
+    props = {"Name": {"title": {}}, "TS": {"date": {}}, "FP Key": {"select": {"options": []}},
              "Snapshot ID": {"rich_text": {}}}
     for k in SNAP_NUM:
         props[k] = {"number": {}}
@@ -91,35 +92,38 @@ def _ensure_db(cache_attr: str, db_id_cfg: str, title: str, props: dict):
     if cached:
         return cached
     db_id = getattr(config, db_id_cfg, "")
-    if db_id:
-        result = db_id
-    else:
+    result = db_id or _find_db_by_title(title)   # ID 우선, 없으면 제목 검색(부모 불필요)
+    if not result:
+        # ID·제목검색 모두 실패 → 부모 페이지가 있으면 신규 생성
         parent = getattr(config, "NOTION_PARENT_PAGE_ID", "")
         if not parent:
-            logger.warning(f"[NotionWRF] {title}: DB ID·부모페이지 둘 다 없음 → 비활성")
+            logger.warning(f"[NotionWRF] {title}: DB ID·제목검색·부모페이지 모두 없음 → 비활성")
             return None
-        res = _request("POST", "/search", {"query": title,
-            "filter": {"property": "object", "value": "database"}})
-        result = None
-        if res:
-            for obj in res.get("results", []):
-                t = "".join(x.get("plain_text", "") for x in obj.get("title", []))
-                if t.strip() == title:
-                    result = obj["id"]
-                    break
-        if not result:
-            created = _request("POST", "/databases", {
-                "parent": {"type": "page_id", "page_id": parent},
-                "title": [{"type": "text", "text": {"content": title}}],
-                "properties": props})
-            result = created.get("id") if created else None
-            if result:
-                logger.info(f"[NotionWRF] {title} 신규 생성: {result}")
+        created = _request("POST", "/databases", {
+            "parent": {"type": "page_id", "page_id": parent},
+            "title": [{"type": "text", "text": {"content": title}}],
+            "properties": props})
+        result = created.get("id") if created else None
+        if result:
+            logger.info(f"[NotionWRF] {title} 신규 생성: {result}")
     if cache_attr == "sig":
         _SIG_CACHE = result
     else:
         _SNAP_CACHE = result
     return result
+
+
+def _find_db_by_title(title: str):
+    """통합에 공유된 DB를 제목으로 검색(부모 페이지 불필요). 없으면 None."""
+    res = _request("POST", "/search", {"query": title,
+        "filter": {"property": "object", "value": "database"}})
+    if not res:
+        return None
+    for obj in res.get("results", []):
+        t = "".join(x.get("plain_text", "") for x in obj.get("title", []))
+        if t.strip() == title:
+            return obj["id"]
+    return None
 
 
 def ensure_signals_db():
@@ -196,11 +200,15 @@ def _eval_signal(direction, entry, tp, sl, t_max, candles, signaled_dt, now):
             return ("LOSS", "SL_HIT", mfe, mae, i + 1, rdt)
         if tp_hit:
             return ("WIN", "TP_HIT", mfe, mae, i + 1, rdt)
-    # 타임스톱 도달 여부
+    # 타임스톱 도달 → TIMEOUT으로 두지 않고 진입가 대비 손익부호로 WIN/LOSS 판별.
+    # (TP/SL 미터치라도 t_max 경과 시 시장가 청산 가정. 청산 사유는 EXPIRED_*.)
     if len(fut) >= int(t_max):
         last = fut.iloc[int(t_max) - 1]
         realized = (float(last["close"]) - entry) if long else (entry - float(last["close"]))
-        return ("TIMEOUT", "TIMEOUT", mfe, mae, int(t_max), last.name.isoformat())
+        win = realized >= 0
+        return ("WIN" if win else "LOSS",
+                "EXPIRED_WIN" if win else "EXPIRED_LOSS",
+                mfe, mae, int(t_max), last.name.isoformat())
     return None  # 미성숙
 
 
@@ -280,7 +288,7 @@ def log_snapshot(engine_out: dict) -> bool:
             "Name": _p_title(f"{sym} {engine_out['ts'][:16]}"),
             "TS": _p_date(engine_out["ts"]), "Symbol": _p_sel(sym),
             "Snapshot ID": _p_txt(sid), "Outcome": _p_sel("PENDING"),
-            "FP Key": _p_txt(ctx.get("fp_key")), "BTC Macro": _p_sel(ctx.get("btc_macro")),
+            "FP Key": _p_sel(ctx.get("fp_key")), "BTC Macro": _p_sel(ctx.get("btc_macro")),
             "Regime 1H": _p_sel(ctx.get("regime_1h")), "Regime 4H": _p_sel(ctx.get("regime_4h")),
             "Bias 1D": _p_sel(ctx.get("bias_1d")),
             "RSI Zone": _p_sel(_rsi_zone(raw.get("rsi"))), "Vol Zone": _p_sel(_vol_zone(raw)),

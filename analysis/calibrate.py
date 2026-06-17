@@ -86,6 +86,38 @@ def independent_n(ts_series: pd.Series, stride_h: int) -> int:
     return count
 
 
+def purged_kfold_oos(X, y, ts_sec, embargo_h: int, k: int = 4):
+    """시간순 purged K-fold → 탈표본(OOS) 예측. 각 검증폴드 시간범위 ±embargo는
+    학습에서 제외(72h 자기상관 누수 차단). 반환: (oos_p, oos_y) 또는 (None, None).
+
+    ts_sec: 기준시점 대비 경과 초(float, 해상도 무관). isotonic 보정맵을 in-sample이
+    아니라 이 OOS 예측으로 적합해 과적합을 막는다.
+    """
+    n = len(y)
+    if n < max(2 * k, 20):
+        return None, None
+    order = np.argsort(ts_sec)
+    Xo, yo, to = X[order], y[order], ts_sec[order]
+    emb = float(embargo_h) * 3600.0  # 시간 → 초
+    oos_p, oos_y = [], []
+    for val_idx in np.array_split(np.arange(n), k):
+        if len(val_idx) == 0:
+            continue
+        v0, v1 = to[val_idx[0]], to[val_idx[-1]]
+        purge = (to >= (v0 - emb)) & (to <= (v1 + emb))  # 검증창 ±embargo
+        train_mask = ~purge
+        if train_mask.sum() < 10 or len(np.unique(yo[train_mask])) < 2:
+            continue
+        w = fit_logistic(Xo[train_mask], yo[train_mask])
+        z = np.hstack([np.ones((len(val_idx), 1)), Xo[val_idx]]) @ w
+        p = 1.0 / (1.0 + np.exp(-np.clip(z, -60, 60)))
+        oos_p.extend(p.tolist())
+        oos_y.extend(yo[val_idx].tolist())
+    if len(oos_p) < 10:
+        return None, None
+    return np.asarray(oos_p), np.asarray(oos_y)
+
+
 def calibrate(data_dir: str, out_path: str) -> dict:
     rows = bd.load_snapshots(data_dir)
     df = lab.candidate_dataset(rows)
@@ -93,6 +125,7 @@ def calibrate(data_dir: str, out_path: str) -> dict:
     macro_min = getattr(config, "WRF_CELL_MACRO_MIN", 2)
     stride = getattr(config, "WRF_INDEP_STRIDE_H", 24)
     floor = getattr(config, "WRF_WIN_FLOOR", 0.58)
+    embargo = getattr(config, "WRF_EMBARGO_HOURS", 72)
 
     cells = {}
     drift = {}
@@ -146,18 +179,27 @@ def calibrate(data_dir: str, out_path: str) -> dict:
 
         if qualified:
             try:
-                feats = g_lab[["C", "L", "F"]].astype(float).values
-                y = g_lab["tb_win"].astype(float).values
-                # purged split: 시간순 마지막 72h embargo 제외하고 학습
-                w = fit_logistic(feats, y)
-                z = np.hstack([np.ones((len(feats), 1)), feats]) @ w
-                p = 1.0 / (1.0 + np.exp(-np.clip(z, -60, 60)))
-                xs, ys = isotonic_fit(p, y)
-                cell_rec["weights"] = {"b0": float(w[0]), "wC": float(w[1]),
-                                       "wL": float(w[2]), "wF": float(w[3])}
-                cell_rec["isotonic"] = {"x": [round(v, 4) for v in xs],
-                                        "y": [round(v, 4) for v in ys]}
-                cell_rec["p_source"] = "calibrated"
+                g_sorted = g_lab.sort_values("ts")
+                feats = g_sorted[["C", "L", "F"]].astype(float).values
+                y = g_sorted["tb_win"].astype(float).values
+                t = pd.to_datetime(g_sorted["ts"], utc=True)
+                ts_sec = (t - t.min()).dt.total_seconds().to_numpy()  # 해상도 무관 경과초
+                # purged K-fold(72h embargo)로 OOS 예측 → isotonic 보정맵을 OOS로 적합.
+                # 배포용 로지스틱 가중치는 전체 데이터로 재적합(안정), 보정맵만 OOS.
+                oos_p, oos_y = purged_kfold_oos(feats, y, ts_sec, embargo)
+                if oos_p is None:
+                    cell_rec["qualified"] = False
+                    cell_rec["cv_note"] = "purge 후 표본 부족 → prior 유지"
+                else:
+                    w = fit_logistic(feats, y)
+                    xs, ys = isotonic_fit(oos_p, oos_y)
+                    cell_rec["weights"] = {"b0": float(w[0]), "wC": float(w[1]),
+                                           "wL": float(w[2]), "wF": float(w[3])}
+                    cell_rec["isotonic"] = {"x": [round(v, 4) for v in xs],
+                                            "y": [round(v, 4) for v in ys]}
+                    cell_rec["oos_n"] = int(len(oos_y))
+                    cell_rec["embargo_h"] = int(embargo)
+                    cell_rec["p_source"] = "calibrated"
             except Exception as e:
                 cell_rec["qualified"] = False
                 cell_rec["fit_error"] = str(e)

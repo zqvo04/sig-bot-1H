@@ -164,8 +164,9 @@ def _backfill_snapshot_labels(symbol: str) -> None:
             ld["class_24h"] = lab.classify(ld["exret_24h"])
             ex72 = lab.exret(path, ts, btc_map, 72)
             ld["class_72h"] = lab.classify(ex72)
-            ld["outcome"] = "DONE" if path.get("complete") else (
-                "EXPIRED" if path.get("expired") else "DONE")
+            ld["outcome"] = ("DONE" if path.get("complete")
+                             else "EXPIRED" if path.get("expired")
+                             else "PENDING")  # 미완성·미유실 → PENDING 유지(후속 백필 대상)
             label_map[r.get("snapshot_id")] = ld
         notion_wrf.update_snapshots(symbol, label_map)
     except Exception as e:
