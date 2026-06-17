@@ -38,6 +38,20 @@ def _sign(pos, neg) -> int:
     return 1 if pos else (-1 if neg else 0)
 
 
+def _lin_slope(rates) -> float:
+    """펀딩 이력(최근값이 앞) → 시간순 최소제곱 기울기(스텝당). 3점 미만이면 None."""
+    seq = [r for r in (rates or []) if r is not None and np.isfinite(r)]
+    if len(seq) < 3:
+        return None
+    chrono = list(reversed(seq))  # 오래된→최근 순으로
+    x = np.arange(len(chrono), dtype=float)
+    try:
+        slope = float(np.polyfit(x, np.asarray(chrono, dtype=float), 1)[0])
+        return slope if np.isfinite(slope) else None
+    except Exception:
+        return None
+
+
 def _ema_code(s: str) -> int:
     return {"bullish": 1, "bearish": -1}.get(s, 0)
 
@@ -97,7 +111,6 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
     fib = a.get("fibonacci", {})
     wk = a.get("weekly_levels", {})
     fund = a.get("funding_rate", {})
-    ftr = a.get("funding_trend", {})
     lsr = a.get("ls_ratio", {})
     tak = a.get("taker_volume", {})
     oim = a.get("oi_matrix", {})
@@ -142,6 +155,7 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
     # 펀딩 백분위(가용 이력에서)
     fund_hist = a.get("_funding_hist_rates") or []
     p_funding = pct.pct_rank(fund_hist, _f(fund.get("rate"))) if fund_hist else 0.5
+    funding_slope = _lin_slope(fund_hist)  # 펀딩 이력 추세 기울기(최근으로 갈수록 +)
 
     # 컨플루언스 카운트(FVG/OB/피보/주간 동시중첩)
     confluence_long = sum([
@@ -187,7 +201,7 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
         "confluence_short": int(confluence_short),
         # 크립토 포지셔닝
         "funding": _f(fund.get("rate")),
-        "funding_slope": _f(ftr.get("slope")) if ftr.get("slope") is not None else None,
+        "funding_slope": funding_slope,
         "oi_chg": _f(oim.get("oi_change_pct")),
         "oi_slope": _f(oim.get("oi_slope")),
         "oi_quadrant": oim.get("quadrant", "neutral"),

@@ -15,6 +15,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+try:
+    import config
+except ImportError:  # pragma: no cover
+    from src import config  # type: ignore
+
 
 def _clip(x: float) -> float:
     return max(-1.0, min(1.0, float(x)))
@@ -79,22 +84,27 @@ def _detect_bo(feat: dict, measures: dict):
     if "BO" not in ctx["allowed_setups"]:
         return out
     df = feat["df_1h"]
-    if df is None or len(df) < 25:
+    if df is None or len(df) < 26:
         return out
-    box_hi = float(df["high"].iloc[-21:-1].max())
-    box_lo = float(df["low"].iloc[-21:-1].min())
-    last = float(df["close"].iloc[-1])
-    box_h = (box_hi - box_lo) / last if last else 0.0
+    # 박스는 돌파봉 이전 20봉으로 산정(돌파봉·리테스트봉 제외)
+    box_hi = float(df["high"].iloc[-22:-2].max())
+    box_lo = float(df["low"].iloc[-22:-2].min())
+    brk = float(df["close"].iloc[-2])     # 돌파봉 종가(직전 봉)
+    cur = float(df["close"].iloc[-1])     # 현재(리테스트) 봉 종가 = p0
+    cur_lo = float(df["low"].iloc[-1])
+    cur_hi = float(df["high"].iloc[-1])
+    box_h = (box_hi - box_lo) / cur if cur else 0.0
+    rt = getattr(config, "WRF_BO_RETEST_TOL", 0.002)  # 리테스트 허용 근접도
     vol_spike = (raw.get("vol_ratio") or 0) >= 1.5
     for direction in ("long", "short"):
         long = direction == "long"
-        broke = (last > box_hi) if long else (last < box_lo)
-        # 리테스트 유지★필수: 직전 봉이 경계 재테스트 후 유지
-        prev_low = float(df["low"].iloc[-1])
-        prev_high = float(df["high"].iloc[-1])
-        retest_hold = (prev_low <= box_hi * 1.001 and last > box_hi) if long \
-            else (prev_high >= box_lo * 0.999 and last < box_lo)
-        precond = bool(broke and vol_spike and retest_hold)
+        # 리테스트 유지★필수: ① 직전 봉이 경계를 돌파(broke) ②현재 봉이 경계를
+        # 되돌아 눌렀다가(retest) 다시 경계 너머로 마감(hold). 단일봉 윅이 아니라
+        # 돌파→리테스트 2봉 패턴을 요구.
+        broke = (brk > box_hi) if long else (brk < box_lo)
+        retest = (cur_lo <= box_hi * (1 + rt)) if long else (cur_hi >= box_lo * (1 - rt))
+        hold = (cur > box_hi) if long else (cur < box_lo)
+        precond = bool(broke and vol_spike and retest and hold)
         if not precond:
             continue
         C = _ctx_axis(ctx, direction)

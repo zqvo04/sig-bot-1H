@@ -200,11 +200,15 @@ def _eval_signal(direction, entry, tp, sl, t_max, candles, signaled_dt, now):
             return ("LOSS", "SL_HIT", mfe, mae, i + 1, rdt)
         if tp_hit:
             return ("WIN", "TP_HIT", mfe, mae, i + 1, rdt)
-    # 타임스톱 도달 여부
+    # 타임스톱 도달 → TIMEOUT으로 두지 않고 진입가 대비 손익부호로 WIN/LOSS 판별.
+    # (TP/SL 미터치라도 t_max 경과 시 시장가 청산 가정. 청산 사유는 EXPIRED_*.)
     if len(fut) >= int(t_max):
         last = fut.iloc[int(t_max) - 1]
         realized = (float(last["close"]) - entry) if long else (entry - float(last["close"]))
-        return ("TIMEOUT", "TIMEOUT", mfe, mae, int(t_max), last.name.isoformat())
+        win = realized >= 0
+        return ("WIN" if win else "LOSS",
+                "EXPIRED_WIN" if win else "EXPIRED_LOSS",
+                mfe, mae, int(t_max), last.name.isoformat())
     return None  # 미성숙
 
 

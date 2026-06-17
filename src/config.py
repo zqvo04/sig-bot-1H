@@ -737,6 +737,9 @@ WRF_VETO_LIQ_CASCADE  = _wrf_i("WRF_VETO_LIQ_CASCADE", 5)    # 진입 정면 대
 # ── 셋업별 타임스톱(시간) — §4 사양 ──────────────────────────────────
 WRF_TMAX = {"TF": 48, "BO": 36, "MR": 24, "RV": 48}
 
+# ── BO 리테스트 허용 근접도 (돌파봉 이후 현재봉이 경계로 되돌아온 정도) ────
+WRF_BO_RETEST_TOL = _wrf_f("WRF_BO_RETEST_TOL", 0.002)
+
 # ── btc_macro 태깅 임계 (BTC 7D/30D 추세·EMA구조) ───────────────────────
 WRF_MACRO_UP_PCT   = _wrf_f("WRF_MACRO_UP_PCT", 0.03)   # 7D 변화 ±3% 이상 → leg
 WRF_MACRO_CHOP_PCT = _wrf_f("WRF_MACRO_CHOP_PCT", 0.015) # |7D| < 1.5% → CHOP 후보
