@@ -160,20 +160,28 @@ python analysis/situation_report.py --wrf   # 셀 자격 진단
 
 ---
 
-## Notion (2-DB, 전면 초기화)
+## Notion (2-DB, 기존 DB 재사용)
 
-토큰 미설정 시 자동 비활성(no-op) — 봇 본체는 정상 동작. 마이그레이션:
+기존 DB **`1H Signal Log`** / **`1H Research Snapshots`** 를 WRF 양식으로 **개조해 재사용**한다
+(이름·기존 데이터 보존, 새 WRF 컬럼 추가, `Exit Reason`에 TIMEOUT 추가, Result→Status·
+Take Profit→TP·RSI 1H→RSI 등 일회성 리네임 적용). 토큰 미설정 시 자동 비활성(no-op).
 
 ```bash
-python scripts/migrate_notion_wrf.py --purge   # 기존 DB 전체 삭제 + 2-DB 생성, ID 출력
+python scripts/migrate_notion_wrf.py            # 누락 WRF 컬럼만 멱등 추가(스키마 동기화)
+python scripts/migrate_notion_wrf.py --purge    # 추가 + 기존 행 전부 아카이브(선택)
 ```
 
-- **DB1 `WRF Signals`**(발사된 페이퍼 트레이드): Status(OPEN/WIN/LOSS/TIMEOUT)·Setup·
+기본 DB ID는 기존 DB로 설정돼 있다(env로 오버라이드 가능):
+`NOTION_SIGNALS_DB_ID`(=레거시 `NOTION_DATABASE_ID`) / `NOTION_SNAPSHOTS_DB_ID`(=`NOTION_RESEARCH_DB_ID`).
+
+- **`1H Signal Log`**(발사된 페이퍼 트레이드): Status(OPEN/WIN/LOSS/TIMEOUT)·Setup·
   Direction·Symbol·Regime 1H/4H·BTC Macro·Entry/TP/SL·R Dist·RR·T_max·P_hat·P Source·
   Win Floor·Size·C/L/F·MFE R·MAE R·Bars To Exit·Exit Reason·Signaled/Resolved At·Reason·Signal ID
-- **DB2 `WRF Snapshots`**(매시간 학습 미러): TS·Symbol·Snapshot ID·Outcome·Regime/Bias·
-  RSI/Vol Zone·핵심 L1 수치 + 파생라벨(Ret 4~72h·exRet·MFE/MAE·Class 24/72h·Path Eff·TT)
-  + 후보요약. (원시 72h 경로 전체는 git JSONL이 보관; Notion은 필터·그룹용 핵심만.)
+  (레거시 Grade·Score·Threshold 등은 참고용으로 잔존)
+- **`1H Research Snapshots`**(매시간 학습 미러): TS·Symbol·Snapshot ID·Outcome·Regime/Bias·
+  RSI/Vol Zone·BTC Macro·핵심 L1 수치(RSI·BB %b·Dist VWAP/EMA20 ATR·ADX·MACD·Funding·OI·
+  Confluence L/S 등) + 파생라벨(Ret 4~72h·exRet·MFE/MAE·Class 24/72h·Path Eff·TT) + 후보요약
+  (Candidates/Fired). (원시 72h 경로 전체는 git JSONL이 보관; Notion은 필터·그룹용 핵심만.)
 
 ---
 

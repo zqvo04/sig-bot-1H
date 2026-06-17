@@ -749,8 +749,16 @@ WRF_SIZE_MAX  = _wrf_f("WRF_SIZE_MAX", 2.0)     # 사이즈 상한 단위
 WRF_CALIB_TABLE = os.getenv("WRF_CALIB_TABLE", "data/calibration_table.json")
 WRF_SCHEMA_VERSION = 3
 
-# ── Notion WRF 2-DB (전면 초기화 후 새 양식) ────────────────────────────
-NOTION_SIGNALS_DB_ID   = os.getenv("NOTION_SIGNALS_DB_ID", "")
-NOTION_SNAPSHOTS_DB_ID  = os.getenv("NOTION_SNAPSHOTS_DB_ID", "")
-NOTION_SIGNALS_DB_TITLE = "WRF Signals"
-NOTION_SNAPSHOTS_DB_TITLE = "WRF Snapshots"
+# ── Notion WRF 2-DB ───────────────────────────────────────────────────
+# 기존 DB("1H Signal Log" / "1H Research Snapshots")를 WRF 양식으로 개조해 재사용한다.
+#   · 발사신호  → 1H Signal Log       (id 기본값 = 레거시 NOTION_DATABASE_ID)
+#   · 스냅샷미러 → 1H Research Snapshots (id 기본값 = NOTION_RESEARCH_DB_ID)
+# env로 다른 DB ID를 주면 그쪽을 쓴다(부모페이지 자동생성 폴백 유지).
+NOTION_SIGNALS_DB_ID = (os.getenv("NOTION_SIGNALS_DB_ID")
+                        or os.getenv("NOTION_DATABASE_ID")
+                        or "aff12b160ec941ada0ce13b01b689e7c")
+NOTION_SNAPSHOTS_DB_ID = (os.getenv("NOTION_SNAPSHOTS_DB_ID")
+                          or os.getenv("NOTION_RESEARCH_DB_ID")
+                          or "530210d9989a43f39dcd89cc8a72eb07")
+NOTION_SIGNALS_DB_TITLE = "1H Signal Log"
+NOTION_SNAPSHOTS_DB_TITLE = "1H Research Snapshots"

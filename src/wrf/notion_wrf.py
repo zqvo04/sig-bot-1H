@@ -76,7 +76,8 @@ SNAP_SEL = {
 
 
 def _snapshots_props() -> dict:
-    props = {"Name": {"title": {}}, "TS": {"date": {}}, "FP Key": {"rich_text": {}},
+    # FP Key는 기존 DB와 동일하게 select(옵션은 기록 시 자동 생성). Snapshot ID는 text.
+    props = {"Name": {"title": {}}, "TS": {"date": {}}, "FP Key": {"select": {"options": []}},
              "Snapshot ID": {"rich_text": {}}}
     for k in SNAP_NUM:
         props[k] = {"number": {}}
@@ -280,7 +281,7 @@ def log_snapshot(engine_out: dict) -> bool:
             "Name": _p_title(f"{sym} {engine_out['ts'][:16]}"),
             "TS": _p_date(engine_out["ts"]), "Symbol": _p_sel(sym),
             "Snapshot ID": _p_txt(sid), "Outcome": _p_sel("PENDING"),
-            "FP Key": _p_txt(ctx.get("fp_key")), "BTC Macro": _p_sel(ctx.get("btc_macro")),
+            "FP Key": _p_sel(ctx.get("fp_key")), "BTC Macro": _p_sel(ctx.get("btc_macro")),
             "Regime 1H": _p_sel(ctx.get("regime_1h")), "Regime 4H": _p_sel(ctx.get("regime_4h")),
             "Bias 1D": _p_sel(ctx.get("bias_1d")),
             "RSI Zone": _p_sel(_rsi_zone(raw.get("rsi"))), "Vol Zone": _p_sel(_vol_zone(raw)),
