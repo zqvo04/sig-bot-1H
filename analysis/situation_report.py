@@ -91,6 +91,62 @@ def situation_table(df: pd.DataFrame, by: list[str], min_n: int = 30,
     return res_df
 
 
+def wrf_cell_report(rows: list, min_n: int = None, macro_min: int = None):
+    """WRF 셀별 보정 자격 진단: n·독립n·거시커버리지·셀별승률·베타착시·드리프트.
+
+    셀=(setup×regime×btc_macro). 신뢰게이트(독립표본 N≥n_min ∧ 거시방향 ≥2종)를
+    충족하는 셀만 보정 자격. 현재 데이터(단일 불런)는 자격 셀 0개가 정상이다.
+    """
+    import os
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+    import config
+    import labels as lab
+
+    n_min = min_n if min_n is not None else getattr(config, "WRF_CELL_N_MIN", 100)
+    macro_min = macro_min if macro_min is not None else getattr(config, "WRF_CELL_MACRO_MIN", 2)
+    stride = getattr(config, "WRF_INDEP_STRIDE_H", 24)
+    floor = getattr(config, "WRF_WIN_FLOOR", 0.58)
+
+    df = lab.candidate_dataset(rows)
+    if df.empty:
+        print("\nWRF 후보(schema v3) 표본 없음 — 전부 보수적 prior로 동작(콜드스타트).")
+        return
+    dec = df[df["tb_win"].notna()].copy()
+    print(f"\nWRF 셀 자격 진단 (n_min={n_min} 독립표본, 거시방향 ≥{macro_min}종, floor={floor})")
+    print(f"결판 후보 {len(dec)} / 전체 후보 {len(df)} (TIMEOUT=스크래치 제외)\n")
+    if dec.empty:
+        print("아직 결판난 후보 없음(경로 미성숙).")
+        return
+
+    def _indep(ts):
+        ts = ts.dropna().sort_values()
+        cnt, last = 0, None
+        for t in ts:
+            if last is None or (t - last).total_seconds() / 3600.0 >= stride:
+                cnt += 1; last = t
+        return cnt
+
+    recs = []
+    for cell, g in dec.groupby("cell"):
+        setup, regime, macro = (cell.split("|") + ["", "", ""])[:3]
+        base = dec[(dec["setup"] == setup) & (dec["regime_1h"] == regime)]
+        macro_cov = base["btc_macro"].nunique()
+        n_indep = _indep(g["ts"])
+        recs.append({
+            "cell": cell, "n": len(g), "n_indep": n_indep,
+            "macro_cov(base)": macro_cov, "win_rate": round(g["tb_win"].mean(), 3),
+            "exret24_med": round(g["exret_24h"].median(), 4) if g["exret_24h"].notna().any() else None,
+            "qualified": bool(n_indep >= n_min and macro_cov >= macro_min),
+        })
+    table = pd.DataFrame(recs).sort_values(["qualified", "n_indep"], ascending=False)
+    with pd.option_context("display.max_rows", 300, "display.width", 200):
+        print(table.to_string(index=False))
+    nq = int(table["qualified"].sum())
+    print(f"\n자격 셀: {nq} / {len(table)}  → 자격 미달 셀은 calibrate가 prior 유지.")
+    print("거시방향별 다레짐 데이터가 쌓이며 셀별로 발사권(보정)을 획득한다.")
+
+
 def main():
     ap = argparse.ArgumentParser(description="상황별 경로 분포 리포트")
     ap.add_argument("--dir", default=None, help="research 데이터 디렉터리")
@@ -100,9 +156,15 @@ def main():
     ap.add_argument("--sim", choices=["long", "short"], help="TP/SL 재생 방향")
     ap.add_argument("--tp", type=float, default=0.036, help="익절 거리(비율)")
     ap.add_argument("--sl", type=float, default=0.020, help="손절 거리(비율)")
+    ap.add_argument("--wrf", action="store_true",
+                    help="WRF 셀(setup×regime×btc_macro) 보정 자격 진단 리포트")
     args = ap.parse_args()
 
     rows = load_snapshots(args.dir) if args.dir else load_snapshots()
+    if args.wrf:
+        print(_CAVEAT)
+        wrf_cell_report(rows)
+        return
     df = to_dataframe(rows, min_n=4)
 
     print(_CAVEAT)
