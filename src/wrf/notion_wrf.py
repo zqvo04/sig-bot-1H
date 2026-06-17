@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 try:
     import config
@@ -21,6 +21,23 @@ except ImportError:  # pragma: no cover
                                    _p_date, _get_num, _get_sel, _get_date, _get_txt)
 
 logger = logging.getLogger(__name__)
+
+# Notion 표시는 한국시간(KST, UTC+9) 기준. JSONL의 ts/snapshot_id는 UTC 그대로 유지
+# (멱등키·경로캡처·라벨 정합성 보존) — 변환은 Notion 날짜/제목 표시 계층에만 적용.
+_KST = timezone(timedelta(hours=9))
+
+
+def _kst(iso: str) -> str:
+    """UTC ISO 문자열 → KST(+09:00) ISO 문자열. 실패 시 원본 반환."""
+    if not iso:
+        return iso
+    try:
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(_KST).isoformat()
+    except Exception:
+        return iso
 
 _SIG_CACHE = None
 _SNAP_CACHE = None
@@ -161,7 +178,7 @@ def log_signal(cand: dict, engine_out: dict) -> bool:
             "P_hat": _p_num(cand["p_hat"]), "P Source": _p_sel(cand["p_source"]),
             "Win Floor": _p_num(cand["win_floor"]), "Size": _p_num(cand["size"]),
             "C": _p_num(cand["C"]), "L": _p_num(cand["L"]), "F": _p_num(cand["F"]),
-            "Exit Reason": _p_sel("OPEN"), "Signaled At": _p_date(engine_out["ts"]),
+            "Exit Reason": _p_sel("OPEN"), "Signaled At": _p_date(_kst(engine_out["ts"])),
             "Reason": _p_txt(cand.get("reason", "")), "Signal ID": _p_txt(sid),
         }
         r = _request("POST", "/pages", {"parent": {"database_id": db}, "properties": props})
@@ -247,7 +264,7 @@ def evaluate_open_signals(symbol: str, df_1h) -> int:
             _request("PATCH", f"/pages/{page['id']}", {"properties": {
                 "Status": _p_sel(status), "Exit Reason": _p_sel(reason),
                 "MFE R": _p_num(round(mfe, 3)), "MAE R": _p_num(round(mae, 3)),
-                "Bars To Exit": _p_num(bars), "Resolved At": _p_date(rdt)}})
+                "Bars To Exit": _p_num(bars), "Resolved At": _p_date(_kst(rdt))}})
             updated += 1
         if updated:
             logger.info(f"[NotionWRF] ✅ 신호 판정 {symbol}: {updated}건")
@@ -285,8 +302,8 @@ def log_snapshot(engine_out: dict) -> bool:
         ctx = engine_out["ctx"]
         cands = engine_out.get("candidates", [])
         props = {
-            "Name": _p_title(f"{sym} {engine_out['ts'][:16]}"),
-            "TS": _p_date(engine_out["ts"]), "Symbol": _p_sel(sym),
+            "Name": _p_title(f"{sym} {_kst(engine_out['ts'])[:16]} KST"),
+            "TS": _p_date(_kst(engine_out["ts"])), "Symbol": _p_sel(sym),
             "Snapshot ID": _p_txt(sid), "Outcome": _p_sel("PENDING"),
             "FP Key": _p_sel(ctx.get("fp_key")), "BTC Macro": _p_sel(ctx.get("btc_macro")),
             "Regime 1H": _p_sel(ctx.get("regime_1h")), "Regime 4H": _p_sel(ctx.get("regime_4h")),
