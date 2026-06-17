@@ -675,3 +675,82 @@ RESEARCH_PATH_ROUND     = 6                       # 경로 상대변화율 반�
 NOTION_RESEARCH_DB_ID   = (os.getenv("NOTION_RESEARCH_DB_ID")
                            or "530210d9989a43f39dcd89cc8a72eb07")
 NOTION_RESEARCH_ENABLED = os.getenv("NOTION_RESEARCH_ENABLED", "1") not in ("0", "false", "False")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# [WRF-4] Win-Rate-First, 4-Setup 아키텍처 (전면 개편)
+# ══════════════════════════════════════════════════════════════════════
+# 목적함수: max N_signals  s.t.  WinRate >= W_floor
+#   → 보정된 승률확률 P̂(win) >= W_floor  AND  not VETO  일 때만 발사(페이퍼).
+#   승률은 "보정+임계"가 보장, 빈도는 넓은 유니버스×4셋업×양방향, 비정상성은
+#   거시방향(btc_macro) 층화 + 신뢰게이트가 차단한다.
+# 라이브 봇은 절대 학습하지 않는다 — calibration_table.json만 읽는다.
+
+def _wrf_f(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+def _wrf_i(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+
+# ── 알림 게이트 (학습기간엔 OFF·기록만; 커버리지 충족 후 true) ──────────
+ALERT_ENABLED = os.getenv("ALERT_ENABLED", "false").lower() not in ("0", "false", "no", "")
+
+# ── 실질 튜닝 파라미터 (하드캡 최소화: 백분위 윈도·극단컷·플로어) ────────
+WRF_PCT_WINDOW     = _wrf_i("WRF_PCT_WINDOW", 200)    # 자기분포 백분위 윈도(1H 봉 수)
+WRF_VWAP_WINDOW    = _wrf_i("WRF_VWAP_WINDOW", 48)    # 롤링 VWAP 윈도(1H 봉 수)
+WRF_PCT_EXTREME_HI = _wrf_f("WRF_PCT_EXTREME_HI", 0.85)  # 상단 극단 컷(백분위)
+WRF_PCT_EXTREME_LO = _wrf_f("WRF_PCT_EXTREME_LO", 0.15)  # 하단 극단 컷(백분위)
+WRF_WIN_FLOOR      = _wrf_f("WRF_WIN_FLOOR", 0.58)    # 승률 플로어(발사 임계)
+
+# ── 신뢰게이트(보정 자격) — 미충족 셀은 전부 보수적 prior로 동작 ────────
+WRF_CELL_N_MIN        = _wrf_i("WRF_CELL_N_MIN", 100)   # 셀 탈중첩 독립표본 최소치
+WRF_CELL_MACRO_MIN    = _wrf_i("WRF_CELL_MACRO_MIN", 2) # 셀이 커버해야 할 거시방향 종수
+WRF_EMBARGO_HOURS     = _wrf_i("WRF_EMBARGO_HOURS", 72) # purged-CV embargo(자기상관 차단)
+WRF_INDEP_STRIDE_H    = _wrf_i("WRF_INDEP_STRIDE_H", 24)# 탈중첩 독립표본 간격(시간)
+
+# ── 콜드스타트 prior (보수적 고정 직교게이트) ────────────────────────────
+# P̂_prior = logistic( b0[setup] + wC*C + wL*L + wF*F )  (C/L/F ∈ [-1,1] 방향정렬치)
+# b0를 셋업별로 비대칭 설정: TF/MR은 레짐정합이라 base 높고, BO/RV는 base-rate가
+# 낮아 강확증된 소수만 통과(자동 서열화). 중립 컨플루언스는 플로어 미만에 앉힌다.
+WRF_PRIOR_B0 = {
+    "TF": _wrf_f("WRF_PRIOR_B0_TF", -0.15),
+    "BO": _wrf_f("WRF_PRIOR_B0_BO", -0.75),
+    "MR": _wrf_f("WRF_PRIOR_B0_MR", -0.25),
+    "RV": _wrf_f("WRF_PRIOR_B0_RV", -0.95),
+}
+WRF_PRIOR_WC = _wrf_f("WRF_PRIOR_WC", 1.10)   # 맥락(C) 가중
+WRF_PRIOR_WL = _wrf_f("WRF_PRIOR_WL", 1.30)   # 위치(L) 가중
+WRF_PRIOR_WF = _wrf_f("WRF_PRIOR_WF", 1.20)   # 흐름(F) 가중
+WRF_PRIOR_CAP = _wrf_f("WRF_PRIOR_CAP", 0.72) # prior P̂ 상한(과신 방지)
+
+# ── L0 VETO 하드캡 (≈4) ──────────────────────────────────────────────
+WRF_VETO_SPREAD_BP    = _wrf_f("WRF_VETO_SPREAD_BP", 8.0)    # 스프레드 폭발(bp)
+WRF_VETO_DATA_AGE_MIN = _wrf_f("WRF_VETO_DATA_AGE_MIN", 90)  # 데이터 신선도(분)
+WRF_VETO_LIQ_CASCADE  = _wrf_i("WRF_VETO_LIQ_CASCADE", 5)    # 진입 정면 대량청산 캐스케이드 건수
+
+# ── 셋업별 타임스톱(시간) — §4 사양 ──────────────────────────────────
+WRF_TMAX = {"TF": 48, "BO": 36, "MR": 24, "RV": 48}
+
+# ── btc_macro 태깅 임계 (BTC 7D/30D 추세·EMA구조) ───────────────────────
+WRF_MACRO_UP_PCT   = _wrf_f("WRF_MACRO_UP_PCT", 0.03)   # 7D 변화 ±3% 이상 → leg
+WRF_MACRO_CHOP_PCT = _wrf_f("WRF_MACRO_CHOP_PCT", 0.015) # |7D| < 1.5% → CHOP 후보
+
+# ── 사이징 (페이퍼) — size ∝ P̂ ──────────────────────────────────────
+WRF_SIZE_BASE = _wrf_f("WRF_SIZE_BASE", 1.0)    # P̂=floor 기준 사이즈 단위
+WRF_SIZE_MAX  = _wrf_f("WRF_SIZE_MAX", 2.0)     # 사이즈 상한 단위
+
+# ── 산출물/경로 ──────────────────────────────────────────────────────
+WRF_CALIB_TABLE = os.getenv("WRF_CALIB_TABLE", "data/calibration_table.json")
+WRF_SCHEMA_VERSION = 3
+
+# ── Notion WRF 2-DB (전면 초기화 후 새 양식) ────────────────────────────
+NOTION_SIGNALS_DB_ID   = os.getenv("NOTION_SIGNALS_DB_ID", "")
+NOTION_SNAPSHOTS_DB_ID  = os.getenv("NOTION_SNAPSHOTS_DB_ID", "")
+NOTION_SIGNALS_DB_TITLE = "WRF Signals"
+NOTION_SNAPSHOTS_DB_TITLE = "WRF Snapshots"
