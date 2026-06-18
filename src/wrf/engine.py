@@ -56,7 +56,10 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
             lv = levels.compute_levels(c, feat)
             p_hat, source, floor = calibration.compute_p_hat(c, feat["ctx"], table)
             vetoes = veto.evaluate(c, feat, collected, global_v)
-            fire = bool(p_hat >= floor and not vetoes)
+            # RR 품질필터: prior 발사는 최소 RR 요구(보정셀은 학습 승률 존중 → 우회).
+            min_rr = getattr(config, "WRF_MIN_RR", 1.5)
+            rr_ok = (source == "calibrated") or (lv["rr"] >= min_rr)
+            fire = bool(p_hat >= floor and not vetoes and rr_ok)
             size = _size_from_p(p_hat, floor) if fire else 0.0
             rec = {
                 "setup": c["setup"], "dir": c["dir"], "precond": True,

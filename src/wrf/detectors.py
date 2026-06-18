@@ -25,28 +25,54 @@ def _clip(x: float) -> float:
     return max(-1.0, min(1.0, float(x)))
 
 
-def _ctx_axis(ctx: dict, direction: str) -> float:
-    """C 맥락 축: 거시방향·일봉바이어스 정렬 (방향중립 [-1,1])."""
-    macro = ctx.get("btc_macro", "CHOP")
-    bias = ctx.get("bias_1d", "NEUTRAL")
-    m = {"UPLEG": 1.0, "DOWNLEG": -1.0, "CHOP": 0.0}.get(macro, 0.0)
-    b = {"BULL": 1.0, "BEAR": -1.0, "NEUTRAL": 0.0}.get(bias, 0.0)
+# ── 연속형(TF/BO) 축: 추세 정합 ─────────────────────────────────────────
+def _ctx_align(ctx: dict, direction: str) -> float:
+    """C(연속) — 거시방향·일봉바이어스 정합 (추세에 올라타는 셋업용)."""
+    m = {"UPLEG": 1.0, "DOWNLEG": -1.0, "CHOP": 0.0}.get(ctx.get("btc_macro", "CHOP"), 0.0)
+    b = {"BULL": 1.0, "BEAR": -1.0, "NEUTRAL": 0.0}.get(ctx.get("bias_1d", "NEUTRAL"), 0.0)
     base = 0.6 * m + 0.4 * b
     return _clip(base if direction == "long" else -base)
 
 
-def _flow_axis(raw: dict, pcts: dict, direction: str) -> float:
-    """F 흐름 축: RSI/MACD 백분위 + 포지셔닝(펀딩·테이커·고래·OI·청산)."""
+def _flow_align(raw: dict, pcts: dict, direction: str) -> float:
+    """F(연속) — 진입방향 모멘텀·포지셔닝 동조."""
     long = direction == "long"
-    # 모멘텀 동조: 롱이면 macd 백분위 높을수록 +, rsi는 과열 아닌 동조
     mom = (pcts.get("macd", 0.5) - 0.5) * 2.0
-    # 테이커/롱숏/스마트머니 포지셔닝
     taker = ((raw.get("taker_buy") or 0.5) - 0.5) * 2.0
     smart = max(-1.0, min(1.0, (raw.get("smart_div") or 0.0) * 4.0))
     oi = {"trend_long": 0.5, "expanding_long": 0.5, "trend_short": -0.5,
           "expanding_short": -0.5}.get(raw.get("oi_quadrant", "neutral"), 0.0)
     base = 0.45 * mom + 0.25 * taker + 0.2 * smart + 0.1 * oi
     return _clip(base if long else -base)
+
+
+# ── 반전형(MR/RV) 축: 소진·역포지션 (추세를 *거스르는* 셋업용) ─────────────
+# 반전 셋업은 본질적으로 역추세 → 정합축으로 재면 영구 차단된다. 대신
+#   C = "거스를 추세가 신선한 거시레그가 아닌가"(레인지 톱/바텀이면 통과,
+#        신선한 동방향 거시레그면 차단=나이프캐칭 방지 유지)
+#   F = 모멘텀 *소진* + 군중 역포지션(과열RSI·펀딩극단·테이커소진·스마트머니 반대)
+def _ctx_exhaustion(ctx: dict, direction: str) -> float:
+    """C(반전) — 페이드 대상 추세의 신선도 기반. CHOP은 완만 통과, 신선한 역행레그는 차단."""
+    m = {"UPLEG": 1.0, "DOWNLEG": -1.0, "CHOP": 0.0}.get(ctx.get("btc_macro", "CHOP"), 0.0)
+    # 롱반전(하락 페이드)은 거시가 DOWN(신선)이면 위험 → fade_align=m; 숏반전은 -m
+    fade_align = m if direction == "long" else -m
+    base = getattr(config, "WRF_REV_CTX_BASE", 0.25)
+    return _clip(base + 0.75 * fade_align)
+
+
+def _flow_exhaustion(raw: dict, pcts: dict, direction: str) -> float:
+    """F(반전) — 모멘텀 소진 + 군중 역포지션(컨트래리언)."""
+    long = direction == "long"
+    rsi_ext = (pcts.get("rsi", 0.5) - 0.5) * 2.0      # 과매수=+1
+    rsi_term = (-rsi_ext) if long else rsi_ext         # 롱:과매도(+) / 숏:과매수(+)
+    f_ext = (pcts.get("funding", 0.5) - 0.5) * 2.0     # 펀딩 군중도
+    fund_term = (-f_ext) if long else f_ext            # 롱:군중숏(+) / 숏:군중롱(+)
+    taker = ((raw.get("taker_buy") or 0.5) - 0.5) * 2.0
+    taker_term = (-taker) if long else taker           # 매수/매도 소진 컨트래리언
+    smart = max(-1.0, min(1.0, (raw.get("smart_div") or 0.0) * 4.0))
+    smart_term = smart if long else -smart             # 스마트머니 반대편
+    base = 0.4 * rsi_term + 0.25 * fund_term + 0.2 * taker_term + 0.15 * smart_term
+    return _clip(base)
 
 
 def _detect_tf(feat: dict, measures: dict):
@@ -66,11 +92,11 @@ def _detect_tf(feat: dict, measures: dict):
         precond = bool(ema_aligned and pullback and (mom_realign or struct))
         if not precond:
             continue
-        C = _ctx_axis(ctx, direction)
+        C = _ctx_align(ctx, direction)
         # L: 눌림 품질 — 이상적 눌림(롱 loc≈0.35)에서 +1, 추세 정합 보강
         ideal = 0.35 if long else 0.65
         L = _clip(1.0 - abs(loc - ideal) / 0.35) * (0.7 + 0.3 * (1 if struct else 0))
-        F = _flow_axis(raw, pcts, direction)
+        F = _flow_align(raw, pcts, direction)
         out.append({"setup": "TF", "dir": direction, "precond": True,
                     "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
                     "confluence_n": raw.get(f"confluence_{direction}", 0),
@@ -107,9 +133,9 @@ def _detect_bo(feat: dict, measures: dict):
         precond = bool(broke and vol_spike and retest and hold)
         if not precond:
             continue
-        C = _ctx_axis(ctx, direction)
+        C = _ctx_align(ctx, direction)
         L = _clip(0.5 + min(0.5, box_h * 10))  # 박스가 넓을수록 측정이동 여지 ↑
-        F = _flow_axis(raw, pcts, direction)
+        F = _flow_align(raw, pcts, direction)
         out.append({"setup": "BO", "dir": direction, "precond": True,
                     "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
                     "confluence_n": raw.get(f"confluence_{direction}", 0),
@@ -136,11 +162,11 @@ def _detect_mr(feat: dict, measures: dict):
         precond = bool(bb_extreme and rsi_extreme and micro)
         if not precond:
             continue
-        C = _ctx_axis(ctx, direction)
+        C = _ctx_exhaustion(ctx, direction)
         # MR은 평균회귀 — 극단일수록 L 강함(방향 정렬: 롱이면 저극단 = +)
         depth = (0.15 - rsi_p) / 0.15 if long else (rsi_p - 0.85) / 0.15
         L = _clip(0.5 + max(0.0, depth))
-        F = _flow_axis(raw, pcts, direction)
+        F = _flow_exhaustion(raw, pcts, direction)
         out.append({"setup": "MR", "dir": direction, "precond": True,
                     "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
                     "confluence_n": raw.get(f"confluence_{direction}", 0),
@@ -158,31 +184,39 @@ def _detect_rv(feat: dict, measures: dict):
     wk = measures.get("weekly_levels", {})
     for direction in ("long", "short"):
         long = direction == "long"
-        # 추세소진 반전: 롱반전=하락추세 바닥소진
+        # ── 소진(exhaustion) 신호: 추세가 지쳤는가 ──────────────────────
         div = rsi_m.get("bullish_divergence") if long else rsi_m.get("bearish_divergence")
-        choch = (raw.get("choch") == 1 or raw.get("choch_4h") == 1) if long \
-            else (raw.get("choch") == -1 or raw.get("choch_4h") == -1)
-        key_reject = bool(wk.get("near_level"))
-        rev_candle = (c1.get("bullish_pin") or c1.get("bullish_engulf")) if long \
-            else (c1.get("bearish_pin") or c1.get("bearish_engulf"))
+        rsi_extreme = (pcts.get("rsi", 0.5) <= 0.12) if long else (pcts.get("rsi", 0.5) >= 0.88)
         liq_flush = bool(raw.get("liq_spike"))
         funding_extreme = (pcts.get("funding", 0.5) <= 0.1) if long \
             else (pcts.get("funding", 0.5) >= 0.9)
         oi_flush = raw.get("oi_quadrant") in ("reversal_long", "weak_bounce") if long else \
             raw.get("oi_quadrant") in ("reversal_short", "weak_bounce")
-        confirms = sum([bool(div), bool(choch), bool(key_reject), bool(rev_candle),
-                        bool(liq_flush), bool(funding_extreme), bool(oi_flush)])
-        # ≥3확인★ 필수
-        precond = confirms >= 3
+        exhaustion = [div, rsi_extreme, liq_flush, funding_extreme, oi_flush]
+        # ── 트리거(trigger) 신호: 전환이 시작됐는가 (CHoCH는 선택) ─────────
+        rev_candle = (c1.get("bullish_pin") or c1.get("bullish_engulf")) if long \
+            else (c1.get("bearish_pin") or c1.get("bearish_engulf"))
+        key_reject = bool(wk.get("near_level"))
+        # 실패한 돌파/유동성 스윕: failed_break +1=하향이탈실패(롱) / -1=상향이탈실패(숏)
+        swept = (raw.get("failed_break") == 1) if long else (raw.get("failed_break") == -1)
+        choch = (raw.get("choch") == 1 or raw.get("choch_4h") == 1) if long \
+            else (raw.get("choch") == -1 or raw.get("choch_4h") == -1)
+        triggers = [rev_candle, key_reject, swept, choch]
+        n_exh = sum(bool(x) for x in exhaustion)
+        n_trg = sum(bool(x) for x in triggers)
+        confirms = n_exh + n_trg
+        # ★ 소진 ≥1 ∧ 트리거 ≥1 ∧ 총 ≥3 (CHoCH 없어도 첫 전환봉에서 포착 가능)
+        precond = bool(n_exh >= 1 and n_trg >= 1 and confirms >= 3)
         if not precond:
             continue
-        C = _ctx_axis(ctx, direction)
+        C = _ctx_exhaustion(ctx, direction)
         L = _clip(0.4 + 0.1 * confirms)
-        F = _flow_axis(raw, pcts, direction)
+        F = _flow_exhaustion(raw, pcts, direction)
         out.append({"setup": "RV", "dir": direction, "precond": True,
                     "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
                     "confluence_n": raw.get(f"confluence_{direction}", 0),
-                    "confirms": confirms, "reason": f"추세소진({confirms}확인)"})
+                    "confirms": confirms,
+                    "reason": f"추세소진(소진{n_exh}+트리거{n_trg})"})
     return out
 
 
