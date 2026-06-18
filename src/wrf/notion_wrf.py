@@ -86,7 +86,8 @@ SIGNALS_PROPS = {
     "Win Floor": {"number": {}}, "Size": {"number": {}},
     "C": {"number": {}}, "L": {"number": {}}, "F": {"number": {}},
     "MFE R": {"number": {}}, "MAE R": {"number": {}}, "Bars To Exit": {"number": {}},
-    "Exit Reason": {"select": {"options": [{"name": n} for n in ("TP_HIT", "SL_HIT", "TIMEOUT", "OPEN")]}},
+    "Exit Price": {"number": {}}, "R Multiple": {"number": {}},
+    "Exit Reason": {"select": {"options": [{"name": n} for n in ("TP_HIT", "SL_HIT", "TIMEOUT", "EXPIRED_WIN", "EXPIRED_LOSS", "OPEN")]}},
     "Signaled At": {"date": {}}, "Resolved At": {"date": {}},
     "Reason": {"rich_text": {}}, "Signal ID": {"rich_text": {}},
 }
@@ -214,7 +215,7 @@ def log_signal(cand: dict, engine_out: dict) -> bool:
 
 
 def _eval_signal(direction, entry, tp, sl, t_max, candles, signaled_dt, now):
-    """실제 캔들로 OPEN 신호 판정. 반환 (status, exit_reason, mfe_r, mae_r, bars, resolved_dt)."""
+    """실제 캔들로 OPEN 신호 판정. 반환 dict(status·reason·mfe·mae·bars·rdt·exit_price·r_mult) 또는 None(미성숙)."""
     long = direction.upper() == "LONG"
     r_dist = abs(entry - sl)
     if r_dist <= 0:
@@ -234,21 +235,25 @@ def _eval_signal(direction, entry, tp, sl, t_max, candles, signaled_dt, now):
         sl_hit = (lo <= sl) if long else (hi >= sl)
         tp_hit = (hi >= tp) if long else (lo <= tp)
         rdt = row.name.isoformat()
-        if sl_hit and tp_hit:
-            return ("LOSS", "SL_HIT", mfe, mae, i + 1, rdt)
-        if sl_hit:
-            return ("LOSS", "SL_HIT", mfe, mae, i + 1, rdt)
+        rr = abs(tp - entry) / r_dist if r_dist else 0.0
+        if sl_hit:  # 동시터치 포함 SL 우선(보수적)
+            return {"status": "LOSS", "reason": "SL_HIT", "mfe": mfe, "mae": mae,
+                    "bars": i + 1, "rdt": rdt, "exit_price": sl, "r_mult": -1.0}
         if tp_hit:
-            return ("WIN", "TP_HIT", mfe, mae, i + 1, rdt)
+            return {"status": "WIN", "reason": "TP_HIT", "mfe": mfe, "mae": mae,
+                    "bars": i + 1, "rdt": rdt, "exit_price": tp, "r_mult": rr}
     # 타임스톱 도달 → TIMEOUT으로 두지 않고 진입가 대비 손익부호로 WIN/LOSS 판별.
     # (TP/SL 미터치라도 t_max 경과 시 시장가 청산 가정. 청산 사유는 EXPIRED_*.)
     if len(fut) >= int(t_max):
         last = fut.iloc[int(t_max) - 1]
-        realized = (float(last["close"]) - entry) if long else (entry - float(last["close"]))
+        px = float(last["close"])
+        realized = (px - entry) if long else (entry - px)
         win = realized >= 0
-        return ("WIN" if win else "LOSS",
-                "EXPIRED_WIN" if win else "EXPIRED_LOSS",
-                mfe, mae, int(t_max), last.name.isoformat())
+        return {"status": "WIN" if win else "LOSS",
+                "reason": "EXPIRED_WIN" if win else "EXPIRED_LOSS",
+                "mfe": mfe, "mae": mae, "bars": int(t_max),
+                "rdt": last.name.isoformat(), "exit_price": round(px, 8),
+                "r_mult": round(realized / r_dist, 4) if r_dist else 0.0}
     return None  # 미성숙
 
 
@@ -283,11 +288,11 @@ def evaluate_open_signals(symbol: str, df_1h) -> int:
             out = _eval_signal(direction, entry, tp, sl, t_max, df_1h, sdt, now)
             if not out:
                 continue
-            status, reason, mfe, mae, bars, rdt = out
             _request("PATCH", f"/pages/{page['id']}", {"properties": {
-                "Status": _p_sel(status), "Exit Reason": _p_sel(reason),
-                "MFE R": _p_num(round(mfe, 3)), "MAE R": _p_num(round(mae, 3)),
-                "Bars To Exit": _p_num(bars), "Resolved At": _p_date_kst(rdt)}})
+                "Status": _p_sel(out["status"]), "Exit Reason": _p_sel(out["reason"]),
+                "MFE R": _p_num(round(out["mfe"], 3)), "MAE R": _p_num(round(out["mae"], 3)),
+                "Bars To Exit": _p_num(out["bars"]), "Resolved At": _p_date_kst(out["rdt"]),
+                "Exit Price": _p_num(out["exit_price"]), "R Multiple": _p_num(out["r_mult"])}})
             updated += 1
         if updated:
             logger.info(f"[NotionWRF] ✅ 신호 판정 {symbol}: {updated}건")

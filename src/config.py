@@ -727,7 +727,11 @@ WRF_PRIOR_B0 = {
 WRF_PRIOR_WC = _wrf_f("WRF_PRIOR_WC", 1.10)   # 맥락(C) 가중
 WRF_PRIOR_WL = _wrf_f("WRF_PRIOR_WL", 1.30)   # 위치(L) 가중
 WRF_PRIOR_WF = _wrf_f("WRF_PRIOR_WF", 1.20)   # 흐름(F) 가중
-WRF_PRIOR_CAP = _wrf_f("WRF_PRIOR_CAP", 0.72) # prior P̂ 상한(과신 방지)
+WRF_PRIOR_CAP = _wrf_f("WRF_PRIOR_CAP", 0.65) # prior P̂ 상한(검증데이터 0 → 과신 금지·소사이즈)
+# 콜드스타트 직교게이트: 세 축(C/L/F)이 모두 최소 동의해야 prior 발사 허용.
+# 한 축이라도 ~중립/역행(< 이 값)이면 '광범위 동의' 불충족 → 발사 보류(플로어 미만).
+# 한 축(특히 위치 L)만 강해서 발사되던 약발(약흐름 추세롱) 차단. 보정셀엔 미적용.
+WRF_PRIOR_MIN_AXIS = _wrf_f("WRF_PRIOR_MIN_AXIS", 0.10)
 
 # ── L0 VETO 하드캡 (≈4) ──────────────────────────────────────────────
 WRF_VETO_SPREAD_BP    = _wrf_f("WRF_VETO_SPREAD_BP", 8.0)    # 스프레드 폭발(bp)
