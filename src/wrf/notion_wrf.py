@@ -39,6 +39,22 @@ def _kst(iso: str) -> str:
     except Exception:
         return iso
 
+
+def _p_date_kst(iso: str) -> dict:
+    """Notion date 속성을 KST로 표시. time_zone='Asia/Seoul' + 오프셋 없는 로컬시각
+    → 뷰어 타임존과 무관하게 모두 KST로 표시(Notion 규칙: time_zone 지정 시 start는
+    오프셋 미포함)."""
+    if not iso:
+        return {"date": None}
+    try:
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        local = dt.astimezone(_KST).replace(tzinfo=None).isoformat()
+        return {"date": {"start": local, "time_zone": "Asia/Seoul"}}
+    except Exception:
+        return _p_date(_kst(iso))
+
 _SIG_CACHE = None
 _SNAP_CACHE = None
 
@@ -76,10 +92,16 @@ SIGNALS_PROPS = {
 }
 
 SNAP_NUM = ["RSI", "RSI 4H", "RSI 1D", "BB %b", "Dist VWAP ATR", "Dist EMA20 ATR",
-            "ATR %", "ADX", "MACD", "Funding", "OI Chg", "LS Long", "Taker Buy",
-            "Smart Div", "Vol Ratio", "Confluence L", "Confluence S",
+            "ATR %", "ADX", "ADX Slope", "MACD", "Funding", "Funding Slope",
+            "OI Chg", "OI Slope", "LS Long", "Taker Buy", "Smart Div", "Vol Ratio",
+            "EMA 1H", "EMA 4H", "EMA 1D", "BOS", "CHoCH", "BOS 4H", "CHoCH 4H",
+            "FVG", "OB Sign", "Fib GP", "Weekly Lvl", "Hour UTC", "DOW",
+            "Confluence L", "Confluence S",
             "Ret 4h", "Ret 12h", "Ret 24h", "Ret 48h", "Ret 72h", "exRet 24h",
             "MFE", "MAE", "Path Eff", "TT Peak", "TT Trough", "Candidates", "Fired"]
+_OI_QUAD_OPTS = [{"name": n} for n in ("neutral", "trend_long", "trend_short",
+    "reversal_long", "reversal_short", "weak_bounce", "expanding_long", "expanding_short")]
+_LIQ_OPTS = [{"name": n} for n in ("none", "long_liq_detected", "short_liq_detected")]
 SNAP_SEL = {
     "Symbol": [{"name": n} for n in ("BTC/USDT", "ETH/USDT", "HYPE/USDT", "SOL/USDT", "SUI/USDT", "XRP/USDT")],
     "Outcome": [{"name": "PENDING", "color": "gray"}, {"name": "DONE", "color": "green"}, {"name": "EXPIRED", "color": "brown"}],
@@ -87,6 +109,7 @@ SNAP_SEL = {
     "Bias 1D": [{"name": n} for n in ("BULL", "BEAR", "NEUTRAL")],
     "RSI Zone": [{"name": n} for n in ("OS", "MID", "OB")],
     "Vol Zone": [{"name": n} for n in ("SQUEEZE", "NORMAL", "EXPANDED")],
+    "OI Quadrant": _OI_QUAD_OPTS, "Liq Signal": _LIQ_OPTS,
     "Class 24h": [{"name": n} for n in ("UP", "FLAT", "DOWN")],
     "Class 72h": [{"name": n} for n in ("UP", "FLAT", "DOWN")],
 }
@@ -178,7 +201,7 @@ def log_signal(cand: dict, engine_out: dict) -> bool:
             "P_hat": _p_num(cand["p_hat"]), "P Source": _p_sel(cand["p_source"]),
             "Win Floor": _p_num(cand["win_floor"]), "Size": _p_num(cand["size"]),
             "C": _p_num(cand["C"]), "L": _p_num(cand["L"]), "F": _p_num(cand["F"]),
-            "Exit Reason": _p_sel("OPEN"), "Signaled At": _p_date(_kst(engine_out["ts"])),
+            "Exit Reason": _p_sel("OPEN"), "Signaled At": _p_date_kst(engine_out["ts"]),
             "Reason": _p_txt(cand.get("reason", "")), "Signal ID": _p_txt(sid),
         }
         r = _request("POST", "/pages", {"parent": {"database_id": db}, "properties": props})
@@ -264,7 +287,7 @@ def evaluate_open_signals(symbol: str, df_1h) -> int:
             _request("PATCH", f"/pages/{page['id']}", {"properties": {
                 "Status": _p_sel(status), "Exit Reason": _p_sel(reason),
                 "MFE R": _p_num(round(mfe, 3)), "MAE R": _p_num(round(mae, 3)),
-                "Bars To Exit": _p_num(bars), "Resolved At": _p_date(_kst(rdt))}})
+                "Bars To Exit": _p_num(bars), "Resolved At": _p_date_kst(rdt)}})
             updated += 1
         if updated:
             logger.info(f"[NotionWRF] ✅ 신호 판정 {symbol}: {updated}건")
@@ -303,7 +326,7 @@ def log_snapshot(engine_out: dict) -> bool:
         cands = engine_out.get("candidates", [])
         props = {
             "Name": _p_title(f"{sym} {_kst(engine_out['ts'])[:16]} KST"),
-            "TS": _p_date(_kst(engine_out["ts"])), "Symbol": _p_sel(sym),
+            "TS": _p_date_kst(engine_out["ts"]), "Symbol": _p_sel(sym),
             "Snapshot ID": _p_txt(sid), "Outcome": _p_sel("PENDING"),
             "FP Key": _p_sel(ctx.get("fp_key")), "BTC Macro": _p_sel(ctx.get("btc_macro")),
             "Regime 1H": _p_sel(ctx.get("regime_1h")), "Regime 4H": _p_sel(ctx.get("regime_4h")),
@@ -314,10 +337,22 @@ def log_snapshot(engine_out: dict) -> bool:
             "Dist VWAP ATR": _p_num(raw.get("dist_vwap_atr")),
             "Dist EMA20 ATR": _p_num(raw.get("dist_ema20_atr")),
             "ATR %": _p_num(raw.get("atr_pct")), "ADX": _p_num(raw.get("adx")),
+            "ADX Slope": _p_num(raw.get("adx_slope")),
             "MACD": _p_num(raw.get("macd")), "Funding": _p_num(raw.get("funding")),
-            "OI Chg": _p_num(raw.get("oi_chg")), "LS Long": _p_num(raw.get("ls_long")),
+            "Funding Slope": _p_num(raw.get("funding_slope")),
+            "OI Chg": _p_num(raw.get("oi_chg")), "OI Slope": _p_num(raw.get("oi_slope")),
+            "OI Quadrant": _p_sel(raw.get("oi_quadrant")),
+            "LS Long": _p_num(raw.get("ls_long")),
             "Taker Buy": _p_num(raw.get("taker_buy")), "Smart Div": _p_num(raw.get("smart_div")),
             "Vol Ratio": _p_num(raw.get("vol_ratio")),
+            "EMA 1H": _p_num(raw.get("ema")), "EMA 4H": _p_num(raw.get("ema_4h")),
+            "EMA 1D": _p_num(raw.get("ema_1d")),
+            "BOS": _p_num(raw.get("bos")), "CHoCH": _p_num(raw.get("choch")),
+            "BOS 4H": _p_num(raw.get("bos_4h")), "CHoCH 4H": _p_num(raw.get("choch_4h")),
+            "FVG": _p_num(raw.get("fvg")), "OB Sign": _p_num(raw.get("ob")),
+            "Fib GP": _p_num(raw.get("fib_gp")), "Weekly Lvl": _p_num(raw.get("weekly")),
+            "Liq Signal": _p_sel(raw.get("liq_signal")),
+            "Hour UTC": _p_num(raw.get("hour_utc")), "DOW": _p_num(raw.get("dow")),
             "Confluence L": _p_num(raw.get("confluence_long")),
             "Confluence S": _p_num(raw.get("confluence_short")),
             "Candidates": _p_num(len(cands)),
