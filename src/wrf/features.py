@@ -116,6 +116,7 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
     oim = a.get("oi_matrix", {})
     sm = a.get("smart_money", {})
     liq = a.get("liquidations", {})
+    ms = a.get("market_structure", {})
     regime = a.get("regime", {})
     regime4 = a.get("regime_4h", {})
     dbias = a.get("daily_bias", {})
@@ -195,6 +196,8 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
                         wk.get("near_level") and wk.get("is_resistance")),
         "bos": _sign(bos.get("bos_bullish"), bos.get("bos_bearish")),
         "choch": _sign(bos.get("choch_bullish"), bos.get("choch_bearish")),
+        # 실패한 돌파/유동성 스윕: +1=하향이탈실패(강세) / -1=상향이탈실패(약세)
+        "failed_break": _sign(ms.get("failed_breakdown"), ms.get("failed_breakout")),
         "bos_4h": _sign(bos4.get("bos_bullish"), bos4.get("bos_bearish")),
         "choch_4h": _sign(bos4.get("choch_bullish"), bos4.get("choch_bearish")),
         "confluence_long": int(confluence_long),

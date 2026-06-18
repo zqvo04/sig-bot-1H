@@ -744,6 +744,14 @@ WRF_TMAX = {"TF": 48, "BO": 36, "MR": 24, "RV": 48}
 # ── BO 리테스트 허용 근접도 (돌파봉 이후 현재봉이 경계로 되돌아온 정도) ────
 WRF_BO_RETEST_TOL = _wrf_f("WRF_BO_RETEST_TOL", 0.002)
 
+# ── 반전형(MR/RV) 맥락축 베이스: CHOP(레인지)에서 페이드 허용 정도 ───────
+# 레인지 톱/바텀 반전은 완만 통과(>min_axis), 신선한 동방향 거시레그면 차단.
+WRF_REV_CTX_BASE = _wrf_f("WRF_REV_CTX_BASE", 0.25)
+
+# ── 최소 RR 품질필터: prior 발사는 RR 이 이 값 미만이면 제외(저RR 잡신호 컷). ──
+# 보정셀(calibrated)은 학습된 승률을 존중해 이 필터를 우회한다.
+WRF_MIN_RR = _wrf_f("WRF_MIN_RR", 1.5)
+
 # ── btc_macro 태깅 임계 (BTC 7D/30D 추세·EMA구조) ───────────────────────
 WRF_MACRO_UP_PCT   = _wrf_f("WRF_MACRO_UP_PCT", 0.03)   # 7D 변화 ±3% 이상 → leg
 WRF_MACRO_CHOP_PCT = _wrf_f("WRF_MACRO_CHOP_PCT", 0.015) # |7D| < 1.5% → CHOP 후보
