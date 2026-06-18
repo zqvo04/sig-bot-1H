@@ -60,7 +60,7 @@ def _ema_code(s: str) -> int:
 REGIME_SETUPS = {
     "TRENDING":  ["TF", "RV"],
     "EXPLOSIVE": ["TF", "BO", "RV"],
-    "SQUEEZE":   ["BO"],
+    "SQUEEZE":   ["BO", "RV"],   # 압축 극단은 돌파 또는 반전 — RV는 ≥3확인·소진축으로 강게이트
     "RANGING":   ["MR", "RV"],
     "UNKNOWN":   ["MR"],
 }
