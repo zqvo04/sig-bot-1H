@@ -62,9 +62,16 @@ def prior_p_hat(setup: str, C: float, L: float, F: float) -> float:
     wC = getattr(config, "WRF_PRIOR_WC", 1.1)
     wL = getattr(config, "WRF_PRIOR_WL", 1.3)
     wF = getattr(config, "WRF_PRIOR_WF", 1.2)
-    cap = getattr(config, "WRF_PRIOR_CAP", 0.72)
+    cap = getattr(config, "WRF_PRIOR_CAP", 0.65)
     z = b0 + wC * C + wL * L + wF * F
-    return min(cap, _sigmoid(z))
+    p = min(cap, _sigmoid(z))
+    # 직교 3축 광범위 동의 게이트: 한 축이라도 최소동의 미만이면 콜드스타트 발사 보류.
+    # (가중합이 높아도 단일 축 과의존으로 발사되던 약발 신호 차단. 보정셀엔 미적용.)
+    min_axis = getattr(config, "WRF_PRIOR_MIN_AXIS", 0.10)
+    if min(C, L, F) < min_axis:
+        floor = getattr(config, "WRF_WIN_FLOOR", 0.58)
+        p = min(p, floor - 0.03)
+    return p
 
 
 def _isotonic_apply(x: float, xs: list, ys: list) -> float:
