@@ -69,6 +69,9 @@ REGIME_SETUPS = {
 def allowed_setups(regime_1h: str, regime_4h: str) -> list:
     """레짐(1H 우선, 4H 보강) → 허용 셋업 집합."""
     s = list(REGIME_SETUPS.get(regime_1h, ["MR"]))
+    # [연결결함#1] 박스권 돌파는 RANGING에서 출발 → RANGING에도 BO 허용(강게이트로 통제)
+    if getattr(config, "WRF_BO_IN_RANGING", True) and regime_1h == "RANGING" and "BO" not in s:
+        s.append("BO")
     # 4H가 추세면 TF 허용 보강, 4H 스퀴즈면 BO 허용 보강
     if regime_4h in ("TRENDING", "EXPLOSIVE") and "TF" not in s:
         s.append("TF")
@@ -122,6 +125,7 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
     dbias = a.get("daily_bias", {})
     retr = a.get("retracement", {})    # [A1] 4H 피보 되돌림 zone
     mat = a.get("maturity", {})        # [A1] 추세 성숙도(HH/HL 카운트)
+    ema_struct = a.get("ema_structure", {})  # [#4/#5] 일봉 EMA20/50 구조(전략 추세정의)
 
     # ── 백분위 시계열 구성 (무상태, 캔들에서 재구성) ──────────────────
     win = getattr(config, "WRF_PCT_WINDOW", 200)
@@ -203,6 +207,9 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
         "ema": _ema_code(ema_l.get("1h", "neutral")),
         "ema_4h": _ema_code(ema_l.get("4h", "neutral")),
         "ema_1d": _ema_code(ema_l.get("1d", "neutral")),
+        # [#4/#5] 일봉 EMA20/50 구조: +1=강세(price>EMA20>EMA50)/-1=약세/0=중립
+        "ema_1d_struct": (1 if ema_struct.get("structure") == "bull"
+                          else -1 if ema_struct.get("structure") == "bear" else 0),
         # 구조(SMC)
         "fvg": _sign(fvg.get("in_bullish_fvg"), fvg.get("in_bearish_fvg")),
         "ob": _sign(ob.get("in_bullish_ob"), ob.get("in_bearish_ob")),

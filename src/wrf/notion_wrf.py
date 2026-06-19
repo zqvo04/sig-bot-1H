@@ -95,11 +95,15 @@ SIGNALS_PROPS = {
 SNAP_NUM = ["RSI", "RSI 4H", "RSI 1D", "BB %b", "Dist VWAP ATR", "Dist EMA20 ATR",
             "ATR %", "ADX", "ADX Slope", "MACD", "Funding", "Funding Slope",
             "OI Chg", "OI Slope", "LS Long", "Taker Buy", "Smart Div", "Vol Ratio",
-            "EMA 1H", "EMA 4H", "EMA 1D", "BOS", "CHoCH", "BOS 4H", "CHoCH 4H", "Failed Break",
-            "FVG", "OB Sign", "Fib GP", "Weekly Lvl", "Hour UTC", "DOW",
+            "Rev Vol Ratio",
+            "EMA 1H", "EMA 4H", "EMA 1D", "EMA 1D Struct", "BOS", "CHoCH", "BOS 4H",
+            "CHoCH 4H", "Failed Break",
+            "FVG", "OB Sign", "Fib GP", "Weekly Lvl", "Maturity Net", "Hour UTC", "DOW",
             "Confluence L", "Confluence S",
             "Ret 4h", "Ret 12h", "Ret 24h", "Ret 48h", "Ret 72h", "exRet 24h",
             "MFE", "MAE", "Path Eff", "TT Peak", "TT Trough", "Candidates", "Fired"]
+_ZONE_OPTS = [{"name": n} for n in ("none", "too_shallow", "shallow", "optimal", "deep", "broken")]
+_MATURITY_OPTS = [{"name": n} for n in ("none", "early", "mid", "late")]
 _OI_QUAD_OPTS = [{"name": n} for n in ("neutral", "trend_long", "trend_short",
     "reversal_long", "reversal_short", "weak_bounce", "expanding_long", "expanding_short")]
 _LIQ_OPTS = [{"name": n} for n in ("none", "long_liq_detected", "short_liq_detected")]
@@ -111,6 +115,7 @@ SNAP_SEL = {
     "RSI Zone": [{"name": n} for n in ("OS", "MID", "OB")],
     "Vol Zone": [{"name": n} for n in ("SQUEEZE", "NORMAL", "EXPANDED")],
     "OI Quadrant": _OI_QUAD_OPTS, "Liq Signal": _LIQ_OPTS,
+    "Retrace L": _ZONE_OPTS, "Retrace S": _ZONE_OPTS, "Maturity": _MATURITY_OPTS,
     "Class 24h": [{"name": n} for n in ("UP", "FLAT", "DOWN")],
     "Class 72h": [{"name": n} for n in ("UP", "FLAT", "DOWN")],
 }
@@ -350,13 +355,18 @@ def log_snapshot(engine_out: dict) -> bool:
             "LS Long": _p_num(raw.get("ls_long")),
             "Taker Buy": _p_num(raw.get("taker_buy")), "Smart Div": _p_num(raw.get("smart_div")),
             "Vol Ratio": _p_num(raw.get("vol_ratio")),
+            "Rev Vol Ratio": _p_num(raw.get("rev_vol_ratio")),
             "EMA 1H": _p_num(raw.get("ema")), "EMA 4H": _p_num(raw.get("ema_4h")),
-            "EMA 1D": _p_num(raw.get("ema_1d")),
+            "EMA 1D": _p_num(raw.get("ema_1d")), "EMA 1D Struct": _p_num(raw.get("ema_1d_struct")),
             "BOS": _p_num(raw.get("bos")), "CHoCH": _p_num(raw.get("choch")),
             "BOS 4H": _p_num(raw.get("bos_4h")), "CHoCH 4H": _p_num(raw.get("choch_4h")),
             "Failed Break": _p_num(raw.get("failed_break")),
             "FVG": _p_num(raw.get("fvg")), "OB Sign": _p_num(raw.get("ob")),
             "Fib GP": _p_num(raw.get("fib_gp")), "Weekly Lvl": _p_num(raw.get("weekly")),
+            "Retrace L": _p_sel(raw.get("retrace_long_zone")),
+            "Retrace S": _p_sel(raw.get("retrace_short_zone")),
+            "Maturity": _p_sel(raw.get("maturity")),
+            "Maturity Net": _p_num(raw.get("maturity_net")),
             "Liq Signal": _p_sel(raw.get("liq_signal")),
             "Hour UTC": _p_num(raw.get("hour_utc")), "DOW": _p_num(raw.get("dow")),
             "Confluence L": _p_num(raw.get("confluence_long")),

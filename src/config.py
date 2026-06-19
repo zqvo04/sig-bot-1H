@@ -788,6 +788,20 @@ WRF_BO_FUND_LO    = _wrf_f("WRF_BO_FUND_LO", 0.20)   # 롱돌파: 펀딩 백분�
 WRF_BO_FUND_HI    = _wrf_f("WRF_BO_FUND_HI", 0.80)   # 숏돌파: 펀딩 백분위 ≥ → 컨트래리언
 WRF_BO_FUND_BONUS = _wrf_f("WRF_BO_FUND_BONUS", 0.15)  # 컨트래리언 시 L 가점
 
+# ── [연결결함#1] BO 도달성: 박스권 돌파는 RANGING에서 출발 → RANGING에도 BO 허용 ──
+# BO precond(돌파종가+거래량스파이크+리테스트유지★ 2봉패턴)가 이미 강게이트라
+# 노이즈 위험 낮음. False 로 두면 구동작(SQUEEZE/EXPLOSIVE에서만 BO).
+WRF_BO_IN_RANGING = os.getenv("WRF_BO_IN_RANGING", "true").lower() not in ("0", "false", "no", "")
+
+# ── [연결결함#2] RV(전환) 거시 베토 면제: RV는 CHoCH+리테스트+소진을 이미 강제 ──
+# (=구조붕괴 증거). 거시 정면충돌 하드베토가 전환셋업 본분을 무력화 → RV만 면제하고
+# 역추세 위험은 C축(_ctx_exhaustion)·min-axis 소프트게이트로 통제(역할 분담).
+WRF_RV_MACRO_EXEMPT = os.getenv("WRF_RV_MACRO_EXEMPT", "true").lower() not in ("0", "false", "no", "")
+
+# ── [연결결함#5] TF 성숙도 배선: 성숙(late) 추세는 반전위험↑ → TF 확신 감쇠 ──
+# 측정만 되고 미사용이던 maturity(연속 HH/HL)를 TF L에 연결. 1.0=감쇠없음(토글).
+WRF_TF_LATE_MATURITY_MULT = _wrf_f("WRF_TF_LATE_MATURITY_MULT", 0.85)
+
 # ── btc_macro 태깅 임계 (BTC 7D/30D 추세·EMA구조) ───────────────────────
 WRF_MACRO_UP_PCT   = _wrf_f("WRF_MACRO_UP_PCT", 0.03)   # 7D 변화 ±3% 이상 → leg
 WRF_MACRO_CHOP_PCT = _wrf_f("WRF_MACRO_CHOP_PCT", 0.015) # |7D| < 1.5% → CHOP 후보

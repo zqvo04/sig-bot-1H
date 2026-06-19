@@ -35,27 +35,35 @@ OKX 무기한 선물(USDT-Swap) **1시간봉 스윙** 신호 봇. **페이퍼 �
 ## WRF-4 엔진 (5레이어)
 
 ```
-L0 VETO(하드 ~4): 스프레드폭발 · 진입정면 대량청산캐스케이드 · 데이터신선도실패 · 거시정면충돌
-L1 직교 3축(백분위 입력):
-   C 맥락 : 레짐 + 거시방향 + 일봉바이어스 → 허용 셋업 라우팅
-   L 위치 : (close−VWAP/EMA20)/ATR · BB%b 자기분포 백분위 + 컨플루언스(FVG/OB/피보/주간)
-   F 흐름 : RSI/MACD 소진·동조 + OKX 포지셔닝(펀딩백분위·OI사분면·청산스파이크·고래vs군중·테이커)
-L2 셋업 디텍터 ×4 (레짐이 허용집합 결정):
-   TF(TRENDING+HTF정합): HH/HL + [얕은눌림(1H EMA밴드) ∪ 깊은눌림(4H 피보 50~61.8%)] +
-      모멘텀/구조 + 반전봉거래량 | TP=측정이동 SL=직전스윙∓ATR×1.5 T=48h
-   BO(SQUEEZE→확장/박스): 경계돌파 + 거래량스파이크 + [리테스트 유지★필수] +
-      펀딩컨트래리언 가점 | TP=박스높이 SL=박스복귀 T=36h
+L0 VETO(하드): 스프레드폭발 · 진입정면 대량청산캐스케이드 · 데이터신선도실패 ·
+   거시정면충돌(TF/BO/MR만 — RV는 면제: CHoCH+리테스트 강제로 본분 보존)
+L1 측정·백분위·맥락(features): raw 원시피처 + 자기분포 백분위(pct) + ctx(레짐·거시·바이어스)
+   라우팅: regime_1h(+regime_4h 보강) → 허용 셋업 집합. ★거시·바이어스는 라우팅이 아니라
+   C축·veto·셀키로 들어간다(라우팅은 레짐만 사용).
+L2 셋업 디텍터 ×4 — 직교 3축(C/L/F ∈[-1,1])은 여기서 산출(셋업별 공식 분기):
+   C 맥락 : 추종형(_ctx_align)=거시·바이어스·4H추세·일봉EMA20/50 정합 |
+            반전형(_ctx_exhaustion)=페이드 대상 추세 신선도
+   L 위치 : (close−VWAP/EMA20)/ATR · BB%b 백분위 + 컨플루언스 + 셋업별 구조품질
+   F 흐름 : RSI/MACD 소진·동조 + OKX 포지셔닝(펀딩·OI·청산·고래vs군중·테이커)
+   ── 디텍터(레짐이 허용집합 결정) ──
+   TF: HH/HL + [얕은눌림(1H EMA밴드) ∪ 깊은눌림(4H 피보 50~61.8%)] + 모멘텀/구조 +
+       반전봉거래량 (성숙late 추세 확신감쇠) | TP=측정이동 SL=직전스윙∓ATR×1.5 T=48h
+   BO: 경계돌파 + 거래량스파이크 + [리테스트 유지★필수] + 펀딩컨트래리언 가점
+       (RANGING/SQUEEZE/EXPLOSIVE 도달) | TP=박스높이 SL=박스복귀 T=36h
    MR(RANGING): BB극단 + RSI극단백분위 + 반전마이크로 + 반전봉거래량 |
-      TP=박스중심선/반대편경계 SL=박스경계∓ATR T=24h
-   RV(추세소진): 다이버전스 + [CHoCH★필수] + [리테스트(스윕/키레벨거부)★필수] +
-      반전봉거래량 + [≥3확인★] | TP=직전레벨 SL=극단너머 T=48h
-L3 보정 승률 P̂: isotonic(로지스틱(C,L,F)) · 셀=(setup×regime×btc_macro)
+       TP=박스중심선/반대편경계 SL=박스경계∓ATR T=24h
+   RV: 다이버전스 + [CHoCH★필수] + [리테스트(스윕/키레벨거부)★필수] + 반전봉거래량 +
+       [≥3확인★] | TP=직전레벨 SL=극단너머 T=48h
+L3 보정 승률 P̂: isotonic(로지스틱(C,L,F)) · 셀=(setup×regime_1h×btc_macro)
    └ 신뢰게이트 미충족 → 보수적 고정 prior (콜드스타트)
+   └ ★셀 키는 거친 채로 둔다(콜드스타트·과적합 보호). 누락 맥락(4H추세·일봉EMA20/50)은
+     셀 키를 늘리는 대신 C축에 연속 피처로 주입 → 셀 내부에서 분리 학습.
 L4 발사+청산: 발사 ⟺ P̂ ≥ W_floor ∧ ¬VETO → TP/SL/타임스톱 산출, 사이징 ∝ P̂ (페이퍼)
 ```
 
 빈도는 넓은 유니버스 × 4셋업 × 양방향의 **합집합**으로 산다(플로어 불변=승률 불변).
 BO·RV는 base-rate가 낮아 **강확증된 소수만** 통과한다(P̂ 내림차순 자동 서열화).
+**역할 분담**: 하드 베토 = 추종/레인지(TF/BO/MR), 소프트 게이트(C축·min-axis) = 전환(RV).
 
 ### 코드 매핑 (`src/wrf/`)
 
@@ -166,6 +174,8 @@ python analysis/situation_report.py --wrf   # 셀 자격 진단
   `WRF_MR_TP_TARGET`(mid|opposite), `WRF_MR_BOX_WINDOW`, `WRF_RV_REQUIRE_CHOCH/RETEST`(전환
   시퀀스 강제), `WRF_TF_FIB_PULLBACK`(피보 깊은눌림 경로), `WRF_REV_VOL_MULT`(반전봉 거래량
   게이트, 0=OFF), `WRF_BO_FUND_BONUS`(돌파 펀딩 컨트래리언 가점).
+- **레이어 연결 토글**: `WRF_BO_IN_RANGING`(RANGING 박스돌파 허용), `WRF_RV_MACRO_EXEMPT`
+  (RV 거시베토 면제), `WRF_TF_LATE_MATURITY_MULT`(성숙추세 TF 감쇠, 1.0=없음).
 
 ### 전략 정합 개선 (2026-06, win-rate-first 골격 유지)
 
@@ -182,6 +192,22 @@ python analysis/situation_report.py --wrf   # 셀 자격 진단
   → 첫 반전봉 나이프캐칭 차단.
 - **반전봉 거래량 게이트(A5/G7)**: TF/MR/RV 반전봉 거래량 > 직전 5봉 평균. (BO는 돌파봉
   스파이크 유지 + 펀딩 컨트래리언 L 가점.)
+
+### 레이어 연결 완성도 보강 (2026-06, 과적합 경계)
+
+레이어 간 논리 연결 점검에서 드러난 6개 결함 해결. **셀 키 차원은 늘리지 않음**(콜드스타트·
+과적합 보호).
+
+- **#1 BO 도달성**: 박스 돌파는 RANGING에서 출발 → `allowed_setups`가 RANGING에도 BO 허용
+  (BO precond 강게이트로 노이즈 통제).
+- **#2 RV 거시베토 면제**: `MACRO_HEADON`을 RV에서 제외(RV는 CHoCH+리테스트+소진 강제 =
+  구조붕괴 증거). 전환 셋업이 거시추세 전환을 칠 수 있게 — 역추세 위험은 C축·min-axis 소프트로.
+- **#3 레이어 라벨 정정**: C/L/F 축은 L1이 아니라 **L2(디텍터)** 산출, 라우팅은 **레짐만** 사용
+  (거시·바이어스는 C축/veto/셀키 경로) — README 위 엔진도 정정.
+- **#4 셀 맥락 혼합**: 셀 키 확장(과적합) 대신, 누락 맥락(4H추세 `ema_4h`·일봉 EMA20/50
+  `ema_1d_struct`)을 **C축에 연속 피처로 주입** → 거친 셀 안에서 분리 학습.
+- **#5 죽은 연결 복구**: `maturity`(성숙추세 TF 감쇠)·일봉 `ema_structure`(C축) 배선.
+- **#6 3중 중복 제거**: 하드 베토(추종/레인지) ↔ 소프트 게이트(전환) 역할 분담으로 정리.
 
 ---
 
@@ -205,8 +231,10 @@ python scripts/migrate_notion_wrf.py --purge    # 추가 + 기존 행 전부 아
   (레거시 Grade·Score·Threshold 등은 참고용으로 잔존)
 - **`1H Research Snapshots`**(매시간 학습 미러): TS·Symbol·Snapshot ID·Outcome·Regime/Bias·
   RSI/Vol Zone·BTC Macro·핵심 L1 수치(RSI·BB %b·Dist VWAP/EMA20 ATR·ADX·MACD·Funding·OI·
+  Vol Ratio·**Rev Vol Ratio**·**EMA 1D Struct**·**Retrace L/S**·**Maturity(Net)**·
   Confluence L/S 등) + 파생라벨(Ret 4~72h·exRet·MFE/MAE·Class 24/72h·Path Eff·TT) + 후보요약
   (Candidates/Fired). (원시 72h 경로 전체는 git JSONL이 보관; Notion은 필터·그룹용 핵심만.)
+  → 새 컬럼은 `python scripts/migrate_notion_wrf.py`로 멱등 추가(누락분만 동기화).
 
 ---
 

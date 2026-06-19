@@ -38,11 +38,18 @@ def _rev_vol_ok(raw: dict) -> bool:
 
 
 # ── 연속형(TF/BO) 축: 추세 정합 ─────────────────────────────────────────
-def _ctx_align(ctx: dict, direction: str) -> float:
-    """C(연속) — 거시방향·일봉바이어스 정합 (추세에 올라타는 셋업용)."""
+def _ctx_align(ctx: dict, raw: dict, direction: str) -> float:
+    """C(연속) — 거시·일봉바이어스·4H추세·일봉EMA20/50 정합 (추종 셋업용).
+
+    [연결결함#4] 보정 셀(setup×regime_1h×btc_macro)이 누락하는 맥락(4H 추세방향
+    ema_4h·일봉 EMA20/50 구조)을 C축에 연속 피처로 주입 → 셀 키를 늘리지 않고도
+    (콜드스타트·과적합 보호) 셀 내부 로지스틱이 분리 학습 가능. 가중치는 측정
+    부호의 고정 합성(새 임계 없음)."""
     m = {"UPLEG": 1.0, "DOWNLEG": -1.0, "CHOP": 0.0}.get(ctx.get("btc_macro", "CHOP"), 0.0)
     b = {"BULL": 1.0, "BEAR": -1.0, "NEUTRAL": 0.0}.get(ctx.get("bias_1d", "NEUTRAL"), 0.0)
-    base = 0.6 * m + 0.4 * b
+    h4 = float(raw.get("ema_4h") or 0)        # 4H 추세 방향(±1)
+    ds = float(raw.get("ema_1d_struct") or 0)  # 일봉 EMA20/50 구조(±1)
+    base = 0.45 * m + 0.25 * b + 0.20 * h4 + 0.10 * ds   # 가중합 1.0
     return _clip(base if direction == "long" else -base)
 
 
@@ -116,13 +123,18 @@ def _detect_tf(feat: dict, measures: dict):
         # [A5] 눌림 종료(재가속) 봉의 거래량 확증
         if not _rev_vol_ok(raw):
             continue
-        C = _ctx_align(ctx, direction)
+        C = _ctx_align(ctx, raw, direction)
         # L: 깊은 눌림(피보 optimal)은 강한 위치, 얕은 눌림은 loc 기반 품질
         if pullback_deep:
             L = _clip(0.7 + 0.3 * (1 if zone == "optimal" else 0))
         else:
             ideal = 0.35 if long else 0.65
             L = _clip(1.0 - abs(loc - ideal) / 0.35) * (0.7 + 0.3 * (1 if struct else 0))
+        # [연결결함#5] 성숙(late) 추세는 반전위험↑ → 동방향 성숙 시 TF 확신 감쇠
+        mat = raw.get("maturity")
+        mnet = raw.get("maturity_net", 0) or 0
+        if mat == "late" and ((mnet > 0) if long else (mnet < 0)):
+            L = _clip(L * getattr(config, "WRF_TF_LATE_MATURITY_MULT", 0.85))
         F = _flow_align(raw, pcts, direction)
         ptype = "피보깊은눌림" if pullback_deep and not pullback_shallow else "EMA얕은눌림"
         out.append({"setup": "TF", "dir": direction, "precond": True,
@@ -161,7 +173,7 @@ def _detect_bo(feat: dict, measures: dict):
         precond = bool(broke and vol_spike and retest and hold)
         if not precond:
             continue
-        C = _ctx_align(ctx, direction)
+        C = _ctx_align(ctx, raw, direction)
         L = _clip(0.5 + min(0.5, box_h * 10))  # 박스가 넓을수록 측정이동 여지 ↑
         # [G7] 펀딩 컨트래리언 확증: 군중이 돌파 반대로 쏠림 → 스퀴즈 연료 → L 가점
         f_pct = pcts.get("funding", 0.5)
