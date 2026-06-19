@@ -84,11 +84,22 @@ def _alert(cand: dict, engine_out: dict):
 def run_signal(symbol: str, exchange) -> None:
     """signal 모드: 한 심볼 전체 파이프라인. 엔진 본체는 try/except 격리."""
     collected = collect(exchange, symbol)
+    ohlcv = collected.get("ohlcv", {})
     ticker = collected.get("ticker") or {}
     if not ticker.get("available"):
-        logger.warning(f"[main] {symbol} 티커 불가 — skip")
-        return
-    ohlcv = collected.get("ohlcv", {})
+        # OKX 티커 단발 실패(타임아웃)로 전체 파이프라인을 버리지 않는다. 티커의 유일
+        # 필수값은 현재가이고, OHLCV(1h) 마지막 종가로 대체 가능(features도 동일 폴백).
+        # 진짜로 OHLCV조차 없을 때만 skip → 학습데이터 구멍 방지.
+        df1h = (ohlcv or {}).get("1h")
+        if df1h is not None and len(df1h) > 0:
+            last = float(df1h["close"].iloc[-1])
+            collected["ticker"] = {"last": last, "open": last, "change_pct": 0.0,
+                                   "available": True, "synthesized": True}
+            ticker = collected["ticker"]
+            logger.warning(f"[main] {symbol} 티커 불가 → 1H 종가 {last}로 대체 진행")
+        else:
+            logger.warning(f"[main] {symbol} 티커·OHLCV 모두 불가 — skip")
+            return
 
     try:
         measures = run_full_analysis(symbol, collected)
