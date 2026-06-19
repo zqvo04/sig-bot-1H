@@ -41,10 +41,14 @@ L1 직교 3축(백분위 입력):
    L 위치 : (close−VWAP/EMA20)/ATR · BB%b 자기분포 백분위 + 컨플루언스(FVG/OB/피보/주간)
    F 흐름 : RSI/MACD 소진·동조 + OKX 포지셔닝(펀딩백분위·OI사분면·청산스파이크·고래vs군중·테이커)
 L2 셋업 디텍터 ×4 (레짐이 허용집합 결정):
-   TF(TRENDING+HTF정합): HH/HL + EMA20/VWAP 눌림 + 모멘텀 재정렬 | TP=측정이동 SL=눌림저점 T=48h
-   BO(SQUEEZE→확장/박스): 경계돌파 + 거래량스파이크 + [리테스트 유지★필수] | TP=박스높이 SL=박스복귀 T=36h
-   MR(RANGING): BB극단 + RSI극단백분위 + 반전마이크로트리거 | TP=VWAP/EMA20 SL=극단+ATR T=24h
-   RV(추세소진): 다이버전스 + 키레벨거부 + CHoCH + [≥3확인★] + (청산·펀딩극단·OI플러시) | TP=직전레벨 SL=극단너머 T=48h
+   TF(TRENDING+HTF정합): HH/HL + [얕은눌림(1H EMA밴드) ∪ 깊은눌림(4H 피보 50~61.8%)] +
+      모멘텀/구조 + 반전봉거래량 | TP=측정이동 SL=직전스윙∓ATR×1.5 T=48h
+   BO(SQUEEZE→확장/박스): 경계돌파 + 거래량스파이크 + [리테스트 유지★필수] +
+      펀딩컨트래리언 가점 | TP=박스높이 SL=박스복귀 T=36h
+   MR(RANGING): BB극단 + RSI극단백분위 + 반전마이크로 + 반전봉거래량 |
+      TP=박스중심선/반대편경계 SL=박스경계∓ATR T=24h
+   RV(추세소진): 다이버전스 + [CHoCH★필수] + [리테스트(스윕/키레벨거부)★필수] +
+      반전봉거래량 + [≥3확인★] | TP=직전레벨 SL=극단너머 T=48h
 L3 보정 승률 P̂: isotonic(로지스틱(C,L,F)) · 셀=(setup×regime×btc_macro)
    └ 신뢰게이트 미충족 → 보수적 고정 prior (콜드스타트)
 L4 발사+청산: 발사 ⟺ P̂ ≥ W_floor ∧ ¬VETO → TP/SL/타임스톱 산출, 사이징 ∝ P̂ (페이퍼)
@@ -86,7 +90,8 @@ BO·RV는 base-rate가 낮아 **강확증된 소수만** 통과한다(P̂ 내림
   "raw":  { rsi, bb_pctb, dist_vwap_atr, dist_ema20_atr, atr_pct, adx, macd, ema,
             fvg, ob, fib_gp, weekly, confluence_long/short, funding, funding_slope,
             oi_chg, oi_slope, oi_quadrant, ls_long, taker_buy, smart_div,
-            liq_signal, liq_spike, vol_ratio, hour_utc, dow },
+            liq_signal, liq_spike, vol_ratio, rev_vol_ratio, retrace_long/short_zone,
+            maturity, maturity_net, hour_utc, dow },
   "ctx":  { regime_1h, regime_4h, bias_1d, btc_macro, fp_key, allowed_setups },
   "candidates": [ { setup, dir, precond, entry, tp, sl, r_dist, rr, t_max,
                     p_hat, p_source, C, L, F, confluence_n, veto[], size, fire } ],
@@ -157,6 +162,26 @@ python analysis/situation_report.py --wrf   # 셀 자격 진단
 - **Variable**: `ALERT_ENABLED`, `WRF_*` 파라미터 오버라이드
 - **실질 튜닝(3~5개)**: `WRF_PCT_WINDOW`(백분위 윈도), `WRF_PCT_EXTREME_HI/LO`(극단컷),
   `WRF_WIN_FLOOR`(승률 플로어), `WRF_CELL_N_MIN`(신뢰게이트). 단일변수·워크포워드.
+- **전략 정합 토글**(전부 되돌리기 가능): `WRF_SL_ATR_CUSHION`(구조SL ATR쿠션, 0=구동작),
+  `WRF_MR_TP_TARGET`(mid|opposite), `WRF_MR_BOX_WINDOW`, `WRF_RV_REQUIRE_CHOCH/RETEST`(전환
+  시퀀스 강제), `WRF_TF_FIB_PULLBACK`(피보 깊은눌림 경로), `WRF_REV_VOL_MULT`(반전봉 거래량
+  게이트, 0=OFF), `WRF_BO_FUND_BONUS`(돌파 펀딩 컨트래리언 가점).
+
+### 전략 정합 개선 (2026-06, win-rate-first 골격 유지)
+
+스윙 전략 문서 대조 후 측정-발사 정합을 끌어올린 변경. **새 셋업·새 보정셀 없이**
+기존 4셋업의 진입·레벨 정밀도만 보강(콜드스타트 불변, 과적합 경계).
+
+- **TF 피보 배선(A1)**: 눌림 판정을 `loc_ema20` 프록시 → `loc 밴드(얕은) ∪ 4H 피보
+  optimal/deep(깊은)`. 깊은 눌림은 1H EMA가 추세 반대로 튀므로 **4H 정렬을 게이트**로 포착
+  (TF가 못 잡던 50~61.8% 되돌림 진입을 같은 셀로 흡수).
+- **구조 SL + ATR 쿠션(G3)**: TF/RV SL을 `직전 스윙 ∓ ATR×1.5`로(노이즈 윅 방지). max 초과
+  시 폐기→클램프.
+- **MR 박스 기하학(G4)**: TP=박스 중심선/반대편, SL=박스 경계∓ATR(저RR EMA20 회귀 폐기).
+- **RV 전환 시퀀스 강제(A4/G6)**: CHoCH 필수 + 리테스트(스윕/키레벨거부) 필수 + 반전봉 필수
+  → 첫 반전봉 나이프캐칭 차단.
+- **반전봉 거래량 게이트(A5/G7)**: TF/MR/RV 반전봉 거래량 > 직전 5봉 평균. (BO는 돌파봉
+  스파이크 유지 + 펀딩 컨트래리언 L 가점.)
 
 ---
 

@@ -25,6 +25,18 @@ def _clip(x: float) -> float:
     return max(-1.0, min(1.0, float(x)))
 
 
+def _rev_vol_ok(raw: dict) -> bool:
+    """[A5/G7] 반전캔들 거래량 게이트 — 반전봉 거래량 > 직전 N봉 평균 × mult.
+    데이터 부재(None) 시 통과(격리·안전). mult=0 이면 게이트 OFF."""
+    mult = getattr(config, "WRF_REV_VOL_MULT", 1.0)
+    if mult <= 0:
+        return True
+    rv = raw.get("rev_vol_ratio")
+    if rv is None:
+        return True
+    return rv >= mult
+
+
 # ── 연속형(TF/BO) 축: 추세 정합 ─────────────────────────────────────────
 def _ctx_align(ctx: dict, direction: str) -> float:
     """C(연속) — 거시방향·일봉바이어스 정합 (추세에 올라타는 셋업용)."""
@@ -80,27 +92,43 @@ def _detect_tf(feat: dict, measures: dict):
     out = []
     if "TF" not in ctx["allowed_setups"]:
         return out
+    use_fib = getattr(config, "WRF_TF_FIB_PULLBACK", True)
     for direction in ("long", "short"):
         long = direction == "long"
-        ema_aligned = (raw.get("ema") == (1 if long else -1)
-                       and raw.get("ema_4h") in ((1, 0) if long else (-1, 0)))
-        # 눌림: 가격이 EMA20 근방으로 되돌림 (loc_ema20 백분위 중하단/중상단)
+        htf_aligned = raw.get("ema_4h") in ((1, 0) if long else (-1, 0))
+        ema_1h_aligned = raw.get("ema") == (1 if long else -1)
         loc = pcts.get("loc_ema20", 0.5)
-        pullback = (0.15 <= loc <= 0.55) if long else (0.45 <= loc <= 0.85)
+        # 얕은 눌림: 1H EMA 정렬 유지 + loc 밴드 (구동작)
+        shallow = (0.15 <= loc <= 0.55) if long else (0.45 <= loc <= 0.85)
+        pullback_shallow = bool(ema_1h_aligned and htf_aligned and shallow)
+        # [A1] 깊은 눌림: 4H 피보 zone(optimal/deep) + 4H 정렬. 1H EMA는 깊은
+        # 눌림에서 추세 반대로 튀므로 요구하지 않음(데이터: 깊은 눌림 = 1H 비정렬).
+        zone = raw.get("retrace_long_zone" if long else "retrace_short_zone", "none")
+        fib_pullback = bool(zone in ("optimal", "deep"))
+        pullback_deep = bool(use_fib and htf_aligned and fib_pullback)
+        if not (pullback_shallow or pullback_deep):
+            continue
+        # 반전 확인: 모멘텀 재정렬 또는 구조 BOS
         mom_realign = raw.get("macd_bull") if long else (not raw.get("macd_bull"))
         struct = raw.get("bos") == (1 if long else -1) or raw.get("bos_4h") == (1 if long else -1)
-        precond = bool(ema_aligned and pullback and (mom_realign or struct))
-        if not precond:
+        if not (mom_realign or struct):
+            continue
+        # [A5] 눌림 종료(재가속) 봉의 거래량 확증
+        if not _rev_vol_ok(raw):
             continue
         C = _ctx_align(ctx, direction)
-        # L: 눌림 품질 — 이상적 눌림(롱 loc≈0.35)에서 +1, 추세 정합 보강
-        ideal = 0.35 if long else 0.65
-        L = _clip(1.0 - abs(loc - ideal) / 0.35) * (0.7 + 0.3 * (1 if struct else 0))
+        # L: 깊은 눌림(피보 optimal)은 강한 위치, 얕은 눌림은 loc 기반 품질
+        if pullback_deep:
+            L = _clip(0.7 + 0.3 * (1 if zone == "optimal" else 0))
+        else:
+            ideal = 0.35 if long else 0.65
+            L = _clip(1.0 - abs(loc - ideal) / 0.35) * (0.7 + 0.3 * (1 if struct else 0))
         F = _flow_align(raw, pcts, direction)
+        ptype = "피보깊은눌림" if pullback_deep and not pullback_shallow else "EMA얕은눌림"
         out.append({"setup": "TF", "dir": direction, "precond": True,
                     "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
                     "confluence_n": raw.get(f"confluence_{direction}", 0),
-                    "reason": "HTF정합+눌림+모멘텀재정렬"})
+                    "reason": f"HTF정합+{ptype}+모멘텀/구조"})
     return out
 
 
@@ -135,6 +163,12 @@ def _detect_bo(feat: dict, measures: dict):
             continue
         C = _ctx_align(ctx, direction)
         L = _clip(0.5 + min(0.5, box_h * 10))  # 박스가 넓을수록 측정이동 여지 ↑
+        # [G7] 펀딩 컨트래리언 확증: 군중이 돌파 반대로 쏠림 → 스퀴즈 연료 → L 가점
+        f_pct = pcts.get("funding", 0.5)
+        contrarian = (f_pct <= getattr(config, "WRF_BO_FUND_LO", 0.20)) if long \
+            else (f_pct >= getattr(config, "WRF_BO_FUND_HI", 0.80))
+        if contrarian:
+            L = _clip(L + getattr(config, "WRF_BO_FUND_BONUS", 0.15))
         F = _flow_align(raw, pcts, direction)
         out.append({"setup": "BO", "dir": direction, "precond": True,
                     "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
@@ -150,6 +184,16 @@ def _detect_mr(feat: dict, measures: dict):
     if "MR" not in ctx["allowed_setups"]:
         return out
     c1 = measures.get("candle_pattern", {})
+    # [G4] 박스 산정(반전봉 제외) — levels.py 가 박스 기하학 TP/SL 산출에 사용
+    df = feat.get("df_1h")
+    box_hi = box_lo = None
+    try:
+        w = getattr(config, "WRF_MR_BOX_WINDOW", 20)
+        if df is not None and len(df) >= w + 1:
+            box_hi = float(df["high"].iloc[-(w + 1):-1].max())
+            box_lo = float(df["low"].iloc[-(w + 1):-1].min())
+    except Exception:
+        box_hi = box_lo = None
     for direction in ("long", "short"):
         long = direction == "long"
         bbpos = raw.get("bb_pctb")
@@ -162,15 +206,22 @@ def _detect_mr(feat: dict, measures: dict):
         precond = bool(bb_extreme and rsi_extreme and micro)
         if not precond:
             continue
+        # [A5] 반전캔들 거래량 확증
+        if not _rev_vol_ok(raw):
+            continue
         C = _ctx_exhaustion(ctx, direction)
         # MR은 평균회귀 — 극단일수록 L 강함(방향 정렬: 롱이면 저극단 = +)
         depth = (0.15 - rsi_p) / 0.15 if long else (rsi_p - 0.85) / 0.15
         L = _clip(0.5 + max(0.0, depth))
         F = _flow_exhaustion(raw, pcts, direction)
-        out.append({"setup": "MR", "dir": direction, "precond": True,
-                    "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
-                    "confluence_n": raw.get(f"confluence_{direction}", 0),
-                    "reason": "BB극단+RSI극단+반전마이크로"})
+        rec = {"setup": "MR", "dir": direction, "precond": True,
+               "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
+               "confluence_n": raw.get(f"confluence_{direction}", 0),
+               "reason": "BB극단+RSI극단+반전마이크로+거래량"}
+        if box_hi is not None and box_lo is not None and box_hi > box_lo:
+            rec["box_hi"] = box_hi
+            rec["box_lo"] = box_lo
+        out.append(rec)
     return out
 
 
@@ -205,9 +256,23 @@ def _detect_rv(feat: dict, measures: dict):
         n_exh = sum(bool(x) for x in exhaustion)
         n_trg = sum(bool(x) for x in triggers)
         confirms = n_exh + n_trg
-        # ★ 소진 ≥1 ∧ 트리거 ≥1 ∧ 총 ≥3 (CHoCH 없어도 첫 전환봉에서 포착 가능)
-        precond = bool(n_exh >= 1 and n_trg >= 1 and confirms >= 3)
+        # [A4/G6] 전략 ④ 시퀀스 강제: 구조붕괴(CHoCH) → 리테스트(스윕/키레벨거부)
+        #   → 반전캔들. 첫 반전봉 나이프캐칭 방지. 토글로 느슨모드 복귀 가능.
+        retest = bool(swept or key_reject)
+        need_choch = getattr(config, "WRF_RV_REQUIRE_CHOCH", True)
+        need_retest = getattr(config, "WRF_RV_REQUIRE_RETEST", True)
+        min_conf = getattr(config, "WRF_RV_MIN_CONFIRMS", 3)
+        precond = bool(
+            n_exh >= 1
+            and bool(rev_candle)                       # 반전 확인 캔들 필수
+            and ((choch) if need_choch else (n_trg >= 1))
+            and ((retest) if need_retest else True)
+            and confirms >= min_conf
+        )
         if not precond:
+            continue
+        # [A5] 반전캔들 거래량 확증
+        if not _rev_vol_ok(raw):
             continue
         C = _ctx_exhaustion(ctx, direction)
         L = _clip(0.4 + 0.1 * confirms)

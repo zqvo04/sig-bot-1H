@@ -56,8 +56,22 @@ def compute_levels(candidate: dict, feat: dict) -> dict:
             sl_dist = max(candidate["box_hi"] * 1.001 - price, min_sl)
             tp_dist = box_h
         rr = tp_dist / sl_dist if sl_dist > 0 else 2.0
+    elif setup == "MR" and "box_hi" in candidate and "box_lo" in candidate:
+        # [G4] 박스 기하학: TP = 중심선(mid)/반대편 경계(opposite), SL = 경계 외곽 ∓ ATR
+        box_hi = float(candidate["box_hi"])
+        box_lo = float(candidate["box_lo"])
+        box_mid = (box_hi + box_lo) / 2.0
+        cushion = atr * getattr(config, "WRF_MR_ATR_CUSHION", 1.0)
+        target = getattr(config, "WRF_MR_TP_TARGET", "mid")
+        if long:   # 하단 반전
+            sl_dist = max((price - box_lo) + cushion, min_sl)
+            tp_dist = max((box_mid if target == "mid" else box_hi) - price, 0.0)
+        else:      # 상단 반전
+            sl_dist = max((box_hi - price) + cushion, min_sl)
+            tp_dist = max(price - (box_mid if target == "mid" else box_lo), 0.0)
+        rr = tp_dist / sl_dist if sl_dist > 0 else 1.5
     elif setup == "MR":
-        # TP = VWAP/EMA20 회귀, SL = 극단 + ATR
+        # 박스 산정 실패 폴백 — TP = EMA20 회귀, SL = ATR
         ema20 = None
         try:
             ema20 = float(df["close"].ewm(span=20, adjust=False).mean().iloc[-1])
@@ -67,20 +81,18 @@ def compute_levels(candidate: dict, feat: dict) -> dict:
         sl_dist = atr * 1.2
         rr = tp_dist / sl_dist if sl_dist > 0 else 1.5
     else:
-        # TF / RV: 구조 SL + R배수 TP
+        # TF / RV: 구조 SL(직전 스윙 ∓ ATR 쿠션) + R배수 TP  [G3]
         if getattr(config, "TPSL_USE_STRUCTURE", True) and df is not None and len(df) > 10:
             try:
                 swing_lo = float(df["low"].iloc[-10:].min())
                 swing_hi = float(df["high"].iloc[-10:].max())
-                buf = getattr(config, "TPSL_STRUCTURE_BUFFER", 0.001)
+                cushion = atr * getattr(config, "WRF_SL_ATR_CUSHION", 1.5)
                 if long:
-                    cand_sl = price - swing_lo * (1 - buf)
-                    if 0 < cand_sl < max_sl:
-                        sl_dist = max(cand_sl, min_sl)
+                    cand_sl = price - (swing_lo - cushion)   # 스윙 저점 - ATR×k
                 else:
-                    cand_sl = swing_hi * (1 + buf) - price
-                    if 0 < cand_sl < max_sl:
-                        sl_dist = max(cand_sl, min_sl)
+                    cand_sl = (swing_hi + cushion) - price    # 스윙 고점 + ATR×k
+                if cand_sl > 0:
+                    sl_dist = min(max(cand_sl, min_sl), max_sl)  # 폐기 대신 클램프
             except Exception:
                 pass
         rr = 2.5 if setup == "TF" else 2.0

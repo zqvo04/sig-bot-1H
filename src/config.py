@@ -752,6 +752,42 @@ WRF_REV_CTX_BASE = _wrf_f("WRF_REV_CTX_BASE", 0.25)
 # 보정셀(calibrated)은 학습된 승률을 존중해 이 필터를 우회한다.
 WRF_MIN_RR = _wrf_f("WRF_MIN_RR", 1.5)
 
+# ── [G3] 구조 SL + ATR 쿠션: SL = 직전 스윙 ∓ ATR×cushion (TF/RV) ───────
+# 스윙 바로 밑 0.1% 버퍼는 노이즈 윅에 취약 → ATR 쿠션으로 구조적 여유 부여.
+# 0.0 으로 두면 구조선 바로 밑(버퍼만) = 구동작 근사(되돌리기 토글).
+WRF_SL_ATR_CUSHION = _wrf_f("WRF_SL_ATR_CUSHION", 1.5)
+
+# ── [G4] MR(횡보반전) 박스 기하학 TP/SL ──────────────────────────────────
+# TP = 박스 중심선(mid, 승률우선) 또는 반대편 경계(opposite, RR우선).
+# SL = 박스 경계 외곽 ∓ ATR×cushion. 진입이 경계에 가까울수록 RR↑(미달은 MIN_RR 컷).
+WRF_MR_BOX_WINDOW  = _wrf_i("WRF_MR_BOX_WINDOW", 20)    # 박스 산정 윈도(1H 봉)
+WRF_MR_ATR_CUSHION = _wrf_f("WRF_MR_ATR_CUSHION", 1.0)  # 박스 경계 외곽 ATR 쿠션
+WRF_MR_TP_TARGET   = os.getenv("WRF_MR_TP_TARGET", "mid")  # "mid" | "opposite"
+
+# ── [A4/G6] RV(전환) 게이트: CHoCH 필수 + 리테스트(스윕/키레벨거부) 필수 ──
+# 전략 ④의 구조붕괴→리테스트→반전 시퀀스 강제. 첫 반전봉 나이프캐칭 방지.
+# False 로 두면 구동작(느슨)으로 복귀(되돌리기 토글).
+WRF_RV_REQUIRE_CHOCH  = os.getenv("WRF_RV_REQUIRE_CHOCH", "true").lower() not in ("0", "false", "no", "")
+WRF_RV_REQUIRE_RETEST = os.getenv("WRF_RV_REQUIRE_RETEST", "true").lower() not in ("0", "false", "no", "")
+WRF_RV_MIN_CONFIRMS   = _wrf_i("WRF_RV_MIN_CONFIRMS", 3)
+
+# ── [A1] TF 되돌림(피보) 배선: 4H 피보 zone(optimal/deep) 눌림 경로 ──────
+# 얕은 눌림(1H EMA 정렬 유지 + loc 밴드) 외에, 깊은 눌림(피보 50~61.8%)도
+# 4H 추세 정렬을 게이트로 포착. 1H EMA는 깊은 눌림에서 추세 반대로 튀므로
+# 깊은 눌림 경로는 1H 정렬을 요구하지 않는다(4H 정렬로 대체).
+WRF_TF_FIB_PULLBACK = os.getenv("WRF_TF_FIB_PULLBACK", "true").lower() not in ("0", "false", "no", "")
+
+# ── [A5/G7] 반전캔들 거래량 게이트: 반전봉 거래량 > 직전 N봉 평균 × mult ──
+# TF(눌림종료)·MR/RV(반전캔들)에 적용. 0.0 으로 두면 게이트 OFF(되돌리기 토글).
+WRF_REV_VOL_MULT     = _wrf_f("WRF_REV_VOL_MULT", 1.0)
+WRF_REV_VOL_LOOKBACK = _wrf_i("WRF_REV_VOL_LOOKBACK", 5)  # 직전 N봉 평균(전략=5)
+
+# ── [G7] BO 돌파 펀딩 컨트래리언 확증(하드게이트 아님, L 가점) ────────────
+# 군중이 돌파 반대로 쏠림(롱돌파+군중숏=펀딩 저백분위) → 스퀴즈 연료 → L 가점.
+WRF_BO_FUND_LO    = _wrf_f("WRF_BO_FUND_LO", 0.20)   # 롱돌파: 펀딩 백분위 ≤ → 컨트래리언
+WRF_BO_FUND_HI    = _wrf_f("WRF_BO_FUND_HI", 0.80)   # 숏돌파: 펀딩 백분위 ≥ → 컨트래리언
+WRF_BO_FUND_BONUS = _wrf_f("WRF_BO_FUND_BONUS", 0.15)  # 컨트래리언 시 L 가점
+
 # ── btc_macro 태깅 임계 (BTC 7D/30D 추세·EMA구조) ───────────────────────
 WRF_MACRO_UP_PCT   = _wrf_f("WRF_MACRO_UP_PCT", 0.03)   # 7D 변화 ±3% 이상 → leg
 WRF_MACRO_CHOP_PCT = _wrf_f("WRF_MACRO_CHOP_PCT", 0.015) # |7D| < 1.5% → CHOP 후보

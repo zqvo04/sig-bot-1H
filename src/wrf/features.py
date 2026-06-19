@@ -120,6 +120,8 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
     regime = a.get("regime", {})
     regime4 = a.get("regime_4h", {})
     dbias = a.get("daily_bias", {})
+    retr = a.get("retracement", {})    # [A1] 4H 피보 되돌림 zone
+    mat = a.get("maturity", {})        # [A1] 추세 성숙도(HH/HL 카운트)
 
     # ── 백분위 시계열 구성 (무상태, 캔들에서 재구성) ──────────────────
     win = getattr(config, "WRF_PCT_WINDOW", 200)
@@ -172,6 +174,19 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
 
     liq_spike = bool(liq.get("is_large", False))
 
+    # [A5/G7] 반전봉 거래량비 — 반전캔들(-1) / 직전 N봉 평균. raw["vol_ratio"]는
+    # 돌파봉(-2) 기준(BO용)이라 반전 셋업과 봉이 다름 → 별도 산출(인덱스 정렬).
+    rev_vol_ratio = None
+    try:
+        vlb = getattr(config, "WRF_REV_VOL_LOOKBACK", 5)
+        vol_ser = df_1h["volume"].astype(float)
+        if len(vol_ser) >= vlb + 1:
+            base_v = float(vol_ser.iloc[-(vlb + 1):-1].mean())
+            if base_v > 0:
+                rev_vol_ratio = round(float(vol_ser.iloc[-1]) / base_v, 3)
+    except Exception:
+        rev_vol_ratio = None
+
     raw = {
         # 모멘텀/추세
         "rsi": cur_rsi,
@@ -213,7 +228,13 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
         "smart_div": _f(sm.get("divergence")),
         "liq_signal": liq.get("signal", "none"),
         "liq_spike": liq_spike,
-        "vol_ratio": _f(vol.get("ratio")),
+        "vol_ratio": _f(vol.get("ratio")),         # 돌파봉(-2) 기준(BO용)
+        "rev_vol_ratio": rev_vol_ratio,            # 반전봉(-1)/직전5봉 (TF/MR/RV용)
+        # [A1] 되돌림·성숙도 (TF 눌림 판정 + 학습/로깅 배선)
+        "retrace_long_zone": retr.get("long_zone", "none"),
+        "retrace_short_zone": retr.get("short_zone", "none"),
+        "maturity": mat.get("maturity", "none"),
+        "maturity_net": int(mat.get("bull_count", 0) or 0) - int(mat.get("bear_count", 0) or 0),
         # 시간
         "hour_utc": int(last_ts.hour),
         "dow": int(last_ts.weekday()),
