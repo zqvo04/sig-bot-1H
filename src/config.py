@@ -684,7 +684,8 @@ NOTION_RESEARCH_ENABLED = os.getenv("NOTION_RESEARCH_ENABLED", "1") not in ("0",
 #   → 보정된 승률확률 P̂(win) >= W_floor  AND  not VETO  일 때만 발사(페이퍼).
 #   승률은 "보정+임계"가 보장, 빈도는 넓은 유니버스×4셋업×양방향, 비정상성은
 #   거시방향(btc_macro) 층화 + 신뢰게이트가 차단한다.
-# 라이브 봇은 절대 학습하지 않는다 — calibration_table.json만 읽는다.
+# 라이브 봇은 절대 학습하지 않는다. 보정 학습은 중단됨(WRF_CALIB_DISABLED=true,
+# 자격 게이트가 비현실적으로 높아 실효 ≈ 0) → 영구히 보수적 prior만 사용한다.
 
 def _wrf_f(name: str, default: float) -> float:
     try:
@@ -813,6 +814,13 @@ WRF_SIZE_MAX  = _wrf_f("WRF_SIZE_MAX", 2.0)     # 사이즈 상한 단위
 # ── 산출물/경로 ──────────────────────────────────────────────────────
 WRF_CALIB_TABLE = os.getenv("WRF_CALIB_TABLE", "data/calibration_table.json")
 WRF_SCHEMA_VERSION = 3
+
+# ── 오프라인 보정 학습 중단 스위치 ───────────────────────────────────────
+# 자격 게이트(indep≥n_min × 거시≥2종)가 데이터 누적 속도 대비 비현실적으로 높아
+# 어떤 셀도 보정되지 못한다(실효 ≈ 0). 학습을 중단하고 라이브는 영구히 보수적
+# prior(직교게이트)만 사용한다. True면 calibration_table.json이 존재해도 무시.
+# 다시 학습을 켜려면 이 값을 false로 두고 calibrate 워크플로우를 복구하면 된다.
+WRF_CALIB_DISABLED = os.getenv("WRF_CALIB_DISABLED", "true").lower() not in ("0", "false", "no", "")
 
 # ── Notion WRF 2-DB ───────────────────────────────────────────────────
 # 기존 DB("1H Signal Log" / "1H Research Snapshots")를 WRF 양식으로 개조해 재사용한다.

@@ -1,10 +1,12 @@
-"""L3 — 보정 승률 P̂. 셀=(setup×regime×btc_macro).
+"""L3 — 승률 P̂. 셀=(setup×regime×btc_macro).
 
-라이브는 절대 학습하지 않는다. 오프라인 주간 잡(analysis/calibrate.py)이 검증된
-셀만 calibration_table.json으로 배포하고, 라이브는 그 테이블만 읽는다.
+학습 중단(WRF_CALIB_DISABLED=true, 기본값): 오프라인 보정 잡의 자격 게이트
+(독립표본 N≥100 × 거시 ≥2종)가 데이터 누적 속도 대비 비현실적으로 높아 어떤
+셀도 보정되지 못했다(실효 ≈ 0). 라이브는 영구히 보수적 prior(직교게이트)만 쓴다.
 
-신뢰게이트 미충족 셀(현재 전부) → 보수적 고정 prior(직교게이트). 충족 셀 →
-isotonic(로지스틱(C,L,F)). 테이블 부재/예외 시 항상 prior(콜드스타트 안전).
+보정 로직(로지스틱(C,L,F)+isotonic, 신뢰게이트)은 아래에 보존돼 있고, 스위치를
+false로 두고 calibrate 워크플로우를 복구하면 그대로 되살아난다. 테이블
+부재/예외 시에도 항상 prior(콜드스타트 안전).
 """
 from __future__ import annotations
 
@@ -110,6 +112,12 @@ def compute_p_hat(candidate: dict, ctx: dict, table: dict = None) -> tuple:
     setup = candidate["setup"]
     C, L, F = candidate["C"], candidate["L"], candidate["F"]
     floor = getattr(config, "WRF_WIN_FLOOR", 0.58)
+
+    # 학습 중단 스위치: 보정 비활성 시 테이블을 보지 않고 항상 prior.
+    # (오프라인 보정 잡은 제거됨 — 자격 게이트가 비현실적으로 높아 실효 ≈ 0이었다.)
+    if getattr(config, "WRF_CALIB_DISABLED", False):
+        return prior_p_hat(setup, C, L, F), "prior", floor
+
     table = load_table() if table is None else table
     key = cell_key(setup, ctx.get("regime_1h", "UNKNOWN"), ctx.get("btc_macro", "CHOP"))
     cell = table.get(key) if table else None

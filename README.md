@@ -115,21 +115,22 @@ BO·RV는 base-rate가 낮아 **강확증된 소수만** 통과한다(P̂ 내림
 
 ---
 
-## 오프라인 보정 잡 (`analysis/calibrate.py`, 주 1회)
+## 오프라인 보정 학습 — **중단됨** (`WRF_CALIB_DISABLED=true`)
 
-1. JSONL 적재 → `candidate_dataset` (경로에서 triple-barrier + exret 라벨 파생)
-2. 셀=(setup×regime×btc_macro) **신뢰게이트**: 탈중첩 독립표본 N≥`n_min` ∧ 거시방향 ≥2종
-   (거시 커버리지는 부모 setup×regime 수준에서 평가 — 셀은 거시 1종 고정이므로)
-   → 미충족 **prior 유지** / 충족 시 purged-CV(72h embargo) 로지스틱 + isotonic 학습
-3. **비정상성 가드**: 셀을 거시방향별로 분할 승률 비교 → 한 방향에서만 성립하면
-   **"베타착시" 표기·발사 제외**
-4. 피처 가지치기(거시방향 교차 안정 계수)
-5. 산출물 `data/calibration_table.json`(셀별 weights·isotonic맵·win_floor·n·coverage·drift)
-   → 레포 커밋. **라이브는 이것만 읽는다.**
+자격 게이트(탈중첩 독립표본 N≥`n_min`=100 × 거시방향 ≥2종)가 데이터 누적 속도
+대비 비현실적으로 높아, 한 셀이 자격을 얻으려면 그 셀에만 후보가 떨어지는 서로
+다른 날이 100일+ 필요(거기에 복수 거시국면까지) → 현실적으로 수개월~수년이 걸려
+어떤 셀도 보정되지 못했다(**실효 ≈ 0**). 주간 잡은 매번 동일한 "자격 0셀" 빈
+결과를 재생산할 뿐이라 **학습을 중단**했다.
 
-> 현재 자격 셀 **0개** — 콜드스타트로 전부 prior 동작이 정상이다.
+- 주간 워크플로우(`.github/workflows/calibrate.yml`) **제거**.
+- 라이브는 킬스위치(`WRF_CALIB_DISABLED`, 기본 `true`)로 `calibration_table.json`을
+  **무시하고 영구히 보수적 prior(직교게이트)** 만 사용한다.
+- 보정 로직(triple-barrier 라벨·purged-CV·베타착시 가드·로지스틱+isotonic)과
+  오프라인 스크립트(`analysis/calibrate.py`, `labels.py`)는 **그대로 보존**.
+  다시 켜려면 `WRF_CALIB_DISABLED=false` + calibrate 워크플로우를 복구하면 된다.
 
-진단: `python analysis/situation_report.py --wrf` (셀별 n·독립n·거시커버리지·승률·자격).
+진단(오프라인): `python analysis/situation_report.py --wrf` (셀별 n·독립n·거시커버리지·승률).
 
 ---
 
@@ -139,7 +140,7 @@ BO·RV는 base-rate가 낮아 **강확증된 소수만** 통과한다(P̂ 내림
 |------------|--------|------|
 | `signal_1h.yml` | 매시 :05 | 수집→측정→엔진(L0~L4)→발사(페이퍼)→스냅샷 적재→Notion 미러 |
 | `scoring.yml` | 매 :*/15 | 성숙 경로 채움 + triple-barrier 신호판정 + 스냅샷 라벨 백필 |
-| `calibrate.yml` | 주 1회(월) | `calibration_table.json` 갱신·커밋 + 드리프트 리포트 |
+| ~~`calibrate.yml`~~ | — | **제거(학습 중단)**. 라이브는 `WRF_CALIB_DISABLED=true`로 prior 고정 |
 
 - **`ALERT_ENABLED`**(Actions Variable, 기본 `false`): 학습기간엔 알림 OFF·기록만.
   커버리지 충족 후 `true`로 전환.
@@ -155,8 +156,7 @@ export OKX_API_KEY=... OKX_API_SECRET=... OKX_PASSPHRASE=...
 export SINGLE_SYMBOL="BTC/USDT"
 python src/main.py --mode signal     # 신호(페이퍼) + 스냅샷 적재
 python src/main.py --mode score      # 경로 채점 + 신호 판정
-python analysis/calibrate.py         # 보정 테이블 생성
-python analysis/situation_report.py --wrf   # 셀 자격 진단
+python analysis/situation_report.py --wrf   # 셀 진단(오프라인 연구용; 학습은 중단됨)
 ```
 
 ---
@@ -242,7 +242,7 @@ python scripts/migrate_notion_wrf.py --purge    # 추가 + 기존 행 전부 아
 
 ```
 sig-bot-1H/
-├── .github/workflows/{signal_1h,scoring,calibrate}.yml
+├── .github/workflows/{signal_1h,scoring}.yml   # calibrate.yml 제거(학습 중단)
 ├── src/
 │   ├── main.py                  # WRF-4 진입점 (signal/score 모드, 본체 격리)
 │   ├── config.py                # 전역 설정 + WRF_* 파라미터
@@ -258,7 +258,7 @@ sig-bot-1H/
 ├── analysis/
 │   ├── build_dataset.py         # JSONL 로더 + 경로 라벨 헬퍼
 │   ├── labels.py                # triple-barrier·exret·class·candidate_dataset
-│   ├── calibrate.py             # 오프라인 보정 잡
+│   ├── calibrate.py             # 오프라인 보정 잡(보존; 학습 중단·미스케줄)
 │   └── situation_report.py      # 상황·WRF 셀 진단 리포트
 ├── scripts/migrate_notion_wrf.py
 ├── data/
