@@ -57,6 +57,7 @@ def _p_date_kst(iso: str) -> dict:
 
 _SIG_CACHE = None
 _SNAP_CACHE = None
+_SYNCED = set()   # 스키마 동기화 완료한 db_id (프로세스당 1회만)
 
 _REGIME_OPTS = [{"name": n} for n in ("TRENDING", "EXPLOSIVE", "RANGING", "SQUEEZE", "UNKNOWN")]
 _MACRO_OPTS = [{"name": n} for n in ("UPLEG", "DOWNLEG", "CHOP")]
@@ -132,6 +133,32 @@ def _snapshots_props() -> dict:
     return props
 
 
+def _sync_missing_props(db_id: str, props: dict) -> None:
+    """기존 DB에 누락된 컬럼만 멱등 PATCH 추가(self-heal). 프로세스당 db_id 1회.
+
+    [버그수정] _ensure_db는 신규 생성 시에만 전체 컬럼을 넣어, 기존 DB에 새 컬럼이
+    추가되지 않았다. 그 상태로 log_*가 미존재 프로퍼티를 POST하면 Notion이 페이지
+    생성 전체를 거부(400) → 기록 자체가 실패. 라이브가 스스로 스키마를 맞춘다."""
+    if not db_id or db_id in _SYNCED:
+        return
+    try:
+        res = _request("GET", f"/databases/{db_id}")
+        have = set((res.get("properties") or {}).keys()) if res else set()
+        if not have:
+            return  # 조회 실패 — 다음 기회에 재시도(_SYNCED 미표시)
+        missing = {k: v for k, v in props.items() if k not in have}
+        if missing:
+            r = _request("PATCH", f"/databases/{db_id}", {"properties": missing})
+            if r:
+                logger.info(f"[NotionWRF] 스키마 자동동기화 +{len(missing)}컬럼 → {sorted(missing)}")
+            else:
+                logger.warning("[NotionWRF] 스키마 동기화 PATCH 실패 — 통합 권한(DB 편집) 확인 필요")
+                return  # 미표시 → 다음 실행에서 재시도
+        _SYNCED.add(db_id)
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[NotionWRF] 스키마 동기화 예외(격리): {e}")
+
+
 def _ensure_db(cache_attr: str, db_id_cfg: str, title: str, props: dict):
     global _SIG_CACHE, _SNAP_CACHE
     cached = _SIG_CACHE if cache_attr == "sig" else _SNAP_CACHE
@@ -152,6 +179,8 @@ def _ensure_db(cache_attr: str, db_id_cfg: str, title: str, props: dict):
         result = created.get("id") if created else None
         if result:
             logger.info(f"[NotionWRF] {title} 신규 생성: {result}")
+    if result:
+        _sync_missing_props(result, props)   # 기존 DB 누락 컬럼 self-heal
     if cache_attr == "sig":
         _SIG_CACHE = result
     else:
