@@ -25,6 +25,14 @@ def _clip(x: float) -> float:
     return max(-1.0, min(1.0, float(x)))
 
 
+def _confluence_bonus(L: float, raw: dict, direction: str) -> float:
+    """[완결성#1] 컨플루언스(FVG/OB/피보/주간 중첩수 0~3) → L 가점.
+    측정만 되고 발사엔 미반영이던 confluence를 L에 소폭 반영. bonus=0 이면 OFF."""
+    conf = int(raw.get(f"confluence_{direction}", 0) or 0)
+    bonus = getattr(config, "WRF_CONFLUENCE_L_BONUS", 0.05)
+    return _clip(L + bonus * min(conf, 3))
+
+
 def _rev_vol_ok(raw: dict) -> bool:
     """[A5/G7] 반전캔들 거래량 게이트 — 반전봉 거래량 > 직전 N봉 평균 × mult.
     데이터 부재(None) 시 통과(격리·안전). mult=0 이면 게이트 OFF."""
@@ -135,6 +143,7 @@ def _detect_tf(feat: dict, measures: dict):
         mnet = raw.get("maturity_net", 0) or 0
         if mat == "late" and ((mnet > 0) if long else (mnet < 0)):
             L = _clip(L * getattr(config, "WRF_TF_LATE_MATURITY_MULT", 0.85))
+        L = _confluence_bonus(L, raw, direction)
         F = _flow_align(raw, pcts, direction)
         ptype = "피보깊은눌림" if pullback_deep and not pullback_shallow else "EMA얕은눌림"
         out.append({"setup": "TF", "dir": direction, "precond": True,
@@ -181,6 +190,7 @@ def _detect_bo(feat: dict, measures: dict):
             else (f_pct >= getattr(config, "WRF_BO_FUND_HI", 0.80))
         if contrarian:
             L = _clip(L + getattr(config, "WRF_BO_FUND_BONUS", 0.15))
+        L = _confluence_bonus(L, raw, direction)
         F = _flow_align(raw, pcts, direction)
         out.append({"setup": "BO", "dir": direction, "precond": True,
                     "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
@@ -225,6 +235,7 @@ def _detect_mr(feat: dict, measures: dict):
         # MR은 평균회귀 — 극단일수록 L 강함(방향 정렬: 롱이면 저극단 = +)
         depth = (0.15 - rsi_p) / 0.15 if long else (rsi_p - 0.85) / 0.15
         L = _clip(0.5 + max(0.0, depth))
+        L = _confluence_bonus(L, raw, direction)
         F = _flow_exhaustion(raw, pcts, direction)
         rec = {"setup": "MR", "dir": direction, "precond": True,
                "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
@@ -288,6 +299,7 @@ def _detect_rv(feat: dict, measures: dict):
             continue
         C = _ctx_exhaustion(ctx, direction)
         L = _clip(0.4 + 0.1 * confirms)
+        L = _confluence_bonus(L, raw, direction)
         F = _flow_exhaustion(raw, pcts, direction)
         out.append({"setup": "RV", "dir": direction, "precond": True,
                     "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),

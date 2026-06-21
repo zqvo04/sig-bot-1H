@@ -87,6 +87,75 @@ BO·RV는 base-rate가 낮아 **강확증된 소수만** 통과한다(P̂ 내림
 
 ---
 
+## 신호 로직 상세 (국면분류 · 셋업 · 발사기준)
+
+> "어떤 기준으로 신호를 보내는가"의 완전한 설명. 현재 Phase 0 = 전 셀 prior, 페이퍼,
+> `ALERT_ENABLED=false`(텔레그램 OFF, Notion 기록만).
+
+### A. 국면분류 — 3개의 독립 축
+
+레짐은 "무엇을 할지", 거시는 "거스르면 안 되는 큰 방향", 바이어스는 "종목 일봉 방향".
+
+| 축 | 산출(함수) | 값 | 방향성 | 쓰임 |
+|----|-----------|-----|--------|------|
+| **시장 레짐** | `classify_market_regime` (1H·4H) — ADX+BB스퀴즈+효율비 | TRENDING/EXPLOSIVE/SQUEEZE/RANGING | ❌ | **라우팅**(허용 셋업) + 셀 키(1H) |
+| **BTC 거시** | `classify_btc_macro` — BTC 1D 7D변화±3%+EMA20/50 | UPLEG/DOWNLEG/CHOP | ✅ | C축 + **베토** + 셀 키 + 비정상성 층화 |
+| **일봉 바이어스** | `analyze_daily_bias` — 일봉 EMA9/21+캔들 | BULL/BEAR/NEUTRAL | ✅ | C축 |
+
+**라우팅**(레짐 → 허용 셋업, `features.allowed_setups`):
+
+| regime_1h | 허용 셋업 | 4H 보강 |
+|-----------|----------|---------|
+| TRENDING | TF, RV | 4H 추세→TF, 4H 스퀴즈→BO |
+| EXPLOSIVE | TF, BO, RV | 〃 |
+| SQUEEZE | BO, RV | 〃 |
+| RANGING | MR, RV, **BO** | 〃 |
+| UNKNOWN | MR | 〃 |
+
+### B. 4 셋업 — 발동조건(precond) · C/L/F · TP/SL
+
+각 셋업은 롱/숏 대칭으로 후보를 만들고, **precond(구조 게이트)를 통과해야** 후보가 된다.
+precond는 "강확증" 필터(특히 BO 리테스트·RV CHoCH/리테스트는 필수★).
+
+| 셋업 | 발동 precond (전부 충족) | C / L / F | TP / SL (`levels.py`) |
+|------|--------------------------|-----------|------------------------|
+| **TF** 추세추종 | 4H EMA정렬 + [얕은눌림(1H EMA밴드) ∪ 깊은눌림(4H피보 50~61.8%)] + (모멘텀 재정렬 ∨ BOS) + 반전봉 거래량 | C=`_ctx_align`(정합) · L=눌림품질(깊을수록↑, 성숙late 감쇠)+컨플루언스 · F=`_flow_align`(모멘텀 동조) | TP=측정이동(R배수 2.5) · SL=직전스윙∓ATR×1.5 · T=48h |
+| **BO** 돌파 | 박스경계 돌파(종가) + 거래량스파이크(≥1.5×) + 리테스트 후 유지(2봉)★ + 펀딩 컨트래리언 가점 | C=정합 · L=박스폭+펀딩+컨플루언스 · F=정합 | TP=박스높이 · SL=박스복귀 · T=36h |
+| **MR** 평균회귀 | BB %b 극단(≤0.1/≥0.9) + RSI 백분위 극단(≤0.15/≥0.85) + 반전캔들 + 반전봉 거래량 | C=`_ctx_exhaustion`(소진) · L=극단깊이+컨플루언스 · F=`_flow_exhaustion`(컨트래리언) | TP=박스중심선/반대편 · SL=박스경계∓ATR · T=24h |
+| **RV** 전환 | 소진≥1 + CHoCH★ + 리테스트(스윕/키레벨거부)★ + 반전캔들★ + 총확인≥3 + 반전봉 거래량 | C=소진 · L=확인수+컨플루언스 · F=컨트래리언 | TP=직전레벨(R배수 2.0) · SL=극단너머 · T=48h |
+
+### C. 직교 3축 산출식 (`detectors.py`, ∈[-1,1])
+
+```
+추종형(TF/BO)
+  C=_ctx_align    : 0.45·거시 + 0.25·바이어스 + 0.20·4H추세 + 0.10·일봉EMA20/50  (롱+/숏−)
+  F=_flow_align   : 0.45·MACD백분위 + 0.25·테이커 + 0.20·스마트머니 + 0.10·OI사분면
+반전형(MR/RV)
+  C=_ctx_exhaustion: 0.25 + 0.75·(페이드 대상 거시레그 신선도)   ← CHOP 완만통과, 신선역행 차단
+  F=_flow_exhaustion: 0.40·RSI소진 + 0.25·펀딩역포지션 + 0.20·테이커소진 + 0.15·스마트머니반대
+L(위치, 셋업별): TF 눌림품질 / BO 박스폭 / MR 극단깊이 / RV 확인수
+  + 공통 컨플루언스 가점(FVG·OB·피보·주간 중첩수 0~3 × 0.05)
+  + TF는 성숙(late)·동방향 추세면 ×0.85 감쇠
+```
+
+### D. 발사 기준 (L3→L4)
+
+```
+P̂_prior = min( 0.65,  sigmoid( b0[셋업] + 1.1·C + 1.3·L + 1.2·F ) )
+   · b0: TF −0.15 / MR −0.25 / BO −0.75 / RV −0.95  (BO·RV는 강확증만 통과)
+   · min-axis 게이트: C·L·F 중 하나라도 < 0.10 → P̂=0.55(차단)
+
+발사(fire) ⟺  P̂ ≥ 0.58  ∧  ¬VETO  ∧  (prior면) RR ≥ 1.5
+   · VETO(L0): 스프레드폭발 · 청산캐스케이드 · 데이터신선도(>90분)
+     · 거시정면충돌(롱+DOWNLEG/숏+UPLEG) — 단 RV는 면제(자체 강게이트로 통제)
+   · 발사분 → 사이징 ∝ P̂ → Notion 1H Signal Log 기록 + (ALERT_ON 시) 텔레그램
+```
+
+> 신뢰게이트를 통과한 보정 셀은 prior 대신 학습된 `isotonic(로지스틱(C,L,F))`를 쓰고
+> RR 필터를 우회한다(학습 승률 존중). **현재 자격 셀 0개 → 전부 prior.**
+
+---
+
 ## 학습데이터 스키마 (`schema_version: 3`)
 
 월별 JSONL: `data/research/{SYM}/{YYYY-MM}.jsonl`. **한 시간 = 1행**. 라벨은 박제하지
@@ -175,7 +244,8 @@ python analysis/situation_report.py --wrf   # 셀 진단(오프라인 연구용;
   시퀀스 강제), `WRF_TF_FIB_PULLBACK`(피보 깊은눌림 경로), `WRF_REV_VOL_MULT`(반전봉 거래량
   게이트, 0=OFF), `WRF_BO_FUND_BONUS`(돌파 펀딩 컨트래리언 가점).
 - **레이어 연결 토글**: `WRF_BO_IN_RANGING`(RANGING 박스돌파 허용), `WRF_RV_MACRO_EXEMPT`
-  (RV 거시베토 면제), `WRF_TF_LATE_MATURITY_MULT`(성숙추세 TF 감쇠, 1.0=없음).
+  (RV 거시베토 면제), `WRF_TF_LATE_MATURITY_MULT`(성숙추세 TF 감쇠, 1.0=없음),
+  `WRF_CONFLUENCE_L_BONUS`(컨플루언스→L 가점, 0=OFF).
 
 ### 전략 정합 개선 (2026-06, win-rate-first 골격 유지)
 
@@ -208,6 +278,9 @@ python analysis/situation_report.py --wrf   # 셀 진단(오프라인 연구용;
   `ema_1d_struct`)을 **C축에 연속 피처로 주입** → 거친 셀 안에서 분리 학습.
 - **#5 죽은 연결 복구**: `maturity`(성숙추세 TF 감쇠)·일봉 `ema_structure`(C축) 배선.
 - **#6 3중 중복 제거**: 하드 베토(추종/레인지) ↔ 소프트 게이트(전환) 역할 분담으로 정리.
+- **완결성#1 컨플루언스 배선**: 측정·기록만 되고 발사엔 미반영이던 `confluence`(FVG/OB/
+  피보/주간 중첩수)를 전 셋업 L에 소폭 가점(`min(중첩,3)×0.05`) → 다중 SMC 중첩 진입을
+  prior에 반영. 셀·차원 불변(콜드스타트 영향 0).
 
 ---
 

@@ -803,6 +803,11 @@ WRF_RV_MACRO_EXEMPT = os.getenv("WRF_RV_MACRO_EXEMPT", "true").lower() not in ("
 # 측정만 되고 미사용이던 maturity(연속 HH/HL)를 TF L에 연결. 1.0=감쇠없음(토글).
 WRF_TF_LATE_MATURITY_MULT = _wrf_f("WRF_TF_LATE_MATURITY_MULT", 0.85)
 
+# ── [완결성#1] 컨플루언스(FVG/OB/피보/주간 중첩) → L 가점 ──────────────────
+# 측정·기록만 되고 발사엔 미반영이던 confluence를 전 셋업 L에 소폭 반영(전략의
+# 다중 SMC 중첩 = 강한 진입 근거). 중첩수(0~3) × bonus. 0.0 이면 OFF(구동작).
+WRF_CONFLUENCE_L_BONUS = _wrf_f("WRF_CONFLUENCE_L_BONUS", 0.05)
+
 # ── btc_macro 태깅 임계 (BTC 7D/30D 추세·EMA구조) ───────────────────────
 WRF_MACRO_UP_PCT   = _wrf_f("WRF_MACRO_UP_PCT", 0.03)   # 7D 변화 ±3% 이상 → leg
 WRF_MACRO_CHOP_PCT = _wrf_f("WRF_MACRO_CHOP_PCT", 0.015) # |7D| < 1.5% → CHOP 후보
