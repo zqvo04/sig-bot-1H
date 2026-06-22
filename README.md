@@ -226,7 +226,14 @@ export OKX_API_KEY=... OKX_API_SECRET=... OKX_PASSPHRASE=...
 export SINGLE_SYMBOL="BTC/USDT"
 python src/main.py --mode signal     # 신호(페이퍼) + 스냅샷 적재
 python src/main.py --mode score      # 경로 채점 + 신호 판정
-python analysis/situation_report.py --wrf   # 셀 진단(오프라인 연구용; 학습은 중단됨)
+python analysis/situation_report.py --wrf    # 셀 진단(오프라인 연구용; 학습은 중단됨)
+
+# [Phase 1] 백테스트/리플레이 하니스 — 저장된 72h 경로로 현 prior 성능 측정
+python analysis/backtest.py                   # 전체+setup별 성능 + 게이트 퍼널
+python analysis/backtest.py --by setup_macro  # setup×거시별 실현승률·기대R·PF·MaxDD
+python analysis/backtest.py --fired-only      # 발사 후보만(실거래 근사)
+python analysis/backtest.py --funnel          # 빈도 병목(veto/floor/RR) 퍼널
+python analysis/situation_report.py --perf --perf-by cell   # 동일 하니스 위임
 ```
 
 ---
@@ -333,7 +340,8 @@ sig-bot-1H/
 │   ├── build_dataset.py         # JSONL 로더 + 경로 라벨 헬퍼
 │   ├── labels.py                # triple-barrier·exret·class·candidate_dataset
 │   ├── calibrate.py             # 오프라인 보정 잡(보존; 학습 중단·미스케줄)
-│   └── situation_report.py      # 상황·WRF 셀 진단 리포트
+│   ├── backtest.py              # ★[Phase 1] 백테스트/리플레이 하니스(성능+퍼널)
+│   └── situation_report.py      # 상황·WRF 셀 진단(+ --perf 하니스 위임)
 ├── scripts/migrate_notion_wrf.py
 ├── data/
 │   ├── research/{SYM}/{YYYY-MM}.jsonl
@@ -372,22 +380,26 @@ sig-bot-1H/
 **①측정 인프라로 엣지를 정량화 → ②잠든 보정엔진을 현실적 방식으로 부활 →
 ③발사·사이징·포트폴리오를 고도화 → ④직교 알파를 확장 → ⑤실주문 전환** 이다.
 
-### Phase 1 — 측정·검증 인프라 (지금 → 단기) · *"못 재면 못 고친다"*
+### Phase 1 — 측정·검증 인프라 (✅ 구현 완료) · *"못 재면 못 고친다"*
 
 엣지를 **정량화**하는 단계. 새 알파를 더하기 전에, 이미 매시간 캡처되는 72h 경로를
-활용해 현재 prior의 실제 성능을 측정한다.
+활용해 현재 prior의 실제 성능을 측정한다. **라이브 코드 무수정·오프라인 전용.**
 
-- **백테스트/리플레이 하니스**: 저장된 `path`(72h OHLC) × `candidates`로 **현 prior의
-  실현 승률·기대값(R)·Profit Factor·MaxDD**를 셀(setup×regime×macro)별로 재생.
-  라이브 코드 무수정·오프라인 전용(`analysis/`).
-- **`situation_report.py` 확장**: 셀별 실현승률 / 발사율 / 기대R / 평균보유봉 /
-  타임아웃비율 리포트 → "만족스러운 초기 결과"를 **숫자로 고정**.
-- **유니버스 확장 (3 → 8~12 심볼)**: SOL·SUI·XRP + 고유동 USDT-Swap. 빈도와
-  데이터 누적속도를 **동시에** 끌어올리는 가장 싼 레버(셀당 표본 누적 ×3~4).
-- **빈도 병목 진단**: precond / min-axis(0.10) / MIN_RR(1.5) 각 게이트가 컷하는
-  후보 수를 계측 → 어느 게이트가 빈도를 질식시키는지 데이터로 식별(튜닝은 Phase 2).
+- ✅ **백테스트/리플레이 하니스 (`analysis/backtest.py`)**: 저장된 `path`(72h OHLC) ×
+  `candidates`를 triple-barrier로 재생해 **실현 승률·기대R·Profit Factor·MaxDD·평균보유봉·
+  타임아웃%**를 셀(setup×regime×macro)별로 산출. `--fired-only`(실거래 근사)·`--by` 그룹화.
+- ✅ **게이트 퍼널 (`--funnel`)**: precond 통과 후보가 **VETO/FLOOR/RR** 중 무엇에 컷되는지
+  귀속 → 빈도 병목을 데이터로 식별(precond 컷은 미기록이라 그 이후 단계만 관측).
+- ✅ **`situation_report.py --perf` 위임**: 동일 하니스를 기존 리포트 CLI로 호출.
+- ✅ **유니버스 확장 (3 → 6, `config.SYMBOLS`)**: +SOL·SUI·XRP(OKX USDT-Swap 고유동).
+  빈도·데이터 누적속도를 동시에 끌어올림(셀당 표본 ×2). `env SYMBOLS`로 오버라이드.
 
-> **Gate-Out**: 셀별 실현승률 테이블 산출 + 유니버스 8+ 가동 + 일 평균 발사 ≥ N_target.
+> **점검 산출(현 데이터)**: 발사 후보 실현 승률 ≈ 40~50% < 플로어 58%, 빈도 병목은
+> 전적으로 **FLOOR(min-axis/p_hat)** 단계(VETO·RR 컷 0). 단, 결판 ~10건·단일레짐이라
+> **결론 불가·인프라 검증용**. → Phase 2(보정 부활)로 plug-in 할 측정 토대가 마련됨.
+>
+> **Gate-Out**: 유니버스 6+ 데이터가 다거시레짐(UP/DOWN/CHOP)을 커버 + 셀별 실현승률
+> 테이블이 통계적으로 유의(결판 표본 충분) → Phase 2 진입.
 
 ### Phase 2 — 학습 부활: 계층적 베이지안 보정 (중기) · *"심장을 다시 뛰게"*
 
