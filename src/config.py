@@ -22,7 +22,12 @@ OKX_PASSPHRASE     = os.getenv("OKX_PASSPHRASE", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "")
 
-SYMBOLS: list     = ["BTC/USDT", "ETH/USDT", "HYPE/USDT"]
+# [Phase 1] 유니버스 확장 (3 → 6): 빈도·데이터 누적속도를 동시에 끌어올린다.
+# 셀(setup×regime×macro)당 표본 누적이 ×2배 → 보정 부활(Phase 2)을 앞당긴다.
+# env SYMBOLS(쉼표구분)로 오버라이드 가능(되돌리기·A/B). 전부 OKX USDT-Swap 고유동.
+_DEFAULT_SYMBOLS  = ["BTC/USDT", "ETH/USDT", "HYPE/USDT", "SOL/USDT", "SUI/USDT", "XRP/USDT"]
+SYMBOLS: list     = ([s.strip() for s in os.getenv("SYMBOLS", "").split(",") if s.strip()]
+                     or _DEFAULT_SYMBOLS)
 TIMEFRAMES        = {"entry": "1h", "mid": "4h", "macro": "1d"}
 CANDLE_LIMITS     = {"1h": 250, "4h": 210, "1d": 100}
 

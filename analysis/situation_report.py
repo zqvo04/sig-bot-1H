@@ -158,9 +158,17 @@ def main():
     ap.add_argument("--sl", type=float, default=0.020, help="손절 거리(비율)")
     ap.add_argument("--wrf", action="store_true",
                     help="WRF 셀(setup×regime×btc_macro) 보정 자격 진단 리포트")
+    ap.add_argument("--perf", action="store_true",
+                    help="[Phase 1] 실현 성능 + 게이트 퍼널 (backtest 하니스 위임)")
+    ap.add_argument("--perf-by", default="setup",
+                    help="--perf 그룹 기준(all|setup|macro|regime|cell|setup_macro)")
     args = ap.parse_args()
 
     rows = load_snapshots(args.dir) if args.dir else load_snapshots()
+    if args.perf:
+        import backtest
+        backtest.run(rows, by_key=args.perf_by, min_n=args.min_n)
+        return
     if args.wrf:
         print(_CAVEAT)
         wrf_cell_report(rows)
