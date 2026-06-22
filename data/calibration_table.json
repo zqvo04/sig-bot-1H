@@ -1,5 +1,130 @@
 {
-  "generated_at": "2026-06-17T15:10:36.609671+00:00",
-  "cells": {},
-  "note": "표본 0 — 전부 prior(콜드스타트)"
+  "generated_at": "2026-06-22T10:50:04.691475+00:00",
+  "schema_version": 3,
+  "params": {
+    "method": "partial_pooling",
+    "k_setup": 40.0,
+    "k_base": 30.0,
+    "k_cell": 25.0,
+    "k_conf": 20.0,
+    "min_decided": 3,
+    "delta_cap": 1.2,
+    "stride_h": 24,
+    "floor": 0.58
+  },
+  "global": {
+    "win_rate": 0.4,
+    "n_decided": 10
+  },
+  "setups": {
+    "MR": 0.4146,
+    "RV": 0.4014,
+    "TF": 0.3902
+  },
+  "bases": {
+    "MR|RANGING": 0.4335,
+    "RV|RANGING": 0.3971,
+    "RV|TRENDING": 0.4207,
+    "TF|RANGING": 0.3777,
+    "TF|SQUEEZE": 0.3777
+  },
+  "n_cells": 5,
+  "n_calibrated": 1,
+  "cells": {
+    "MR|RANGING|CHOP": {
+      "n": 1,
+      "n_indep": 1,
+      "base": "MR|RANGING",
+      "win_rate": 1.0,
+      "wr_pooled": 0.4553,
+      "wr_parent": 0.4335,
+      "macro_coverage": 0,
+      "beta_illusion": false,
+      "win_floor": 0.58,
+      "p_source": "prior",
+      "delta_eff": 0.0
+    },
+    "RV|RANGING|CHOP": {
+      "n": 6,
+      "n_indep": 2,
+      "base": "RV|RANGING",
+      "win_rate": 0.3333,
+      "wr_pooled": 0.3924,
+      "wr_parent": 0.3971,
+      "macro_coverage": 1,
+      "beta_illusion": false,
+      "win_floor": 0.58,
+      "p_source": "calibrated",
+      "delta_eff": 0.016,
+      "p_prior_mean": 0.3513,
+      "delta": 0.1761,
+      "confidence": 0.0909
+    },
+    "RV|TRENDING|CHOP": {
+      "n": 1,
+      "n_indep": 1,
+      "base": "RV|TRENDING",
+      "win_rate": 1.0,
+      "wr_pooled": 0.443,
+      "wr_parent": 0.4207,
+      "macro_coverage": 0,
+      "beta_illusion": false,
+      "win_floor": 0.58,
+      "p_source": "prior",
+      "delta_eff": 0.0
+    },
+    "TF|RANGING|CHOP": {
+      "n": 1,
+      "n_indep": 1,
+      "base": "TF|RANGING",
+      "win_rate": 0.0,
+      "wr_pooled": 0.3631,
+      "wr_parent": 0.3777,
+      "macro_coverage": 0,
+      "beta_illusion": false,
+      "win_floor": 0.58,
+      "p_source": "prior",
+      "delta_eff": 0.0
+    },
+    "TF|SQUEEZE|CHOP": {
+      "n": 1,
+      "n_indep": 1,
+      "base": "TF|SQUEEZE",
+      "win_rate": 0.0,
+      "wr_pooled": 0.3631,
+      "wr_parent": 0.3777,
+      "macro_coverage": 0,
+      "beta_illusion": false,
+      "win_floor": 0.58,
+      "p_source": "prior",
+      "delta_eff": 0.0
+    }
+  },
+  "drift": {
+    "MR|RANGING|CHOP": {
+      "n": 1,
+      "win_rate": 1.0,
+      "wr_pooled": 0.4553
+    },
+    "RV|RANGING|CHOP": {
+      "n": 6,
+      "win_rate": 0.3333,
+      "wr_pooled": 0.3924
+    },
+    "RV|TRENDING|CHOP": {
+      "n": 1,
+      "win_rate": 1.0,
+      "wr_pooled": 0.443
+    },
+    "TF|RANGING|CHOP": {
+      "n": 1,
+      "win_rate": 0.0,
+      "wr_pooled": 0.3631
+    },
+    "TF|SQUEEZE|CHOP": {
+      "n": 1,
+      "win_rate": 0.0,
+      "wr_pooled": 0.3631
+    }
+  }
 }

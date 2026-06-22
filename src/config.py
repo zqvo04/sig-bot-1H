@@ -825,11 +825,36 @@ WRF_SIZE_MAX  = _wrf_f("WRF_SIZE_MAX", 2.0)     # 사이즈 상한 단위
 WRF_CALIB_TABLE = os.getenv("WRF_CALIB_TABLE", "data/calibration_table.json")
 WRF_SCHEMA_VERSION = 3
 
-# ── 오프라인 보정 학습 중단 스위치 ───────────────────────────────────────
-# 자격 게이트(indep≥n_min × 거시≥2종)가 데이터 누적 속도 대비 비현실적으로 높아
-# 어떤 셀도 보정되지 못한다(실효 ≈ 0). 학습을 중단하고 라이브는 영구히 보수적
-# prior(직교게이트)만 사용한다. True면 calibration_table.json이 존재해도 무시.
-# 다시 학습을 켜려면 이 값을 false로 두고 calibrate 워크플로우를 복구하면 된다.
+# ══════════════════════════════════════════════════════════════════════
+# [Phase 2] 계층적 부분풀링(partial pooling) 보정 — "심장을 다시 뛰게"
+# ══════════════════════════════════════════════════════════════════════
+# 구(舊) 보정의 자격 게이트(indep≥100 × 거시≥2종)는 데이터 누적 속도 대비
+# 비현실적으로 높아 어떤 셀도 영구히 보정되지 못했다(실효≈0). 이를 폐기하고
+# 계층적 random-intercept 로지스틱 + Beta-Binomial 수축으로 교체한다:
+#
+#   계층 GLOBAL → SETUP → BASE(setup×regime) → CELL(setup×regime×macro)
+#   · prior의 기울기(wC/wL/wF)는 고정(소표본 과적합 차단) — 절편 오프셋 δ만 학습.
+#   · 셀 승률을 부모로 수축(데이터 적으면 부모로 회귀, 쌓이면 자기 셀로 수렴).
+#   · 수축·신뢰도 산정에 '독립표본 n'(72h 중첩 탈상관, stride=24h) 사용 — 정직.
+#   · 라이브:  z = prior_logodds + δ_eff ;  P̂ = min(calib_cap, sigmoid(z)).
+#             셀 없으면 prior 폴백(콜드스타트 안전·항상).
+#
+# 과적합 가드 5중: ①기울기 고정 ②부모 수축 ③신뢰도 가중 δ ④δ 하드캡
+#                 ⑤그림자(shadow) 운영 — OOS Brier 우위 입증 전까지 발사 미반영.
+WRF_CALIB_METHOD      = os.getenv("WRF_CALIB_METHOD", "partial_pooling")
+WRF_CALIB_K_SETUP     = _wrf_f("WRF_CALIB_K_SETUP", 40.0)  # SETUP 수축 의사관측수
+WRF_CALIB_K_BASE      = _wrf_f("WRF_CALIB_K_BASE", 30.0)   # BASE 수축 의사관측수
+WRF_CALIB_K_CELL      = _wrf_f("WRF_CALIB_K_CELL", 25.0)   # CELL 수축 의사관측수
+WRF_CALIB_K_CONF      = _wrf_f("WRF_CALIB_K_CONF", 20.0)   # δ 신뢰도 가중 의사관측수
+WRF_CALIB_MIN_DECIDED = _wrf_i("WRF_CALIB_MIN_DECIDED", 3) # 보정셀 생성 최소 결판수
+WRF_CALIB_DELTA_CAP   = _wrf_f("WRF_CALIB_DELTA_CAP", 1.2) # |δ_eff| 로그오즈 하드캡
+WRF_CALIB_CAP         = _wrf_f("WRF_CALIB_CAP", 0.72)      # 보정 P̂ 상한(근거기반, prior 0.65↑)
+
+# ── 보정 발사 스위치(그림자 운영) ────────────────────────────────────────
+# true(기본): 라이브는 prior로 '발사', 보정 P̂은 계산·기록만(A/B 그림자).
+#   → backtest.py --ab 로 OOS(시간분할+72h embargo) Brier/승률 우위가 입증되면
+# false 로 전환 → 보정 P̂으로 '발사'(셀 없으면 prior 폴백). 이것이 Phase 2 Gate-Out.
+# (보정 계산·기록은 스위치와 무관하게 항상 수행 — 그림자 평가용.)
 WRF_CALIB_DISABLED = os.getenv("WRF_CALIB_DISABLED", "true").lower() not in ("0", "false", "no", "")
 
 # ── Notion WRF 2-DB ───────────────────────────────────────────────────
