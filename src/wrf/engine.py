@@ -54,7 +54,9 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
     for c in cands:
         try:
             lv = levels.compute_levels(c, feat)
-            p_hat, source, floor = calibration.compute_p_hat(c, feat["ctx"], table)
+            # [Phase 2] prior·보정 동시 평가(그림자 A/B). p_hat는 스위치 반영값.
+            pe = calibration.evaluate(c, feat["ctx"], table)
+            p_hat, source, floor = pe["p_hat"], pe["source"], pe["floor"]
             vetoes = veto.evaluate(c, feat, collected, global_v)
             # RR 품질필터: prior 발사는 최소 RR 요구(보정셀은 학습 승률 존중 → 우회).
             min_rr = getattr(config, "WRF_MIN_RR", 1.5)
@@ -66,6 +68,8 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
                 "entry": lv["entry"], "tp": lv["tp"], "sl": lv["sl"],
                 "r_dist": lv["r_dist"], "rr": lv["rr"], "t_max": lv["t_max"],
                 "p_hat": round(p_hat, 4), "p_source": source,
+                "p_prior": round(pe["p_prior"], 4), "p_cal": round(pe["p_cal"], 4),
+                "p_cal_source": pe["cal_source"],
                 "win_floor": round(floor, 4),
                 "C": c["C"], "L": c["L"], "F": c["F"],
                 "confluence_n": c.get("confluence_n", 0),

@@ -92,10 +92,12 @@ def situation_table(df: pd.DataFrame, by: list[str], min_n: int = 30,
 
 
 def wrf_cell_report(rows: list, min_n: int = None, macro_min: int = None):
-    """WRF 셀별 보정 자격 진단: n·독립n·거시커버리지·셀별승률·베타착시·드리프트.
+    """WRF 셀별 진단: n·독립n·거시커버리지·셀별승률·베타착시·드리프트.
 
-    셀=(setup×regime×btc_macro). 신뢰게이트(독립표본 N≥n_min ∧ 거시방향 ≥2종)를
-    충족하는 셀만 보정 자격. 현재 데이터(단일 불런)는 자격 셀 0개가 정상이다.
+    셀=(setup×regime×btc_macro). 표시되는 '자격(qualified)'은 구(舊) 하드게이트
+    (독립 N≥n_min ∧ 거시 ≥2종) 관점의 참고치다. **Phase 2 부분풀링은 이 0/1 게이트를
+    폐기**했으므로 실제 보정 적용은 `python analysis/calibrate.py --dry-run`(셀별 δ_eff)을
+    본다 — 이 리포트는 표본 충분도(독립n·거시커버리지) 진단용으로만 유지한다.
     """
     import os
     import sys
@@ -143,8 +145,9 @@ def wrf_cell_report(rows: list, min_n: int = None, macro_min: int = None):
     with pd.option_context("display.max_rows", 300, "display.width", 200):
         print(table.to_string(index=False))
     nq = int(table["qualified"].sum())
-    print(f"\n자격 셀: {nq} / {len(table)}  → 자격 미달 셀은 calibrate가 prior 유지.")
-    print("거시방향별 다레짐 데이터가 쌓이며 셀별로 발사권(보정)을 획득한다.")
+    print(f"\n(참고) 구 하드게이트 자격 셀: {nq} / {len(table)}.")
+    print("→ Phase 2 부분풀링은 0/1 게이트 폐기. 실제 보정(δ_eff)은 "
+          "`python analysis/calibrate.py --dry-run` 참조.")
 
 
 def main():

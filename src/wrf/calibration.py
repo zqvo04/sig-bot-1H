@@ -1,12 +1,18 @@
 """L3 — 승률 P̂. 셀=(setup×regime×btc_macro).
 
-학습 중단(WRF_CALIB_DISABLED=true, 기본값): 오프라인 보정 잡의 자격 게이트
-(독립표본 N≥100 × 거시 ≥2종)가 데이터 누적 속도 대비 비현실적으로 높아 어떤
-셀도 보정되지 못했다(실효 ≈ 0). 라이브는 영구히 보수적 prior(직교게이트)만 쓴다.
+[Phase 2] 계층적 부분풀링(partial pooling) 보정. 구(舊) 자격 게이트(독립 N≥100 ×
+거시≥2종)는 비현실적으로 높아 실효≈0이었다 → 폐기. 대신 random-intercept 로지스틱:
+prior의 기울기(wC/wL/wF)는 고정하고, 오프라인 잡이 학습한 셀별 절편 오프셋 δ_eff만
+prior 로그오즈에 더한다.
 
-보정 로직(로지스틱(C,L,F)+isotonic, 신뢰게이트)은 아래에 보존돼 있고, 스위치를
-false로 두고 calibrate 워크플로우를 복구하면 그대로 되살아난다. 테이블
-부재/예외 시에도 항상 prior(콜드스타트 안전).
+  라이브:  z = prior_logodds(C,L,F) + δ_eff[cell]
+          P̂ = min(calib_cap, sigmoid(z))      (셀 없으면 prior 폴백 — 콜드스타트 안전)
+
+δ_eff는 오프라인에서 Beta-Binomial 수축(부모로) + 신뢰도 가중 + 하드캡을 거쳐 산출돼,
+소표본 셀은 자동으로 δ≈0(=prior)에 머문다(과적합 차단). 테이블 부재/예외 시에도 prior.
+
+그림자 운영(WRF_CALIB_DISABLED=true 기본): 발사는 prior, 보정 P̂은 계산·기록만(A/B).
+OOS 우위 입증 후 false 로 전환하면 보정 P̂으로 발사.
 """
 from __future__ import annotations
 
@@ -58,15 +64,28 @@ def load_table(path: str = None) -> dict:
         return {}
 
 
-def prior_p_hat(setup: str, C: float, L: float, F: float) -> float:
-    """보수적 고정 직교게이트 prior. 셋업별 b0 비대칭(BO·RV는 낮음→소수만 통과)."""
+# ════════════════════════════════════════════════════════════════════
+# prior (보수적 고정 직교게이트) — 보정의 '기울기·기준선'이기도 하다
+# ════════════════════════════════════════════════════════════════════
+
+def _prior_logodds(setup: str, C: float, L: float, F: float) -> float:
+    """prior 로그오즈 z = b0[setup] + wC·C + wL·L + wF·F (캡·min-axis 적용 전)."""
     b0 = getattr(config, "WRF_PRIOR_B0", {}).get(setup, -0.5)
     wC = getattr(config, "WRF_PRIOR_WC", 1.1)
     wL = getattr(config, "WRF_PRIOR_WL", 1.3)
     wF = getattr(config, "WRF_PRIOR_WF", 1.2)
+    return b0 + wC * C + wL * L + wF * F
+
+
+def prior_raw_p(setup: str, C: float, L: float, F: float) -> float:
+    """캡·min-axis 적용 전 raw 로지스틱 확률. 보정 δ 측정의 '기준선'(일관성)."""
+    return _sigmoid(_prior_logodds(setup, C, L, F))
+
+
+def prior_p_hat(setup: str, C: float, L: float, F: float) -> float:
+    """보수적 고정 직교게이트 prior(발사용). 셋업별 b0 비대칭 + 캡 + min-axis 게이트."""
     cap = getattr(config, "WRF_PRIOR_CAP", 0.65)
-    z = b0 + wC * C + wL * L + wF * F
-    p = min(cap, _sigmoid(z))
+    p = min(cap, _sigmoid(_prior_logodds(setup, C, L, F)))
     # 직교 3축 광범위 동의 게이트: 한 축이라도 최소동의 미만이면 콜드스타트 발사 보류.
     # (가중합이 높아도 단일 축 과의존으로 발사되던 약발 신호 차단. 보정셀엔 미적용.)
     min_axis = getattr(config, "WRF_PRIOR_MIN_AXIS", 0.10)
@@ -76,62 +95,73 @@ def prior_p_hat(setup: str, C: float, L: float, F: float) -> float:
     return p
 
 
-def _isotonic_apply(x: float, xs: list, ys: list) -> float:
-    """단조 보정맵 적용 (선형보간). xs는 오름차순."""
-    if not xs:
-        return x
-    if x <= xs[0]:
-        return ys[0]
-    if x >= xs[-1]:
-        return ys[-1]
-    for i in range(1, len(xs)):
-        if x <= xs[i]:
-            x0, x1, y0, y1 = xs[i - 1], xs[i], ys[i - 1], ys[i]
-            if x1 == x0:
-                return y1
-            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
-    return ys[-1]
+# ════════════════════════════════════════════════════════════════════
+# [Phase 2] 보정 — 부분풀링 δ_eff 소비
+# ════════════════════════════════════════════════════════════════════
+
+def cell_delta(cell: dict) -> float:
+    """보정셀에서 라이브에 적용할 로그오즈 오프셋 δ_eff. 없으면 0(=prior)."""
+    if not cell or cell.get("p_source") != "calibrated":
+        return 0.0
+    try:
+        return float(cell.get("delta_eff", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
-def cell_qualified(cell: dict) -> bool:
-    """신뢰게이트: 탈중첩 독립표본 N≥n_min ∧ 거시방향 ≥2종 ∧ 베타착시 아님."""
-    if not cell:
-        return False
-    n_min = getattr(config, "WRF_CELL_N_MIN", 100)
-    macro_min = getattr(config, "WRF_CELL_MACRO_MIN", 2)
-    return bool(
-        cell.get("qualified", False)
-        and int(cell.get("n_indep", 0)) >= n_min
-        and int(cell.get("macro_coverage", 0)) >= macro_min
-        and not cell.get("beta_illusion", False)
-    )
+def calibrated_p_hat(setup: str, C: float, L: float, F: float,
+                     cell: dict) -> tuple:
+    """보정 P̂ = min(calib_cap, sigmoid(prior_logodds + δ_eff)).
+
+    반환 (p, source, floor). 보정셀 부재/δ=0이면 (prior_p_hat, 'prior', floor).
+    """
+    floor = getattr(config, "WRF_WIN_FLOOR", 0.58)
+    delta = cell_delta(cell)
+    if delta == 0.0:
+        return prior_p_hat(setup, C, L, F), "prior", floor
+    cap = getattr(config, "WRF_CALIB_CAP", 0.72)
+    z = _prior_logodds(setup, C, L, F) + delta
+    p = min(cap, _sigmoid(z))
+    cell_floor = float(cell.get("win_floor", floor))
+    return p, "calibrated", cell_floor
 
 
-def compute_p_hat(candidate: dict, ctx: dict, table: dict = None) -> tuple:
-    """후보 → (p_hat, source, win_floor). source ∈ {'prior','calibrated'}."""
+def evaluate(candidate: dict, ctx: dict, table: dict = None) -> dict:
+    """후보 → 보정 평가 dict(그림자 A/B 포함).
+
+    반환 키:
+      p_prior   : 항상 prior P̂(발사용 직교게이트)
+      p_cal     : 보정 P̂(셀 있으면 δ 반영, 없으면 prior와 동일)
+      cal_source: 'calibrated' | 'prior'
+      p_hat     : 발사에 쓸 값(WRF_CALIB_DISABLED=true면 p_prior, false면 p_cal)
+      source    : p_hat의 출처
+      floor     : 발사 플로어
+    보정 계산은 스위치와 무관하게 항상 수행 — 그림자 평가(backtest --ab)용.
+    """
     setup = candidate["setup"]
     C, L, F = candidate["C"], candidate["L"], candidate["F"]
     floor = getattr(config, "WRF_WIN_FLOOR", 0.58)
 
-    # 학습 중단 스위치: 보정 비활성 시 테이블을 보지 않고 항상 prior.
-    # (오프라인 보정 잡은 제거됨 — 자격 게이트가 비현실적으로 높아 실효 ≈ 0이었다.)
-    if getattr(config, "WRF_CALIB_DISABLED", False):
-        return prior_p_hat(setup, C, L, F), "prior", floor
+    p_prior = prior_p_hat(setup, C, L, F)
 
     table = load_table() if table is None else table
     key = cell_key(setup, ctx.get("regime_1h", "UNKNOWN"), ctx.get("btc_macro", "CHOP"))
     cell = table.get(key) if table else None
+    try:
+        p_cal, cal_source, cal_floor = calibrated_p_hat(setup, C, L, F, cell)
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[calib] 셀 {key} 보정 실패 → prior: {e}")
+        p_cal, cal_source, cal_floor = p_prior, "prior", floor
 
-    if cell and cell_qualified(cell):
-        try:
-            w = cell["weights"]  # {b0, wC, wL, wF}
-            z = w["b0"] + w["wC"] * C + w["wL"] * L + w["wF"] * F
-            p = _sigmoid(z)
-            iso = cell.get("isotonic")
-            if iso:
-                p = _isotonic_apply(p, iso.get("x", []), iso.get("y", []))
-            return float(p), "calibrated", float(cell.get("win_floor", floor))
-        except Exception as e:  # pragma: no cover
-            logger.warning(f"[calib] 셀 {key} 보정 실패 → prior: {e}")
+    disabled = getattr(config, "WRF_CALIB_DISABLED", True)
+    if disabled or cal_source != "calibrated":
+        return {"p_prior": p_prior, "p_cal": p_cal, "cal_source": cal_source,
+                "p_hat": p_prior, "source": "prior", "floor": floor}
+    return {"p_prior": p_prior, "p_cal": p_cal, "cal_source": cal_source,
+            "p_hat": p_cal, "source": "calibrated", "floor": cal_floor}
 
-    return prior_p_hat(setup, C, L, F), "prior", floor
+
+def compute_p_hat(candidate: dict, ctx: dict, table: dict = None) -> tuple:
+    """후보 → (p_hat, source, floor). 발사에 쓰는 값(스위치 반영). 하위호환 유지."""
+    r = evaluate(candidate, ctx, table)
+    return r["p_hat"], r["source"], r["floor"]

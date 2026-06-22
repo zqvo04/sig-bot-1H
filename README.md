@@ -8,8 +8,8 @@ OKX 무기한 선물(USDT-Swap) **1시간봉 스윙** 신호 봇. **페이퍼 �
 > 빈도는 **넓은 유니버스 × 4셋업 × 양방향**의 합집합으로 산다(플로어 불변).
 
 레거시 v4/v5의 **합산 점수제**(40+ 보너스·임계조정·인플레캡·서브캡)는 전면 제거했다.
-"자기 자신과 싸우던" 기계를 버리고, 손으로 튜닝한 가중치 대신 **경로 데이터로 학습한
-보정 합산**(로지스틱→isotonic)으로 부활시켰다.
+"자기 자신과 싸우던" 기계를 버리고, 손으로 튜닝한 보수적 prior 위에 **경로 데이터로 학습한
+계층적 부분풀링 보정**(Phase 2: prior 기울기 고정 + 셀별 절편 δ만 수축학습)을 얹었다.
 
 > ⚠️ 참고용 신호입니다. 투자 결정과 결과는 전적으로 본인 책임입니다.
 
@@ -18,12 +18,13 @@ OKX 무기한 선물(USDT-Swap) **1시간봉 스윙** 신호 봇. **페이퍼 �
 ## 핵심 철학
 
 - **보정이 승률을 보장**한다. 라이브 봇은 **절대 학습하지 않는다** — 오프라인 주간 잡이
-  검증된 셀만 `data/calibration_table.json`으로 배포하고, 라이브는 그 테이블만 읽는다.
+  부분풀링 δ_eff를 `data/calibration_table.json`으로 배포하고, 라이브는 그 테이블만 읽는다.
 - **백분위 상대평가**(절대 임계 금지, 코인별 자기분포), **롱/숏 완전 대칭**,
   **무상태(stateless)**, **try/except로 본체 격리**.
 - **비정상성 차단**: 라벨을 방향중립(BTC초과수익 exret + 경로형 triple-barrier)으로 두고,
   매 스냅샷에 **BTC 거시방향 태그**(`btc_macro`: UPLEG/DOWNLEG/CHOP)를 박아 보정을
-  거시방향별로 분할한다. 신뢰게이트 미충족 셀은 전부 **보수적 prior**로 동작.
+  거시방향별로 분할한다. 보정 데이터가 적은 셀은 부모로 수축돼 **사실상 prior**로 동작
+(δ_eff→0), 데이터가 쌓일수록 자기 셀 보정으로 수렴한다.
 
 > **왜?** 지금까지 쌓인 학습데이터(약 5.5일·396행)는 **단일 상승장**(UP 71%)이었다.
 > "MR롱 승률 100%"는 엣지가 아니라 **시장 베타 착시**다. 유효 독립표본 ~13개로 어떤
@@ -73,7 +74,7 @@ BO·RV는 base-rate가 낮아 **강확증된 소수만** 통과한다(P̂ 내림
 | `btc_macro.py` | L1(C) | BTC 7D/30D·EMA구조 → UPLEG/DOWNLEG/CHOP |
 | `features.py` | L1 | 직교 3축(C/L/F) + schema v3 원시피처 + 레짐 라우팅 |
 | `detectors.py` | L2 | 4셋업 디텍터(롱숏 대칭, precond 구조게이트) |
-| `calibration.py` | L3 | 보정테이블 로더 + 신뢰게이트 + 보수적 prior |
+| `calibration.py` | L3 | 보정테이블 로더 + 부분풀링 δ_eff 소비 + prior(그림자 A/B) |
 | `veto.py` | L0 | 하드베토 4종 |
 | `levels.py` | L4 | 셋업별 구조기반 TP/SL/타임스톱 |
 | `engine.py` | L0~L4 | 오케스트레이션, 발사판정, 전량 후보 기록 |
@@ -184,22 +185,25 @@ P̂_prior = min( 0.65,  sigmoid( b0[셋업] + 1.1·C + 1.3·L + 1.2·F ) )
 
 ---
 
-## 오프라인 보정 학습 — **중단됨** (`WRF_CALIB_DISABLED=true`)
+## 오프라인 보정 학습 — **부분풀링 (Phase 2, 그림자 운영)**
 
-자격 게이트(탈중첩 독립표본 N≥`n_min`=100 × 거시방향 ≥2종)가 데이터 누적 속도
-대비 비현실적으로 높아, 한 셀이 자격을 얻으려면 그 셀에만 후보가 떨어지는 서로
-다른 날이 100일+ 필요(거기에 복수 거시국면까지) → 현실적으로 수개월~수년이 걸려
-어떤 셀도 보정되지 못했다(**실효 ≈ 0**). 주간 잡은 매번 동일한 "자격 0셀" 빈
-결과를 재생산할 뿐이라 **학습을 중단**했다.
+구(舊) 자격 게이트(탈중첩 독립표본 N≥100 × 거시 ≥2종)는 비현실적으로 높아 어떤 셀도
+보정되지 못했다(실효≈0, 심장 정지). 이를 **계층적 부분풀링(partial pooling)** 으로 교체:
 
-- 주간 워크플로우(`.github/workflows/calibrate.yml`) **제거**.
-- 라이브는 킬스위치(`WRF_CALIB_DISABLED`, 기본 `true`)로 `calibration_table.json`을
-  **무시하고 영구히 보수적 prior(직교게이트)** 만 사용한다.
-- 보정 로직(triple-barrier 라벨·purged-CV·베타착시 가드·로지스틱+isotonic)과
-  오프라인 스크립트(`analysis/calibrate.py`, `labels.py`)는 **그대로 보존**.
-  다시 켜려면 `WRF_CALIB_DISABLED=false` + calibrate 워크플로우를 복구하면 된다.
+- **계층 수축**: GLOBAL→SETUP→BASE(setup×regime)→CELL. 셀 승률을 Beta-Binomial로 부모에
+  수축(`(wr·n_indep + wr_parent·k)/(n_indep+k)`) → 자격 0/1 폐기, 표본 적어도 즉시 사용.
+- **δ만 학습**: prior 기울기(wC/wL/wF) 고정, 셀 절편 오프셋 `δ_eff = clamp(conf·δ, ±cap)`만
+  학습(소표본 과적합 차단). 라이브는 `P̂ = min(calib_cap, σ(prior_logodds + δ_eff))`.
+- **그림자 운영**: `WRF_CALIB_DISABLED` 기본 `true` — 발사는 prior, 보정 P̂은 스냅샷에
+  `p_cal`로 **기록만**. `analysis/backtest.py --ab`의 OOS Brier 우위 입증 후 `false` 전환.
+- **주간 잡**(`.github/workflows/calibrate.yml`): 일요일 04:10 UTC, JSONL→δ_eff→
+  `calibration_table.json` 커밋. 라이브는 이 산출물의 δ_eff만 읽는다(학습은 여기서만).
 
-진단(오프라인): `python analysis/situation_report.py --wrf` (셀별 n·독립n·거시커버리지·승률).
+```bash
+python analysis/calibrate.py --dry-run               # 셀별 수축·δ 요약(파일 미기록)
+python analysis/backtest.py --ab                      # prior vs 보정 Brier·캘리브레이션
+python analysis/situation_report.py --wrf             # 셀별 n·독립n·거시커버리지·승률
+```
 
 ---
 
@@ -209,7 +213,7 @@ P̂_prior = min( 0.65,  sigmoid( b0[셋업] + 1.1·C + 1.3·L + 1.2·F ) )
 |------------|--------|------|
 | `signal_1h.yml` | 매시 :05 | 수집→측정→엔진(L0~L4)→발사(페이퍼)→스냅샷 적재→Notion 미러 |
 | `scoring.yml` | 매 :*/15 | 성숙 경로 채움 + triple-barrier 신호판정 + 스냅샷 라벨 백필 |
-| ~~`calibrate.yml`~~ | — | **제거(학습 중단)**. 라이브는 `WRF_CALIB_DISABLED=true`로 prior 고정 |
+| `calibrate.yml` | 매주 일 04:10 | [Phase 2] JSONL→부분풀링 δ_eff 학습→`calibration_table.json` 커밋(그림자) |
 
 - **`ALERT_ENABLED`**(Actions Variable, 기본 `false`): 학습기간엔 알림 OFF·기록만.
   커버리지 충족 후 `true`로 전환.
@@ -226,7 +230,7 @@ export OKX_API_KEY=... OKX_API_SECRET=... OKX_PASSPHRASE=...
 export SINGLE_SYMBOL="BTC/USDT"
 python src/main.py --mode signal     # 신호(페이퍼) + 스냅샷 적재
 python src/main.py --mode score      # 경로 채점 + 신호 판정
-python analysis/situation_report.py --wrf    # 셀 진단(오프라인 연구용; 학습은 중단됨)
+python analysis/situation_report.py --wrf    # 셀 진단(오프라인 연구용)
 
 # [Phase 1] 백테스트/리플레이 하니스 — 저장된 72h 경로로 현 prior 성능 측정
 python analysis/backtest.py                   # 전체+setup별 성능 + 게이트 퍼널
@@ -234,6 +238,11 @@ python analysis/backtest.py --by setup_macro  # setup×거시별 실현승률·�
 python analysis/backtest.py --fired-only      # 발사 후보만(실거래 근사)
 python analysis/backtest.py --funnel          # 빈도 병목(veto/floor/RR) 퍼널
 python analysis/situation_report.py --perf --perf-by cell   # 동일 하니스 위임
+
+# [Phase 2] 부분풀링 보정(학습) + A/B 그림자 평가(Gate-Out 계측)
+python analysis/calibrate.py                  # JSONL→셀별 δ_eff 학습→calibration_table.json
+python analysis/calibrate.py --dry-run        # 파일 쓰지 않고 셀별 수축·δ 요약만
+python analysis/backtest.py --ab              # prior vs 보정 P̂ Brier·캘리브레이션 비교
 ```
 
 ---
@@ -323,7 +332,7 @@ python scripts/migrate_notion_wrf.py --purge    # 추가 + 기존 행 전부 아
 
 ```
 sig-bot-1H/
-├── .github/workflows/{signal_1h,scoring}.yml   # calibrate.yml 제거(학습 중단)
+├── .github/workflows/{signal_1h,scoring,calibrate}.yml  # calibrate=Phase2 부분풀링(그림자)
 ├── src/
 │   ├── main.py                  # WRF-4 진입점 (signal/score 모드, 본체 격리)
 │   ├── config.py                # 전역 설정 + WRF_* 파라미터
@@ -339,7 +348,7 @@ sig-bot-1H/
 ├── analysis/
 │   ├── build_dataset.py         # JSONL 로더 + 경로 라벨 헬퍼
 │   ├── labels.py                # triple-barrier·exret·class·candidate_dataset
-│   ├── calibrate.py             # 오프라인 보정 잡(보존; 학습 중단·미스케줄)
+│   ├── calibrate.py             # ★[Phase 2] 부분풀링 보정 잡(계층 수축→셀별 δ_eff)
 │   ├── backtest.py              # ★[Phase 1] 백테스트/리플레이 하니스(성능+퍼널)
 │   └── situation_report.py      # 상황·WRF 셀 진단(+ --perf 하니스 위임)
 ├── scripts/migrate_notion_wrf.py
@@ -371,7 +380,7 @@ sig-bot-1H/
 | 실효 WRF-4 데이터 | v3 ~115행/심볼 (≈5일) · 레거시 139행은 `btc_macro=None` | 통계적 결론 도출 불가 구간 |
 | 거시 커버리지 | v3 구간 = CHOP/DOWNLEG, **UPLEG 0** | 단일레짐 — 대칭성 미검증 |
 | 후보/발사 빈도 | 762 스냅샷 → 후보 17 · 발사 7 (**발사율 0.9%**) | **병목 = 빈도**(승률 아님) |
-| 보정(L3) | `WRF_CALIB_DISABLED=true`, 자격셀 0 | **심장이 정지** — prior가 100% 결정 |
+| 보정(L3) | Phase 2 부분풀링 구현(✅), 그림자 운영 | 심장 재시동 — 발사반영은 OOS 입증 후 |
 | 승률 검증 | 라이브·오프라인 실현승률 측정 부재 | "만족스러운 결과"가 **미정량** |
 
 **한 줄 요약**: 지금의 봇은 설계상 "보정이 승률을 보장"하지만, 실제로는 **손튜닝
@@ -401,22 +410,33 @@ sig-bot-1H/
 > **Gate-Out**: 유니버스 6+ 데이터가 다거시레짐(UP/DOWN/CHOP)을 커버 + 셀별 실현승률
 > 테이블이 통계적으로 유의(결판 표본 충분) → Phase 2 진입.
 
-### Phase 2 — 학습 부활: 계층적 베이지안 보정 (중기) · *"심장을 다시 뛰게"*
+### Phase 2 — 학습 부활: 계층적 부분풀링 보정 (✅ 구현 완료) · *"심장을 다시 뛰게"*
 
-현 자격게이트(셀당 독립 N≥100 × 거시≥2종)는 수개월~수년이 걸려 **영구히 도달 불가**.
-이를 **부분풀링(partial pooling)** 으로 교체해 보정엔진을 현실적으로 되살린다.
+구(舊) 자격게이트(셀당 독립 N≥100 × 거시≥2종)는 수개월~수년이 걸려 **영구히 도달 불가**
+였다(실효≈0, 심장 정지). 이를 **부분풀링(partial pooling)** 으로 교체해 보정엔진을 되살렸다.
+**기능은 완비됐고, 발사 반영은 OOS 우위 입증 후**(아래 Gate-Out)로 미뤄 과적합을 차단한다.
 
-- **계층적 로지스틱(shrinkage)**: 셀 추정치를 전역/부모(setup, regime) prior로 수축.
-  표본이 적은 셀도 **즉시 사용 가능한 P̂**를 얻고, 데이터가 쌓일수록 자기 셀로 수렴.
-  → "자격 0/1" 이분법 폐기, 신뢰도를 **연속적**으로 부여.
-- **Purged K-Fold + Embargo CV**(이미 설계됨, `WRF_EMBARGO_HOURS`)로 과적합·자기상관 차단.
-- **베타착시 가드**: 라벨을 exret(BTC초과)·triple-barrier로 유지(이미 구축) → "불장 무조건
-  롱" 학습 방지.
-- **A/B 그림자 평가**: 보정 P̂ vs prior P̂를 동시 기록, 백테스트에서 **out-of-sample**
-  보정 우위가 확인될 때만 `WRF_CALIB_DISABLED=false` 전환.
+- ✅ **계층적 random-intercept 로지스틱 (`analysis/calibrate.py`)**: 계층 GLOBAL→SETUP→
+  BASE(setup×regime)→CELL(setup×regime×macro). **prior 기울기(wC/wL/wF)는 고정**(소표본에서
+  (C,L,F) 재학습 금지)하고, 셀별 **절편 오프셋 δ_eff만** 학습. 자격 0/1 이분법 폐기.
+- ✅ **Beta-Binomial 수축**: `wr_pooled = (wr_obs·n_indep + wr_parent·k)/(n_indep+k)`. 표본
+  적으면 부모로 회귀, 쌓이면 자기 셀로 수렴. 수축의 n은 **독립표본 n**(72h 탈상관, stride 24h).
+- ✅ **δ_eff = clamp(conf·δ, ±delta_cap)**, `conf = n_indep/(n_indep+k_conf)`,
+  `δ = logit(wr_pooled) − logit(prior_raw_mean)`. 라이브: `P̂ = min(calib_cap, σ(prior_logodds+δ_eff))`.
+- ✅ **과적합 가드 5중**: ①기울기 고정 ②부모 수축 ③신뢰도 가중 δ ④δ 하드캡 ⑤그림자 운영.
+- ✅ **베타착시 가드**: 부모가 거시방향별로 승률 갈리면(한쪽만 성립) conf 페널티(×0.5).
+- ✅ **A/B 그림자 평가 (`backtest.py --ab`)**: 엔진이 매시간 prior·보정 P̂을 **동시 기록**
+  (`p_prior`/`p_cal`), Brier·캘리브레이션으로 OOS 우위를 측정. 우위 입증 전까진 발사는 prior.
+- ✅ **주간 보정 잡 (`.github/workflows/calibrate.yml`)**: 일요일 04:10 UTC, JSONL→δ_eff 학습→
+  `calibration_table.json` 커밋. 라이브는 이 산출물의 δ_eff만 읽는다(학습은 여기서만).
 
-> **Gate-In**: Phase 1 실현승률 테이블 존재. **Gate-Out**: 보정 P̂가 OOS에서 prior 대비
-> 캘리브레이션 오차(Brier/ECE)·기대R 우위 → 보정 ON, `calibrate.yml` 워크플로우 복구.
+> **점검 산출(현 데이터)**: 결판 10건 기준, 단일표본 셀(wr=1.0/0.0)은 `min_decided=3` 미달로
+> 보정 비활성 + pooled가 ~0.4로 강하게 수축(과적합 차단 확인). 보정활성 셀의 δ_eff는 ~0.016로
+> prior에 밀착(conf≈0.09). A/B Brier Δ≈0 — 데이터 부족이라 보정이 prior를 그림자처럼 따라간다.
+>
+> **Gate-In**: Phase 1 실현승률 테이블 존재(✅). **Gate-Out**: 유니버스 6+가 다거시레짐을
+> 커버하고 결판 표본이 충분해진 뒤, `backtest.py --ab`의 **OOS(시간분할+72h embargo) Brier·
+> 기대R 우위**가 확인되면 → Variable로 `WRF_CALIB_DISABLED=false` 전환(보정 P̂으로 발사).
 
 ### Phase 3 — 발사·청산·사이징 고도화 (중기) · *"이기는 거래를 키운다"*
 

@@ -23,6 +23,8 @@ def build_row(engine_out: dict, legacy_meta: dict = None) -> dict:
             "entry": c["entry"], "tp": c["tp"], "sl": c["sl"],
             "r_dist": c["r_dist"], "rr": c["rr"], "t_max": c["t_max"],
             "p_hat": c["p_hat"], "p_source": c["p_source"],
+            "p_prior": c.get("p_prior"), "p_cal": c.get("p_cal"),
+            "p_cal_source": c.get("p_cal_source"),
             "C": c["C"], "L": c["L"], "F": c["F"],
             "confluence_n": c["confluence_n"], "veto": c["veto"],
             "size": c["size"], "fire": c["fire"],

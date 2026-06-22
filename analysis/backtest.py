@@ -21,6 +21,7 @@ CLI:
   python analysis/backtest.py --fired-only     # 발사 후보만(실거래 근사)
   python analysis/backtest.py --funnel         # 게이트 퍼널만
   python analysis/backtest.py --min-n 10       # 신뢰 표본 컷
+  python analysis/backtest.py --ab             # [Phase 2] prior vs 보정 A/B(Brier/캘리브레이션)
 """
 from __future__ import annotations
 
@@ -170,11 +171,79 @@ def gate_funnel(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ════════════════════════════════════════════════════════════════════
+# [Phase 2] A/B 그림자 평가 — prior vs 보정 (Gate-Out 계측)
+# ════════════════════════════════════════════════════════════════════
+
+def _brier(p, y) -> float:
+    """Brier 점수 = mean((p−y)²). 낮을수록 잘 보정됨(확률예측 정확도)."""
+    import numpy as np
+    p, y = np.asarray(p, float), np.asarray(y, float)
+    return float(((p - y) ** 2).mean()) if len(p) else float("nan")
+
+
+def _recompute_pcal(df: pd.DataFrame):
+    """라이브 보정 모듈 + 현 테이블로 각 후보의 (p_prior, p_cal) 재계산.
+
+    스냅샷에 그림자 필드(p_prior/p_cal)가 없는 과거 데이터도 즉시 A/B 가능하게 한다.
+    (※ 현 테이블로 같은 데이터를 채점 = in-sample. OOS는 데이터 누적 후 시간분할.)
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "wrf"))
+    import calibration as cal
+    table = cal.load_table()
+    pri, pcal = [], []
+    for _, r in df.iterrows():
+        setup, C, L, F = r["setup"], r.get("C"), r.get("L"), r.get("F")
+        if None in (C, L, F):
+            pri.append(None); pcal.append(None); continue
+        cand = {"setup": setup, "C": float(C), "L": float(L), "F": float(F)}
+        ctx = {"regime_1h": r.get("regime_1h"), "btc_macro": r.get("btc_macro")}
+        e = cal.evaluate(cand, ctx, table)
+        pri.append(e["p_prior"]); pcal.append(e["p_cal"])
+    return pri, pcal
+
+
+def ab_report(df: pd.DataFrame) -> None:
+    """결판 후보에서 prior vs 보정 P̂의 Brier·캘리브레이션·승률정렬을 비교."""
+    dec = df[df["tb_win"].notna()].copy()
+    print("\n■ A/B 그림자 평가 — prior vs 보정 P̂ (결판 후보 기준)")
+    if dec.empty:
+        print("  결판 후보 없음(경로 미성숙) — A/B 보류.")
+        return
+
+    # 그림자 필드 우선, 없으면 현 테이블로 재계산
+    have_shadow = dec["p_cal"].notna().any() if "p_cal" in dec else False
+    if have_shadow:
+        d = dec[dec["p_cal"].notna() & dec["p_prior"].notna()].copy()
+        src = "스냅샷 기록(p_prior/p_cal)"
+    else:
+        pri, pcal = _recompute_pcal(dec)
+        dec = dec.assign(p_prior=pri, p_cal=pcal)
+        d = dec[dec["p_cal"].notna() & dec["p_prior"].notna()].copy()
+        src = "현 테이블 재계산(in-sample 주의)"
+
+    if d.empty:
+        print("  C/L/F·확률 결측으로 비교 불가.")
+        return
+    y = d["tb_win"].astype(float).values
+    bp, bc = _brier(d["p_prior"].values, y), _brier(d["p_cal"].values, y)
+    moved = int((abs(d["p_cal"] - d["p_prior"]) > 1e-4).sum())
+    print(f"  소스: {src} | 결판 n={len(d)} | 보정이 prior와 달라진 후보 {moved}건")
+    print(f"  실현승률={y.mean()*100:.1f}%  "
+          f"mean p_prior={d['p_prior'].mean():.4f}  mean p_cal={d['p_cal'].mean():.4f}")
+    print(f"  Brier(prior)={bp:.4f}   Brier(보정)={bc:.4f}   "
+          f"Δ={bc - bp:+.4f} ({'보정 우위' if bc < bp else 'prior 우위' if bc > bp else '동률'})")
+    print("  ⚠ Gate-Out 판정은 OOS(시간분할+72h embargo)·충분표본에서만 유효. "
+          "현재는 표본 부족 — 인프라 검증용.")
+
+
+# ════════════════════════════════════════════════════════════════════
 # CLI
 # ════════════════════════════════════════════════════════════════════
 
 def run(rows: list, by_key: str = "setup", min_n: int = 1,
-        fired_only: bool = False, funnel_only: bool = False) -> None:
+        fired_only: bool = False, funnel_only: bool = False,
+        ab_only: bool = False) -> None:
     floor = 0.58
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
@@ -187,6 +256,10 @@ def run(rows: list, by_key: str = "setup", min_n: int = 1,
     print(_CAVEAT)
     if df.empty:
         print("\nWRF 후보(schema v3+경로) 표본 없음 — 측정할 발사 이력이 아직 없습니다.")
+        return
+
+    if ab_only:
+        ab_report(df)
         return
 
     # 게이트 퍼널 (빈도 병목)
@@ -231,11 +304,13 @@ def main():
     ap.add_argument("--min-n", type=int, default=1, help="신뢰 표본(resolved) 컷")
     ap.add_argument("--fired-only", action="store_true", help="발사 후보만 집계")
     ap.add_argument("--funnel", action="store_true", help="게이트 퍼널만 출력")
+    ap.add_argument("--ab", action="store_true",
+                    help="[Phase 2] prior vs 보정 A/B(Brier/캘리브레이션)")
     args = ap.parse_args()
 
     rows = load_snapshots(args.dir) if args.dir else load_snapshots()
     run(rows, by_key=args.by, min_n=args.min_n,
-        fired_only=args.fired_only, funnel_only=args.funnel)
+        fired_only=args.fired_only, funnel_only=args.funnel, ab_only=args.ab)
 
 
 if __name__ == "__main__":

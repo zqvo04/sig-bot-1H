@@ -1,0 +1,56 @@
+# [Phase 2] WRF 부분풀링 보정 워크플로우 — 매주 일요일 04:10 UTC
+#
+# 누적 JSONL(72h 경로) → triple-barrier 라벨 → 계층적 부분풀링으로 셀별 δ_eff 학습
+# → calibration_table.json 커밋. 라이브는 이 산출물의 δ_eff만 읽는다(학습은 여기서만).
+#
+# 그림자 운영: 발사 스위치(WRF_CALIB_DISABLED)는 기본 true 유지 — 보정 P̂은 라이브
+# 스냅샷에 p_cal로 '기록만' 된다. backtest.py --ab 로 OOS Brier 우위가 입증되면
+# Variable 로 WRF_CALIB_DISABLED=false 전환(= Phase 2 Gate-Out). 이 잡은 학습만 한다.
+name: WRF Calibrate
+
+on:
+  schedule:
+    - cron: '10 4 * * 0'   # 매주 일요일 04:10 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      - name: Run WRF partial-pooling calibration
+        run: python analysis/calibrate.py
+      - name: Commit calibration table
+        if: always()
+        run: |
+          if [ -z "$(git status --porcelain data/calibration_table.json 2>/dev/null)" ]; then
+            echo "변경 없음 — 커밋 생략"; exit 0
+          fi
+          git config user.name  "wrf-bot"
+          git config user.email "actions@users.noreply.github.com"
+          BRANCH="${GITHUB_REF_NAME}"
+          git add data/calibration_table.json
+          git commit -m "data(calib): 부분풀링 보정 테이블 갱신 [skip ci]"
+          for i in 1 2 3 4 5; do
+            git fetch origin "$BRANCH" || true
+            git rebase "origin/$BRANCH" || git rebase --abort || true
+            if git push origin "HEAD:$BRANCH"; then echo "✅ push (시도 $i)"; exit 0; fi
+            echo "⚠️ push 실패 ${i}회 — 백오프"; sleep $((2 ** i))
+          done
+          echo "❌ push 최종 실패(비치명적)"; exit 0
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: calibrate-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 3

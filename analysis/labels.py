@@ -143,6 +143,8 @@ def candidate_dataset(rows: list, sl_priority: bool = True):
                 "C": c.get("C"), "L": c.get("L"), "F": c.get("F"),
                 "confluence_n": c.get("confluence_n"),
                 "p_hat": c.get("p_hat"), "p_source": c.get("p_source"),
+                "p_prior": c.get("p_prior"), "p_cal": c.get("p_cal"),
+                "p_cal_source": c.get("p_cal_source"),
                 "win_floor": c.get("win_floor"), "rr": c.get("rr"),
                 "fire": c.get("fire"), "veto_n": len(c.get("veto") or []),
                 "tb_win": (tb or {}).get("tb_win"),
