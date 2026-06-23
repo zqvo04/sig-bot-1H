@@ -813,6 +813,25 @@ WRF_TF_LATE_MATURITY_MULT = _wrf_f("WRF_TF_LATE_MATURITY_MULT", 0.85)
 # 다중 SMC 중첩 = 강한 진입 근거). 중첩수(0~3) × bonus. 0.0 이면 OFF(구동작).
 WRF_CONFLUENCE_L_BONUS = _wrf_f("WRF_CONFLUENCE_L_BONUS", 0.05)
 
+# ══ [grind-fix 2026-06] 느린 단일방향 추세 포착 보강 (토글 기본 OFF · 롱/숏 대칭) ══
+# 진단(BTC/ETH/HYPE 06-22~23 하락): ADX 지연으로 grind-down이 내내 RANGING으로
+# 고착 → 추세추종 TF가 라우팅에서 배제되고, 막판 BO 숏은 SL이 박스 반대편이라
+# RR≈1 로 고착 → 전 구간 숏 신호 전무. 두 토글 모두 기본 OFF(구동작 완전 보존),
+# 백테스트 대칭검증(상승 grind=롱 / 하락 grind=숏 동시 개선, 기존 발사 무악화) 후
+# env(WRF_REGIME_ER_TREND / WRF_BO_SL_NEAR)로 ON. 과적합 방지: 이 사건이 통과하게
+# 임계(플로어·RR)를 낮추지 않고, 측정(추세정의)·기하학(손절배치) 결함만 교정.
+#
+# (A) ER 추세 승격: classify_market_regime 가 효율비(ER=순이동/경로길이)로 ADX가
+#     놓친 방향성 추세를 TRENDING 승격(스퀴즈·레인지 판정 이후 = 노이즈 미승격).
+#     ER은 방향무관 → 상승·하락 grind를 동일하게 포착(대칭). 셀키 차원 불변.
+WRF_REGIME_ER_TREND     = os.getenv("WRF_REGIME_ER_TREND", "false").lower() not in ("0", "false", "no", "")
+WRF_REGIME_ER_TREND_MIN = _wrf_f("WRF_REGIME_ER_TREND_MIN", 0.50)  # 순이동/경로 ≥ → 방향성
+# (B) BO 손절 재배치: 박스 반대편(far, 손절=박스높이 → RR≈1 고착) → 돌파된 경계
+#     (near) ∓ ATR쿠션(돌파-리테스트 무효화). RR이 박스높이/쿠션으로 정상화(>>1.5).
+#     min_sl/max_sl 클램프가 과도한 타이트/와이드를 방지. TF/RV 구조SL 철학과 동일.
+WRF_BO_SL_NEAR          = os.getenv("WRF_BO_SL_NEAR", "false").lower() not in ("0", "false", "no", "")
+WRF_BO_SL_ATR_CUSHION   = _wrf_f("WRF_BO_SL_ATR_CUSHION", 1.0)  # 돌파경계 외곽 ATR 쿠션
+
 # ── btc_macro 태깅 임계 (BTC 7D/30D 추세·EMA구조) ───────────────────────
 WRF_MACRO_UP_PCT   = _wrf_f("WRF_MACRO_UP_PCT", 0.03)   # 7D 변화 ±3% 이상 → leg
 WRF_MACRO_CHOP_PCT = _wrf_f("WRF_MACRO_CHOP_PCT", 0.015) # |7D| < 1.5% → CHOP 후보

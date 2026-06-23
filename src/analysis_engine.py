@@ -472,6 +472,10 @@ def classify_market_regime(df_1h, adx, bb):
     elif adx_val>=config.REGIME_STRONG_ADX and bw_ratio>=1.2: regime,desc,icon="EXPLOSIVE",f"ADX강({adx_val:.0f})+BB확장({bw_ratio:.1f}x)","💥"
     elif is_ranging: regime,desc,icon="RANGING",f"MA20교차{ma20_cross}회+ER:{er:.2f}(ADX:{adx_val:.0f})","↔️"
     elif adx_val>=config.REGIME_TREND_ADX: regime,desc,icon="TRENDING",f"ADX추세({adx_val:.0f})","📈"
+    elif getattr(config,"WRF_REGIME_ER_TREND",False) and er>=getattr(config,"WRF_REGIME_ER_TREND_MIN",0.50):
+        # [grind-fix A] ADX 지연 보강 — 스퀴즈·레인지가 아닌데 효율비가 높으면
+        # (순이동≈경로) 방향성 추세로 승격(ADX 미달이어도). 방향무관 → 롱/숏 대칭.
+        regime,desc,icon="TRENDING",f"ER추세({er:.2f},ADX:{adx_val:.0f})","📈"
     else: regime,desc,icon="RANGING",f"ADX낮음({adx_val:.0f})+BB평행","↔️"
     thr=config.REGIME_THRESHOLDS.get(regime,64)
     logger.info(f"[국면] {icon} {regime} — {desc} (임계:{thr}pt)")

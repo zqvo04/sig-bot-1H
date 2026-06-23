@@ -48,13 +48,21 @@ def compute_levels(candidate: dict, feat: dict) -> dict:
     rr = 2.0
     if setup == "BO" and "box_hi" in candidate and "box_lo" in candidate:
         box_h = abs(candidate["box_hi"] - candidate["box_lo"])
-        # SL = 박스복귀(경계 반대), TP = 박스높이 측정이동
-        if long:
+        tp_dist = box_h   # TP = 박스높이 측정이동(공통)
+        # SL 배치: [grind-fix B] WRF_BO_SL_NEAR 로 토글.
+        #   OFF(구동작): 박스 반대편 복귀(far) → 손절거리=박스높이 → RR≈1 고착.
+        #   ON: 돌파된 경계(near) ∓ ATR쿠션 = 돌파-리테스트 무효화선 → RR 정상화.
+        #   둘 다 롱/숏 대칭. min_sl/max_sl 클램프가 과타이트/과와이드 방지.
+        if getattr(config, "WRF_BO_SL_NEAR", False):
+            cushion = atr * getattr(config, "WRF_BO_SL_ATR_CUSHION", 1.0)
+            if long:    # box_hi 상향돌파 → 무효화 = 깨진 경계 아래 쿠션
+                sl_dist = max(price - (candidate["box_hi"] - cushion), min_sl)
+            else:       # box_lo 하향돌파 → 무효화 = 깨진 경계 위 쿠션
+                sl_dist = max((candidate["box_lo"] + cushion) - price, min_sl)
+        elif long:
             sl_dist = max(price - candidate["box_lo"] * 0.999, min_sl)
-            tp_dist = box_h
         else:
             sl_dist = max(candidate["box_hi"] * 1.001 - price, min_sl)
-            tp_dist = box_h
         rr = tp_dist / sl_dist if sl_dist > 0 else 2.0
     elif setup == "MR" and "box_hi" in candidate and "box_lo" in candidate:
         # [G4] 박스 기하학: TP = 중심선(mid)/반대편 경계(opposite), SL = 경계 외곽 ∓ ATR

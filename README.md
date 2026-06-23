@@ -263,6 +263,9 @@ python analysis/backtest.py --ab              # prior vs 보정 P̂ Brier·캘�
 - **레이어 연결 토글**: `WRF_BO_IN_RANGING`(RANGING 박스돌파 허용), `WRF_RV_MACRO_EXEMPT`
   (RV 거시베토 면제), `WRF_TF_LATE_MATURITY_MULT`(성숙추세 TF 감쇠, 1.0=없음),
   `WRF_CONFLUENCE_L_BONUS`(컨플루언스→L 가점, 0=OFF).
+- **grind-fix 토글**(기본 OFF=구동작, 백테스트 대칭검증 후 ON): `WRF_REGIME_ER_TREND`
+  (효율비 추세 승격 — ADX 지연 보강), `WRF_REGIME_ER_TREND_MIN`(승격 ER 임계, 0.50),
+  `WRF_BO_SL_NEAR`(BO 손절을 박스 반대편→돌파경계 near), `WRF_BO_SL_ATR_CUSHION`(near 쿠션).
 
 ### 전략 정합 개선 (2026-06, win-rate-first 골격 유지)
 
@@ -298,6 +301,32 @@ python analysis/backtest.py --ab              # prior vs 보정 P̂ Brier·캘�
 - **완결성#1 컨플루언스 배선**: 측정·기록만 되고 발사엔 미반영이던 `confluence`(FVG/OB/
   피보/주간 중첩수)를 전 셋업 L에 소폭 가점(`min(중첩,3)×0.05`) → 다중 SMC 중첩 진입을
   prior에 반영. 셀·차원 불변(콜드스타트 영향 0).
+
+### 느린 추세 숏 부재 진단 + grind-fix (2026-06, 토글 OFF·과적합 경계)
+
+**관찰**: BTC/ETH/HYPE가 KST 23시경 반전 후 −4.6~8.7% 하락하는 내내 숏 신호가 한 건도
+나오지 않음(전체 데이터셋 누적: **롱 7발사 / 숏 0발사**). JSONL 실측 진단:
+
+- **레짐 오분류(루트원인)**: ADX는 지연 지표라 느린 grind-down이 내내 ADX<25에 머묾 →
+  1H `RANGING`+4H `SQUEEZE` 고착. 라우팅상 **추세추종 TF가 원천 배제**(TF는 4H가
+  TRENDING/EXPLOSIVE일 때만 보강). RSI 67→24·MACD +153→−217·BB%b 1.0→0.0 의 명백한
+  단조하락을 ADX가 못 잡음. 분류기는 효율비(ER)를 계산하나 RANGING 판정에만 쓰고 있었음.
+- **셋업별 사인**: MR=반전(역추세) 도구라 고점엔 반전캔들 부재·하락 중엔 오히려 롱 지향 |
+  RV=CHoCH 필수인데 점진적 롤오버라 choch 미발생 | BO=막판에야 후보 형성, 그나마
+  **SL이 박스 반대편(far)이라 손절=박스높이 → RR≈1**(BTC 0.99/ETH 0.91)로 발사컷.
+- **veto·플로어는 무죄**: 숏은 DOWNLEG 정합이라 거시베토 없음, BO p̂=0.65>플로어. 순수 RR.
+
+**교정(둘 다 토글 OFF=구동작 보존, 측정·기하학 결함만 교정, 임계 미인하)**:
+
+- **(A) ER 추세 승격**(`WRF_REGIME_ER_TREND`): `classify_market_regime`이 스퀴즈·레인지가
+  아닌데 효율비≥0.50이면 TRENDING 승격(ADX 미달이어도). ER은 방향무관 → **상승·하락
+  grind를 동일 포착(롱/숏 대칭)**, chop은 불변. 셀키 차원 불변. → TF 라우팅 복원.
+- **(B) BO 손절 재배치**(`WRF_BO_SL_NEAR`): 박스 반대편(far)→**돌파된 경계(near)∓ATR쿠션**
+  (돌파-리테스트 무효화선). RR이 박스높이/쿠션으로 정상화. 롱/숏 대칭. min/max_sl 클램프 유지.
+- **검증**: 토글 OFF시 백테스트 출력 무변(회귀). ON시 — 합성 grind-up/down 모두 TRENDING
+  승격(대칭)·chop 불변, 실데이터 ETH 숏 RR 0.909→3.11(박제값 재현 후 교정)·합성 롱숏 RR
+  동일. **Gate-Out**: `backtest.py`로 상승 grind(롱)·하락 grind(숏) 동시 개선 + 기존 발사
+  무악화가 다레짐 표본에서 확인되면 env로 ON.
 
 ---
 
