@@ -309,14 +309,15 @@ def _detect_rv(feat: dict, measures: dict):
     return out
 
 
-# ── [D-shadow] 검증된 스트레치/소진 트리거로 무장하는 반전 후보 (섀도 전용) ──
-# 백테스트(신호 백테스트, 통제군 대비)에서 'stretch/exhaustion'(bb%b·rsi_4h·VWAP거리)
-# 트리거가 단일 평균회귀 레짐 내에서 무조건숏/롱(베타)을 양방향 대칭으로 초과함을 확인
-# (D3 숏 73%/+0.81R·미러 롱 +0.19R, 유효표본 ≈8~13·단일레짐 → 결론보류·섀도검증 필요).
-# 본 디텍터는 기존 MR/RV precond(CHoCH·반전봉 필수)가 놓치는 false-negative 회수를
-# 실험한다: D 트리거로 반전 후보를 무장하되 d_shadow=True 로 표식 → 엔진이 fire=False
-# 강제(라이브 발사·손익 영향 0). shadow_fire(트리거∧¬veto∧rr_ok)만 별도 집계·기록해
-# 판정·축적한다(플로어는 의도적으로 우회 — 그 floor가 숏 false-negative의 원인인지 검증).
+# ── [D-shadow] BB 밴드터치로 무장하는 반전 후보 (섀도 전용 · 양방향 대칭) ──────
+# 설계: 트리거는 '고전적 BB 밴드터치'(상단≥hi=숏 / 하단≤lo=롱)로 단순·대칭하게 무장만
+# 하고, 방향적합성·소진·맥락 판정은 prior(C/L/F)+floor에 위임한다. 특히 floor의 min-axis
+# (C/L/F 직교동의)가 반(反)추세 칼받기(역레그 C<0)·무소진(F<0)을 차단 → 과발화·오발 방지.
+# [개선이력] 초기엔 트리거(bb%b·rsi_4h)만으로 shadow_fire하고 floor를 우회했으나, 라이브에서
+# DOWNLEG 딥매수 롱(C=-0.5)이 매시간 무더기 발화·오발 → floor 우회 제거(아래 engine) +
+# in-sample 임계(rsi_4h≥52) 폐기, 원칙적 밴드터치로 환원(과적합 경계).
+# d_shadow=True → 엔진이 라이브 fire=False 강제(손익 영향 0). 기존 MR/RV precond(CHoCH·
+# 반전봉)가 놓치는 반전 후보를 무장해, floor를 통과하는 것만 '(shadow)'로 기록·판정·축적.
 def _detect_d_shadow(feat: dict, measures: dict):
     if not getattr(config, "WRF_D_SHADOW", True):
         return []
@@ -326,20 +327,18 @@ def _detect_d_shadow(feat: dict, measures: dict):
     bb = raw.get("bb_pctb")
     if bb is None:
         return []
-    r4 = raw.get("rsi_4h"); dv = raw.get("dist_vwap_atr")
-    bb_hi = getattr(config, "WRF_D_BBPCTB_HI", 0.60)
-    bb_lo = getattr(config, "WRF_D_BBPCTB_LO", 0.40)
-    r4_hi = getattr(config, "WRF_D_RSI4H_HI", 52.0)
-    r4_lo = getattr(config, "WRF_D_RSI4H_LO", 44.0)
+    dv = raw.get("dist_vwap_atr"); r4 = raw.get("rsi_4h")  # 기록용(무장 조건엔 미사용)
+    bb_hi = getattr(config, "WRF_D_BBPCTB_HI", 0.80)
+    bb_lo = getattr(config, "WRF_D_BBPCTB_LO", 0.20)
     out = []
     for direction in ("long", "short"):
-        # 검증된 D3 조건: BB %b 스트레치 ∧ rsi_4h 확증(둘 다). VWAP-only 폴백은
-        # 백테스트상 승률을 희석(73%→58%)해 제외. rsi_4h 결측 시 미무장(보수).
-        if direction == "short":  # 위로 스트레치(과매수 위치) → 페이드 숏
-            armed = bb >= bb_hi and (r4 if r4 is not None else 0) >= r4_hi
+        # 고전적 밴드터치(과적합 경계): 상단(≥hi)=숏 / 하단(≤lo)=롱. 방향적합성은
+        # prior C축(역레그 페이드면 C<0 → floor의 min-axis가 차단)이 판정한다.
+        if direction == "short":   # 상단 밴드 터치 → 페이드 숏
+            armed = bb >= bb_hi
             stretch = max(0.0, (bb - bb_hi) / max(1e-6, 1.0 - bb_hi))
-        else:                     # 아래로 스트레치(과매도 위치) → 페이드 롱
-            armed = bb <= bb_lo and (r4 if r4 is not None else 99) <= r4_lo
+        else:                      # 하단 밴드 터치 → 페이드 롱
+            armed = bb <= bb_lo
             stretch = max(0.0, (bb_lo - bb) / max(1e-6, bb_lo))
         if not armed:
             continue

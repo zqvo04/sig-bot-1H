@@ -72,9 +72,12 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
                 and not fire and not vetoes and rr_ok and not is_dshadow
                 and (floor - band_w) <= p_hat < floor
             )
-            # [D-shadow] D 트리거 무장 후보의 '섀도 발사'(¬veto∧rr_ok). 플로어는 의도적
-            # 우회 — 그 floor가 숏 false-negative의 원인인지 판정·축적으로 검증한다.
-            shadow_fire = bool(is_dshadow and not vetoes and rr_ok)
+            # [D-shadow] D 트리거 무장 후보의 '섀도 발사'. 라이브 발사와 동일 게이트
+            # (p_hat≥floor ∧ ¬veto ∧ rr_ok)를 적용 — floor의 min-axis(C/L/F 직교동의)가
+            # 반(反)추세 칼받기(역레그 C<0)·무소진(F<0)을 차단(과발화·오발 방지). D는
+            # precond만 완화하고 품질게이트는 존중한다. (구버전은 floor를 우회해 라이브에서
+            # DOWNLEG 딥매수 롱이 무더기 오발 → 우회 제거.)
+            shadow_fire = bool(is_dshadow and p_hat >= floor and not vetoes and rr_ok)
             size = _size_from_p(p_hat, floor) if fire else 0.0
             rec = {
                 "setup": c["setup"], "dir": c["dir"], "precond": True,
