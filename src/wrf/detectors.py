@@ -309,11 +309,61 @@ def _detect_rv(feat: dict, measures: dict):
     return out
 
 
+# ── [D-shadow] 검증된 스트레치/소진 트리거로 무장하는 반전 후보 (섀도 전용) ──
+# 백테스트(신호 백테스트, 통제군 대비)에서 'stretch/exhaustion'(bb%b·rsi_4h·VWAP거리)
+# 트리거가 단일 평균회귀 레짐 내에서 무조건숏/롱(베타)을 양방향 대칭으로 초과함을 확인
+# (D3 숏 73%/+0.81R·미러 롱 +0.19R, 유효표본 ≈8~13·단일레짐 → 결론보류·섀도검증 필요).
+# 본 디텍터는 기존 MR/RV precond(CHoCH·반전봉 필수)가 놓치는 false-negative 회수를
+# 실험한다: D 트리거로 반전 후보를 무장하되 d_shadow=True 로 표식 → 엔진이 fire=False
+# 강제(라이브 발사·손익 영향 0). shadow_fire(트리거∧¬veto∧rr_ok)만 별도 집계·기록해
+# 판정·축적한다(플로어는 의도적으로 우회 — 그 floor가 숏 false-negative의 원인인지 검증).
+def _detect_d_shadow(feat: dict, measures: dict):
+    if not getattr(config, "WRF_D_SHADOW", True):
+        return []
+    raw, pcts, ctx = feat["raw"], feat["pct"], feat["ctx"]
+    if not ({"MR", "RV"} & set(ctx.get("allowed_setups", []))):  # 반전 적합 레짐 한정
+        return []
+    bb = raw.get("bb_pctb")
+    if bb is None:
+        return []
+    r4 = raw.get("rsi_4h"); dv = raw.get("dist_vwap_atr")
+    bb_hi = getattr(config, "WRF_D_BBPCTB_HI", 0.60)
+    bb_lo = getattr(config, "WRF_D_BBPCTB_LO", 0.40)
+    r4_hi = getattr(config, "WRF_D_RSI4H_HI", 52.0)
+    r4_lo = getattr(config, "WRF_D_RSI4H_LO", 44.0)
+    out = []
+    for direction in ("long", "short"):
+        # 검증된 D3 조건: BB %b 스트레치 ∧ rsi_4h 확증(둘 다). VWAP-only 폴백은
+        # 백테스트상 승률을 희석(73%→58%)해 제외. rsi_4h 결측 시 미무장(보수).
+        if direction == "short":  # 위로 스트레치(과매수 위치) → 페이드 숏
+            armed = bb >= bb_hi and (r4 if r4 is not None else 0) >= r4_hi
+            stretch = max(0.0, (bb - bb_hi) / max(1e-6, 1.0 - bb_hi))
+        else:                     # 아래로 스트레치(과매도 위치) → 페이드 롱
+            armed = bb <= bb_lo and (r4 if r4 is not None else 99) <= r4_lo
+            stretch = max(0.0, (bb_lo - bb) / max(1e-6, bb_lo))
+        if not armed:
+            continue
+        C = _ctx_exhaustion(ctx, direction)
+        L = _clip(0.5 + 0.5 * min(1.0, stretch))
+        L = _confluence_bonus(L, raw, direction)
+        F = _flow_exhaustion(raw, pcts, direction)
+        out.append({
+            "setup": "RV", "dir": direction, "precond": True, "d_shadow": True,
+            "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
+            "confluence_n": raw.get(f"confluence_{direction}", 0),
+            "reason": f"[D-shadow] 스트레치소진 bb%b={bb:.2f}"
+                      f"{f'/rsi4h={r4:.0f}' if r4 is not None else ''}"
+                      f"{f'/vwapATR={dv:+.1f}' if dv is not None else ''}",
+        })
+    return out
+
+
 def detect_all(feat: dict) -> list:
-    """4디텍터 실행 → 후보 리스트(발사 무관 전량). 디텍터별 try/except 격리."""
+    """5디텍터 실행 → 후보 리스트(발사 무관 전량). 디텍터별 try/except 격리.
+    _detect_d_shadow 는 섀도 전용(d_shadow=True) — 라이브 발사에 절대 포함 안 됨."""
     measures = feat.get("measures", {})
     cands = []
-    for fn in (_detect_tf, _detect_bo, _detect_mr, _detect_rv):
+    for fn in (_detect_tf, _detect_bo, _detect_mr, _detect_rv, _detect_d_shadow):
         try:
             cands.extend(fn(feat, measures))
         except Exception as e:  # pragma: no cover

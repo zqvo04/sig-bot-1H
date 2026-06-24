@@ -722,6 +722,17 @@ WRF_WIN_FLOOR      = _wrf_f("WRF_WIN_FLOOR", 0.58)    # 승률 플로어(발사 
 WRF_SHADOW_BAND       = os.getenv("WRF_SHADOW_BAND", "true").lower() not in ("0", "false", "no", "")
 WRF_SHADOW_BAND_WIDTH = _wrf_f("WRF_SHADOW_BAND_WIDTH", 0.03)  # 플로어 아래 포착 폭
 
+# ── [D-shadow] 스트레치/소진 반전 트리거 (섀도 전용 · 라이브 발사 무영향) ──────
+# 검증피처(bb%b·rsi_4h·VWAP거리)로 반전 후보를 무장해 기존 MR/RV precond(CHoCH·
+# 반전봉 필수)가 놓치는 숏/롱 false-negative를 회수·기록한다. 절대 발사하지 않으며
+# (engine이 fire=False 강제) shadow_fire만 1H Signal Log에 '(shadow)' 제목으로 기록·판정.
+# 기본 ON(섀도 데이터 축적). 임계는 in-sample 백테스트(D3) 기준 — 다레짐 축적 후 재검.
+WRF_D_SHADOW       = os.getenv("WRF_D_SHADOW", "true").lower() not in ("0", "false", "no", "")
+WRF_D_BBPCTB_HI    = _wrf_f("WRF_D_BBPCTB_HI", 0.60)   # 숏: BB %b ≥ (상단 스트레치)
+WRF_D_BBPCTB_LO    = _wrf_f("WRF_D_BBPCTB_LO", 0.40)   # 롱: BB %b ≤ (하단 스트레치)
+WRF_D_RSI4H_HI     = _wrf_f("WRF_D_RSI4H_HI", 52.0)    # 숏: rsi_4h ≥ (확증)
+WRF_D_RSI4H_LO     = _wrf_f("WRF_D_RSI4H_LO", 44.0)    # 롱: rsi_4h ≤ (확증)
+
 # ── 신뢰게이트(보정 자격) — 미충족 셀은 전부 보수적 prior로 동작 ────────
 WRF_CELL_N_MIN        = _wrf_i("WRF_CELL_N_MIN", 100)   # 셀 탈중첩 독립표본 최소치
 WRF_CELL_MACRO_MIN    = _wrf_i("WRF_CELL_MACRO_MIN", 2) # 셀이 커버해야 할 거시방향 종수

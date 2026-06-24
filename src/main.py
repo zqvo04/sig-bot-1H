@@ -113,7 +113,8 @@ def run_signal(symbol: str, exchange) -> None:
 
         logger.info(
             f"[WRF] {symbol} {out['ctx']['fp_key']} | 후보 {len(out['candidates'])} "
-            f"발사 {len(out['fired'])} | 전역베토 {out['global_veto']}")
+            f"발사 {len(out['fired'])} | D-shadow {len(out.get('fired_shadow', []))} "
+            f"| 전역베토 {out['global_veto']}")
 
         # schema v3 스냅샷 적재(전량 기록) + 경로 캡처
         row = wrf_schema.build_row(out)
@@ -128,6 +129,9 @@ def run_signal(symbol: str, exchange) -> None:
         for cand in out["fired"]:
             notion_wrf.log_signal(cand, out)
             _alert(cand, out)
+        # [D-shadow] 두 번째 트랙 — D 트리거가 추가로 잡은 후보를 '(shadow)'로 기록(발사·알림 없음).
+        for cand in out.get("fired_shadow", []):
+            notion_wrf.log_signal(cand, out, shadow=True)
     except Exception as e:
         logger.error(f"[main] {symbol} 엔진 실패(격리): {e}\n{traceback.format_exc()}")
 
