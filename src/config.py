@@ -714,6 +714,14 @@ WRF_PCT_EXTREME_HI = _wrf_f("WRF_PCT_EXTREME_HI", 0.85)  # 상단 극단 컷(백
 WRF_PCT_EXTREME_LO = _wrf_f("WRF_PCT_EXTREME_LO", 0.15)  # 하단 극단 컷(백분위)
 WRF_WIN_FLOOR      = _wrf_f("WRF_WIN_FLOOR", 0.58)    # 승률 플로어(발사 임계)
 
+# ── near-miss 섀도 밴드 (콜드스타트 데이터 수집 · 발사 무영향) ──────────────
+# 플로어 바로 아래 [floor-width, floor) 의 '문턱탈락' 후보(veto·RR은 통과, p_hat만
+# 미달)를 shadow_band=True 로 태깅·기록한다. 발사하지 않으므로 라이브 손익 영향 0.
+# 목적: 표본이 굶주린 클래스(특히 숏)의 near-miss를 모아 오프라인 보정·검증에 사용.
+# 기본 ON(태깅·기록만). 토글 OFF 또는 width=0 이면 비활성(구동작 동일).
+WRF_SHADOW_BAND       = os.getenv("WRF_SHADOW_BAND", "true").lower() not in ("0", "false", "no", "")
+WRF_SHADOW_BAND_WIDTH = _wrf_f("WRF_SHADOW_BAND_WIDTH", 0.03)  # 플로어 아래 포착 폭
+
 # ── 신뢰게이트(보정 자격) — 미충족 셀은 전부 보수적 prior로 동작 ────────
 WRF_CELL_N_MIN        = _wrf_i("WRF_CELL_N_MIN", 100)   # 셀 탈중첩 독립표본 최소치
 WRF_CELL_MACRO_MIN    = _wrf_i("WRF_CELL_MACRO_MIN", 2) # 셀이 커버해야 할 거시방향 종수

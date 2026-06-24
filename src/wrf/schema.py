@@ -28,6 +28,7 @@ def build_row(engine_out: dict, legacy_meta: dict = None) -> dict:
             "C": c["C"], "L": c["L"], "F": c["F"],
             "confluence_n": c["confluence_n"], "veto": c["veto"],
             "size": c["size"], "fire": c["fire"],
+            "shadow_band": c.get("shadow_band", False),
         }
         for c in engine_out.get("candidates", [])
     ]

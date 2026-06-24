@@ -62,6 +62,14 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
             min_rr = getattr(config, "WRF_MIN_RR", 1.5)
             rr_ok = (source == "calibrated") or (lv["rr"] >= min_rr)
             fire = bool(p_hat >= floor and not vetoes and rr_ok)
+            # [near-miss 섀도 밴드] 플로어만 못 넘은 '문턱탈락'(veto·RR은 통과) 후보 태깅.
+            # 발사엔 무영향 — 표본 굶주린 클래스(특히 숏)의 near-miss 기록용(오프라인 보정).
+            band_w = getattr(config, "WRF_SHADOW_BAND_WIDTH", 0.03)
+            shadow_band = bool(
+                getattr(config, "WRF_SHADOW_BAND", True)
+                and not fire and not vetoes and rr_ok
+                and (floor - band_w) <= p_hat < floor
+            )
             size = _size_from_p(p_hat, floor) if fire else 0.0
             rec = {
                 "setup": c["setup"], "dir": c["dir"], "precond": True,
@@ -74,6 +82,7 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
                 "C": c["C"], "L": c["L"], "F": c["F"],
                 "confluence_n": c.get("confluence_n", 0),
                 "veto": vetoes, "size": size, "fire": fire,
+                "shadow_band": shadow_band,
                 "reason": c.get("reason", ""),
             }
             enriched.append(rec)
@@ -84,6 +93,8 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
 
     # 발사 후보는 P̂ 내림차순 서열화(BO·RV는 base-rate 낮아 자동 후순위)
     fired.sort(key=lambda r: r["p_hat"], reverse=True)
+    # near-miss 섀도 밴드 후보(발사 무관·기록/집계용)
+    shadowed = [r for r in enriched if r.get("shadow_band")]
 
     return {
         "symbol": symbol,
@@ -94,6 +105,7 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
         "ctx": feat["ctx"],
         "candidates": enriched,
         "fired": fired,
+        "shadowed": shadowed,
         "global_veto": global_v,
         "feat": feat,
     }
