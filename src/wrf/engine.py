@@ -29,6 +29,20 @@ def _size_from_p(p_hat: float, floor: float) -> float:
     return round(min(smax, base + (smax - base) * (p_hat - floor) / span), 3)
 
 
+def _regime_routing_state(feat: dict):
+    """[Path1-①] ema_4h·bias_1d·btc_macro 3중 정렬 강확정 추세면 'down'/'up', 아니면 None.
+    토글 OFF면 항상 None(무변경). 횡보(미정렬)에선 절대 작동 안 함(반전엣지 보존)."""
+    if not getattr(config, "WRF_REGIME_ROUTING", False):
+        return None
+    raw, ctx = feat.get("raw", {}), feat.get("ctx", {})
+    h4 = raw.get("ema_4h"); bias = ctx.get("bias_1d"); macro = ctx.get("btc_macro")
+    if h4 == -1 and bias == "BEAR" and macro == "DOWNLEG":
+        return "down"
+    if h4 == 1 and bias == "BULL" and macro == "UPLEG":
+        return "up"
+    return None
+
+
 def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
                btc_macro: str = None) -> dict:
     """측정치 → L1 피처 → 4디텍터 → P̂ → VETO → 발사판정. 전체 후보 반환."""
@@ -46,8 +60,18 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
         logger.warning(f"[engine] 전역 베토 실패: {e}")
         global_v = []
 
-    # L2 후보
+    # L2 후보 — [Path1-①] 강확정 추세면 TF(추종) 활성화 후 역추세 반전(MR/RV) 억제.
+    # 토글 OFF면 route=None → 무변경(구동작). 횡보에선 작동 안 함(반전엣지 보존).
+    route = _regime_routing_state(feat)
+    if route:
+        al = feat["ctx"].get("allowed_setups", [])
+        if "TF" not in al:                                  # ADX 지연 보강 — 추종 라우팅 복원
+            feat["ctx"]["allowed_setups"] = list(al) + ["TF"]
     cands = detectors.detect_all(feat)
+    if route:
+        counter = "long" if route == "down" else "short"    # 추세 반대 = 칼받기 → 억제
+        cands = [c for c in cands if c.get("d_shadow")
+                 or not (c.get("setup") in ("MR", "RV") and c.get("dir") == counter)]
 
     enriched = []
     fired = []

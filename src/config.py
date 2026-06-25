@@ -806,6 +806,12 @@ WRF_RV_MIN_CONFIRMS   = _wrf_i("WRF_RV_MIN_CONFIRMS", 3)
 # 대칭이고 숏 FN은 시장(약세-과매도 편중)·엄격 precond 산물 — 본 토글은 '잘못된 쪽'
 # 트리거 제거로 FP만 줄인다(양방향 대칭). 기본 OFF(라이브 안전) — 섀도 비교 검증 후 ON.
 WRF_RV_SIDED_SIGNALS  = os.getenv("WRF_RV_SIDED_SIGNALS", "false").lower() not in ("0", "false", "no", "")
+# [Path1-①] 레짐 조건부 라우팅(라이브 FP/FN 동시 — 가장 큰 레버·검증 후 ON): ema_4h·
+# bias_1d·btc_macro 3중 정렬 강확정 추세에서만 작동(횡보 93%는 무변경 → idea B 함정 회피).
+#   추세확정 시: ① 역추세 반전(MR/RV 추세반대 방향) 억제(칼받기 FP↓)
+#               ② TF(추세추종) 활성화 — 1h-ADX 지연으로 RANGING이어도 추종 라우팅 복원(FN↓).
+# 기본 OFF(라이브 안전). shadow_report 승격게이트로 다레짐 검증 후 ON 권장(콜드스타트 보호).
+WRF_REGIME_ROUTING    = os.getenv("WRF_REGIME_ROUTING", "false").lower() not in ("0", "false", "no", "")
 
 # ── [A1] TF 되돌림(피보) 배선: 4H 피보 zone(optimal/deep) 눌림 경로 ──────
 # 얕은 눌림(1H EMA 정렬 유지 + loc 밴드) 외에, 깊은 눌림(피보 50~61.8%)도
