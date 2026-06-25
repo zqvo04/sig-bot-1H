@@ -9,14 +9,28 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+try:
+    import config
+except ImportError:  # pragma: no cover
+    try:
+        from src import config  # type: ignore
+    except ImportError:
+        config = None
+
 
 def pct_rank(series, value: float) -> float:
-    """value가 series 분포에서 차지하는 백분위(0~1). 비어있으면 0.5(중립)."""
+    """value가 series 분포에서 차지하는 백분위(0~1). 비어있으면 0.5(중립).
+
+    [Pillar4-①] midrank: 순수 (arr<=v) CDF는 추정 백분위를 +1/(2n) 상향 편향시켜
+    상단 극단(숏 트리거)은 쉽고 하단 극단(롱 트리거)은 어려운 L/S 비대칭을 만든다.
+    midrank=((arr<v)+(arr<=v))/2 로 대칭화(엄밀 정정). 토글 OFF면 구동작(CDF)."""
     if value is None:
         return 0.5
     arr = np.asarray([x for x in series if x is not None and np.isfinite(x)], dtype=float)
     if arr.size < 5:
         return 0.5
+    if getattr(config, "WRF_PCT_MIDRANK", True) if config is not None else True:
+        return float(((arr < value).mean() + (arr <= value).mean()) / 2.0)
     return float((arr <= value).mean())
 
 

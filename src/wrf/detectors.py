@@ -124,7 +124,12 @@ def _detect_tf(feat: dict, measures: dict):
         if not (pullback_shallow or pullback_deep):
             continue
         # 반전 확인: 모멘텀 재정렬 또는 구조 BOS
-        mom_realign = raw.get("macd_bull") if long else (not raw.get("macd_bull"))
+        if getattr(config, "WRF_TF_MACD_SYM", True):
+            # [Pillar4-②] 숏도 명시적 약세(히스토그램<0) 요구 — 구버전 not macd_bull(중립0 포함)
+            # 비대칭(숏에 관대) 제거. 롱=강세, 숏=약세 대칭.
+            mom_realign = raw.get("macd_bull") if long else (raw.get("macd") is not None and raw.get("macd") < 0)
+        else:
+            mom_realign = raw.get("macd_bull") if long else (not raw.get("macd_bull"))
         struct = raw.get("bos") == (1 if long else -1) or raw.get("bos_4h") == (1 if long else -1)
         if not (mom_realign or struct):
             continue
@@ -219,10 +224,15 @@ def _detect_mr(feat: dict, measures: dict):
     for direction in ("long", "short"):
         long = direction == "long"
         bbpos = raw.get("bb_pctb")
-        bb_extreme = (bbpos is not None and bbpos <= 0.1) if long \
-            else (bbpos is not None and bbpos >= 0.9)
+        bb_lo = getattr(config, "WRF_MR_BB_EXTREME_LO", 0.10)
+        bb_hi = getattr(config, "WRF_MR_BB_EXTREME_HI", 0.90)
+        bb_extreme = (bbpos is not None and bbpos <= bb_lo) if long \
+            else (bbpos is not None and bbpos >= bb_hi)
         rsi_p = pcts.get("rsi", 0.5)
-        rsi_extreme = (rsi_p <= 0.15) if long else (rsi_p >= 0.85)
+        # [Pillar4-⑤] MR RSI 극단을 死파라미터였던 WRF_PCT_EXTREME_LO/HI로 구동(배선)
+        rsi_lo = getattr(config, "WRF_PCT_EXTREME_LO", 0.15)
+        rsi_hi = getattr(config, "WRF_PCT_EXTREME_HI", 0.85)
+        rsi_extreme = (rsi_p <= rsi_lo) if long else (rsi_p >= rsi_hi)
         micro = (c1.get("bullish_pin") or c1.get("bullish_engulf")) if long \
             else (c1.get("bearish_pin") or c1.get("bearish_engulf"))
         precond = bool(bb_extreme and rsi_extreme and micro)
@@ -263,11 +273,15 @@ def _detect_rv(feat: dict, measures: dict):
         sided = getattr(config, "WRF_RV_SIDED_SIGNALS", False)
         # ── 소진(exhaustion) 신호: 추세가 지쳤는가 ──────────────────────
         div = rsi_m.get("bullish_divergence") if long else rsi_m.get("bearish_divergence")
-        rsi_extreme = (pcts.get("rsi", 0.5) <= 0.12) if long else (pcts.get("rsi", 0.5) >= 0.88)
+        rv_rsi_lo = getattr(config, "WRF_RV_RSI_EXTREME_LO", 0.12)
+        rv_rsi_hi = getattr(config, "WRF_RV_RSI_EXTREME_HI", 0.88)
+        rsi_extreme = (pcts.get("rsi", 0.5) <= rv_rsi_lo) if long else (pcts.get("rsi", 0.5) >= rv_rsi_hi)
         liq_flush = ((raw.get("liq_signal") == ("short_liq_detected" if long else "long_liq_detected"))
                      if sided else bool(raw.get("liq_spike")))
-        funding_extreme = (pcts.get("funding", 0.5) <= 0.1) if long \
-            else (pcts.get("funding", 0.5) >= 0.9)
+        rv_f_lo = getattr(config, "WRF_RV_FUND_EXTREME_LO", 0.10)
+        rv_f_hi = getattr(config, "WRF_RV_FUND_EXTREME_HI", 0.90)
+        funding_extreme = (pcts.get("funding", 0.5) <= rv_f_lo) if long \
+            else (pcts.get("funding", 0.5) >= rv_f_hi)
         oi_flush = raw.get("oi_quadrant") in ("reversal_long", "weak_bounce") if long else \
             raw.get("oi_quadrant") in ("reversal_short", "weak_bounce")
         exhaustion = [div, rsi_extreme, liq_flush, funding_extreme, oi_flush]
@@ -284,19 +298,26 @@ def _detect_rv(feat: dict, measures: dict):
         n_exh = sum(bool(x) for x in exhaustion)
         n_trg = sum(bool(x) for x in triggers)
         confirms = n_exh + n_trg
-        # [A4/G6] 전략 ④ 시퀀스 강제: 구조붕괴(CHoCH) → 리테스트(스윕/키레벨거부)
-        #   → 반전캔들. 첫 반전봉 나이프캐칭 방지. 토글로 느슨모드 복귀 가능.
+        # [A4/G6] 전략 ④ 시퀀스: 구조붕괴(CHoCH) → 리테스트(스윕/키레벨거부) → 반전캔들.
         retest = bool(swept or key_reject)
         need_choch = getattr(config, "WRF_RV_REQUIRE_CHOCH", True)
         need_retest = getattr(config, "WRF_RV_REQUIRE_RETEST", True)
         min_conf = getattr(config, "WRF_RV_MIN_CONFIRMS", 3)
-        precond = bool(
-            n_exh >= 1
-            and bool(rev_candle)                       # 반전 확인 캔들 필수
-            and ((choch) if need_choch else (n_trg >= 1))
-            and ((retest) if need_retest else True)
-            and confirms >= min_conf
-        )
+        soft = getattr(config, "WRF_RV_SOFT_PRECOND", True)
+        if soft:
+            # [Pillar2-①] hard AND → soft score: 5중 동시 AND는 grind에서 ∏pᵢ로 소멸(FN 핵심).
+            # 안전 최소치(소진≥1 ∧ 반전캔들 ∧ 확인≥완화치)만 게이트로 남기고 CHoCH·리테스트는
+            # 아래 L 감쇠로 흡수 → 부분정렬 반전도 후보화하되, 약하면 P̂<floor로 자동 탈락(FP는 floor).
+            precond = bool(n_exh >= 1 and bool(rev_candle)
+                           and confirms >= getattr(config, "WRF_RV_SOFT_MIN_CONFIRMS", 2))
+        else:
+            precond = bool(
+                n_exh >= 1
+                and bool(rev_candle)                       # 반전 확인 캔들 필수
+                and ((choch) if need_choch else (n_trg >= 1))
+                and ((retest) if need_retest else True)
+                and confirms >= min_conf
+            )
         if not precond:
             continue
         # [A5] 반전캔들 거래량 확증
@@ -304,13 +325,21 @@ def _detect_rv(feat: dict, measures: dict):
             continue
         C = _ctx_exhaustion(ctx, direction)
         L = _clip(0.4 + 0.1 * confirms)
+        if soft:
+            # 강확증 시퀀스 부재 → L 감쇠(소진은 됐으나 구조확정 약함). floor가 최종 품질필터.
+            if not choch:
+                L = _clip(L * getattr(config, "WRF_RV_SOFT_NO_CHOCH_MULT", 0.82))
+            if not retest:
+                L = _clip(L * getattr(config, "WRF_RV_SOFT_NO_RETEST_MULT", 0.90))
         L = _confluence_bonus(L, raw, direction)
         F = _flow_exhaustion(raw, pcts, direction)
+        seq = ("CHoCH+리테스트" if (choch and retest) else "CHoCH" if choch
+               else "리테스트" if retest else "소진우위")
         out.append({"setup": "RV", "dir": direction, "precond": True,
                     "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
                     "confluence_n": raw.get(f"confluence_{direction}", 0),
                     "confirms": confirms,
-                    "reason": f"추세소진(소진{n_exh}+트리거{n_trg})"})
+                    "reason": f"추세소진(소진{n_exh}+트리거{n_trg}/{seq})"})
     return out
 
 
@@ -331,16 +360,15 @@ def _bb_pctb_prev(df, period: int, std_dev: float):
         return None
 
 
-# ── [D-shadow] BB 밴드터치로 무장하는 반전 후보 (섀도 전용 · 양방향 대칭) ──────
-# 설계: 트리거는 '고전적 BB 밴드터치'(상단≥hi=숏 / 하단≤lo=롱)로 단순·대칭하게 무장만
-# 하고, 방향적합성·소진·맥락 판정은 prior(C/L/F)+floor에 위임한다. 특히 floor의 min-axis
-# (C/L/F 직교동의)가 반(反)추세 칼받기(역레그 C<0)·무소진(F<0)을 차단 → 과발화·오발 방지.
-# [개선이력] 초기엔 트리거(bb%b·rsi_4h)만으로 shadow_fire하고 floor를 우회했으나, 라이브에서
-# DOWNLEG 딥매수 롱(C=-0.5)이 매시간 무더기 발화·오발 → floor 우회 제거(아래 engine) +
-# in-sample 임계(rsi_4h≥52) 폐기, 원칙적 밴드터치로 환원(과적합 경계).
-# d_shadow=True → 엔진이 라이브 fire=False 강제(손익 영향 0). 기존 MR/RV precond(CHoCH·
-# 반전봉)가 놓치는 반전 후보를 무장해, floor를 통과하는 것만 '(shadow)'로 기록·판정·축적.
-def _detect_d_shadow(feat: dict, measures: dict):
+# ── [밴드반전] BB 밴드복귀로 무장하는 반전 후보 (원트랙 · 라이브 발사 · 양방향 대칭) ──
+# 설계: 트리거는 'BB 밴드복귀'(상단 외곽→복귀=숏 / 하단 외곽→복귀=롱)로 단순·대칭하게 무장만
+# 하고, 방향적합성·소진·맥락 판정은 prior(C/L/F)+floor에 위임한다. 특히 floor의 min-axis(연속
+# 페널티)가 반(反)추세 칼받기(역레그 C<0)·무소진(F<0)을 강하게 차단 → 과발화·오발 방지.
+# 기존 MR/RV precond(CHoCH·반전봉)가 놓치는 소진반전 후보를 setup="RV"로 무장해 다른 디텍터와
+# 동일하게 라이브 발사한다(원트랙). 엔진이 (setup,dir) 중복은 더 높은 P̂만 남긴다.
+# [이력] 구 'D-shadow 투트랙'(섀도 전용·발사 무영향)을 원트랙으로 일원화 — floor·라우팅
+# (역추세 억제)·min-axis 연속게이트가 충분한 품질 통제를 제공하므로 라이브 발사로 승격.
+def _detect_band_reversal(feat: dict, measures: dict):
     if not getattr(config, "WRF_D_SHADOW", True):
         return []
     raw, pcts, ctx = feat["raw"], feat["pct"], feat["ctx"]
@@ -379,10 +407,10 @@ def _detect_d_shadow(feat: dict, measures: dict):
         F = _flow_exhaustion(raw, pcts, direction)
         mode = (f"밴드복귀 %b={bb_prev:.2f}→{bb:.2f}" if use_re else f"밴드터치 %b={bb:.2f}")
         out.append({
-            "setup": "RV", "dir": direction, "precond": True, "d_shadow": True,
+            "setup": "RV", "dir": direction, "precond": True,
             "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
             "confluence_n": raw.get(f"confluence_{direction}", 0),
-            "reason": f"[D-shadow] {mode}"
+            "reason": f"[밴드반전] {mode}"
                       f"{f'/rsi4h={r4:.0f}' if r4 is not None else ''}"
                       f"{f'/vwapATR={dv:+.1f}' if dv is not None else ''}",
         })
@@ -391,10 +419,10 @@ def _detect_d_shadow(feat: dict, measures: dict):
 
 def detect_all(feat: dict) -> list:
     """5디텍터 실행 → 후보 리스트(발사 무관 전량). 디텍터별 try/except 격리.
-    _detect_d_shadow 는 섀도 전용(d_shadow=True) — 라이브 발사에 절대 포함 안 됨."""
+    _detect_band_reversal 은 BB 밴드복귀 반전(setup=RV) — 원트랙으로 라이브 발사된다."""
     measures = feat.get("measures", {})
     cands = []
-    for fn in (_detect_tf, _detect_bo, _detect_mr, _detect_rv, _detect_d_shadow):
+    for fn in (_detect_tf, _detect_bo, _detect_mr, _detect_rv, _detect_band_reversal):
         try:
             cands.extend(fn(feat, measures))
         except Exception as e:  # pragma: no cover

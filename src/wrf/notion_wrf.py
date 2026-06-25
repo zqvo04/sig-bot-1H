@@ -210,10 +210,9 @@ def ensure_snapshots_db():
 
 
 # ── 신호 기록 (발사 후보 1건 = 1행) ────────────────────────────────────
-def log_signal(cand: dict, engine_out: dict, shadow: bool = False) -> bool:
-    """발사 신호 1건을 1H Signal Log에 기록. shadow=True 면 D-shadow 트랙으로
-    제목에 '(shadow)' 접두 + Signal ID '_shadow' 접미(실제 발사와 별도 멱등). 두 트랙
-    모두 Status=OPEN 으로 적재되어 evaluate_open_signals 가 동일 캔들로 판정·축적한다."""
+def log_signal(cand: dict, engine_out: dict) -> bool:
+    """발사 신호 1건을 1H Signal Log에 기록(원트랙). Status=OPEN 으로 적재되어
+    evaluate_open_signals 가 동일 캔들로 판정·축적한다. (밴드반전 포함 — 별도 표식 없음.)"""
     if not enabled():
         return False
     try:
@@ -222,14 +221,13 @@ def log_signal(cand: dict, engine_out: dict, shadow: bool = False) -> bool:
             return False
         ctx = engine_out["ctx"]
         sym = engine_out["symbol"]
-        sid = f"{sym}_{engine_out['ts']}_{cand['setup']}_{cand['dir']}" + ("_shadow" if shadow else "")
+        sid = f"{sym}_{engine_out['ts']}_{cand['setup']}_{cand['dir']}"
         # 멱등: 동일 Signal ID 존재 시 skip
         q = _request("POST", f"/databases/{db}/query", {
             "filter": {"property": "Signal ID", "rich_text": {"equals": sid}}, "page_size": 1})
         if q and q.get("results"):
             return False
-        name = (("(shadow) " if shadow else "")
-                + f"{sym} {cand['setup']}/{cand['dir'].upper()} P{cand['p_hat']:.2f}")
+        name = f"{sym} {cand['setup']}/{cand['dir'].upper()} P{cand['p_hat']:.2f}"
         props = {
             "Name": _p_title(name), "Status": _p_sel("OPEN"),
             "Setup": _p_sel(cand["setup"]), "Direction": _p_sel(cand["dir"].upper()),

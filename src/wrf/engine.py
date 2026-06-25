@@ -30,12 +30,24 @@ def _size_from_p(p_hat: float, floor: float) -> float:
 
 
 def _regime_routing_state(feat: dict):
-    """[Path1-①] ema_4h·bias_1d·btc_macro 3중 정렬 강확정 추세면 'down'/'up', 아니면 None.
-    토글 OFF면 항상 None(무변경). 횡보(미정렬)에선 절대 작동 안 함(반전엣지 보존)."""
+    """강확정 추세면 'down'/'up', 아니면 None. 토글 OFF면 항상 None(무변경).
+    횡보(미정렬)에선 절대 작동 안 함(반전엣지 보존).
+
+    [Pillar1-③] BTC 종속성 분리: 구버전은 btc_macro==DOWNLEG/UPLEG(=BTC 7D±3% 필요)를
+    강제해, BTC 횡보 중 홀로 흘러내리는 알트는 영구 미라우팅(FN)이었다. self-struct 모드는
+    심볼 자신의 일봉 EMA구조(ema_1d_struct)로도 확정 — btc_macro는 OR-가산(여전히 기여)."""
     if not getattr(config, "WRF_REGIME_ROUTING", False):
         return None
     raw, ctx = feat.get("raw", {}), feat.get("ctx", {})
     h4 = raw.get("ema_4h"); bias = ctx.get("bias_1d"); macro = ctx.get("btc_macro")
+    if getattr(config, "WRF_ROUTING_SELF_STRUCT", True):
+        ds = raw.get("ema_1d_struct")   # 심볼 자신의 일봉 EMA20/50 구조(±1)
+        if h4 == -1 and bias == "BEAR" and (ds == -1 or macro == "DOWNLEG"):
+            return "down"
+        if h4 == 1 and bias == "BULL" and (ds == 1 or macro == "UPLEG"):
+            return "up"
+        return None
+    # 구동작: btc_macro 3중 정렬 필수(BTC 종속)
     if h4 == -1 and bias == "BEAR" and macro == "DOWNLEG":
         return "down"
     if h4 == 1 and bias == "BULL" and macro == "UPLEG":
@@ -60,7 +72,7 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
         logger.warning(f"[engine] 전역 베토 실패: {e}")
         global_v = []
 
-    # L2 후보 — [Path1-①] 강확정 추세면 TF(추종) 활성화 후 역추세 반전(MR/RV) 억제.
+    # L2 후보 — [Pillar1] 강확정 추세면 TF(추종) 활성화 후 역추세 반전(MR/RV) 억제.
     # 토글 OFF면 route=None → 무변경(구동작). 횡보에선 작동 안 함(반전엣지 보존).
     route = _regime_routing_state(feat)
     if route:
@@ -70,8 +82,8 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
     cands = detectors.detect_all(feat)
     if route:
         counter = "long" if route == "down" else "short"    # 추세 반대 = 칼받기 → 억제
-        cands = [c for c in cands if c.get("d_shadow")
-                 or not (c.get("setup") in ("MR", "RV") and c.get("dir") == counter)]
+        cands = [c for c in cands
+                 if not (c.get("setup") in ("MR", "RV") and c.get("dir") == counter)]
 
     enriched = []
     fired = []
@@ -81,27 +93,35 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
             # [Phase 2] prior·보정 동시 평가(그림자 A/B). p_hat는 스위치 반영값.
             pe = calibration.evaluate(c, feat["ctx"], table)
             p_hat, source, floor = pe["p_hat"], pe["source"], pe["floor"]
+            # [Pillar2-③] BO near-SL 타이트니스 보정 — SL을 박스높이→~ATR로 당기면 실제 승률↓
+            # 인데 prior P̂은 SL을 모른다 → r_dist/박스높이가 작을수록 p_hat 소폭 차감(기하-확률 결합).
+            if (c["setup"] == "BO" and getattr(config, "WRF_BO_SL_NEAR", False)
+                    and "box_hi" in c and "box_lo" in c):
+                box_h = abs(float(c["box_hi"]) - float(c["box_lo"]))
+                if box_h > 0:
+                    tight = lv["r_dist"] / box_h
+                    ref = getattr(config, "WRF_BO_SL_TIGHT_REF", 0.60)
+                    p_hat = max(0.0, p_hat - getattr(config, "WRF_BO_SL_TIGHT_PEN", 0.15)
+                                * max(0.0, ref - tight))
             vetoes = veto.evaluate(c, feat, collected, global_v)
-            # RR 품질필터: prior 발사는 최소 RR 요구(보정셀은 학습 승률 존중 → 우회).
-            min_rr = getattr(config, "WRF_MIN_RR", 1.5)
-            rr_ok = (source == "calibrated") or (lv["rr"] >= min_rr)
-            is_dshadow = bool(c.get("d_shadow"))
-            # d_shadow(=D 트리거 무장) 후보는 라이브 발사에서 영구 제외(섀도 전용).
-            fire = bool(p_hat >= floor and not vetoes and rr_ok and not is_dshadow)
+            # [Pillar3-③] EV-결합 게이트: 고정 RR≥1.5 대신 기대값 EV=P̂·RR−(1−P̂)≥EV_MIN
+            # (고확률일수록 RR 요구 완화 = EV 정합). 보정셀은 학습 승률 존중 → 우회.
+            if getattr(config, "WRF_EV_GATE", True):
+                ev = p_hat * lv["rr"] - (1.0 - p_hat)
+                rr_ok = (source == "calibrated") or (
+                    ev >= getattr(config, "WRF_EV_MIN", 0.15)
+                    and lv["rr"] >= getattr(config, "WRF_EV_RR_FLOOR", 1.0))
+            else:
+                rr_ok = (source == "calibrated") or (lv["rr"] >= getattr(config, "WRF_MIN_RR", 1.5))
+            fire = bool(p_hat >= floor and not vetoes and rr_ok)
             # [near-miss 섀도 밴드] 플로어만 못 넘은 '문턱탈락'(veto·RR은 통과) 후보 태깅.
             # 발사엔 무영향 — 표본 굶주린 클래스(특히 숏)의 near-miss 기록용(오프라인 보정).
             band_w = getattr(config, "WRF_SHADOW_BAND_WIDTH", 0.03)
             shadow_band = bool(
                 getattr(config, "WRF_SHADOW_BAND", True)
-                and not fire and not vetoes and rr_ok and not is_dshadow
+                and not fire and not vetoes and rr_ok
                 and (floor - band_w) <= p_hat < floor
             )
-            # [D-shadow] D 트리거 무장 후보의 '섀도 발사'. 라이브 발사와 동일 게이트
-            # (p_hat≥floor ∧ ¬veto ∧ rr_ok)를 적용 — floor의 min-axis(C/L/F 직교동의)가
-            # 반(反)추세 칼받기(역레그 C<0)·무소진(F<0)을 차단(과발화·오발 방지). D는
-            # precond만 완화하고 품질게이트는 존중한다. (구버전은 floor를 우회해 라이브에서
-            # DOWNLEG 딥매수 롱이 무더기 오발 → 우회 제거.)
-            shadow_fire = bool(is_dshadow and p_hat >= floor and not vetoes and rr_ok)
             size = _size_from_p(p_hat, floor) if fire else 0.0
             rec = {
                 "setup": c["setup"], "dir": c["dir"], "precond": True,
@@ -115,7 +135,6 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
                 "confluence_n": c.get("confluence_n", 0),
                 "veto": vetoes, "size": size, "fire": fire,
                 "shadow_band": shadow_band,
-                "d_shadow": is_dshadow, "shadow_fire": shadow_fire,
                 "reason": c.get("reason", ""),
             }
             enriched.append(rec)
@@ -124,15 +143,23 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
         except Exception as e:  # pragma: no cover
             logger.warning(f"[engine] 후보 처리 실패(격리) {c.get('setup')}/{c.get('dir')}: {e}")
 
+    # [원트랙] 발사 후보 (setup,dir) 중복 제거 — 디텍터-RV와 밴드복귀-RV가 같은 방향을 동시
+    # 발화할 수 있어, 더 높은 P̂만 남기고 패자는 비발사로 강등(이중 발사/이중 기록 방지·JSONL 정합).
+    _best = {}
+    for r in fired:
+        k = (r["setup"], r["dir"])
+        if k not in _best or r["p_hat"] > _best[k]["p_hat"]:
+            _best[k] = r
+    _winners = {id(r) for r in _best.values()}
+    for r in fired:
+        if id(r) not in _winners:
+            r["fire"] = False
+            r["size"] = 0.0
+    fired = list(_best.values())
     # 발사 후보는 P̂ 내림차순 서열화(BO·RV는 base-rate 낮아 자동 후순위)
     fired.sort(key=lambda r: r["p_hat"], reverse=True)
     # near-miss 섀도 밴드 후보(발사 무관·기록/집계용)
     shadowed = [r for r in enriched if r.get("shadow_band")]
-    # [D-shadow] D 트리거가 추가로 잡은 반전 후보(실제 발사와 방향 중복은 제외) — 섀도 기록·판정용.
-    _fired_dirs = {r["dir"] for r in fired}
-    fired_shadow = [r for r in enriched
-                    if r.get("shadow_fire") and r["dir"] not in _fired_dirs]
-    fired_shadow.sort(key=lambda r: r["p_hat"], reverse=True)
 
     return {
         "symbol": symbol,
@@ -144,7 +171,6 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
         "candidates": enriched,
         "fired": fired,
         "shadowed": shadowed,
-        "fired_shadow": fired_shadow,
         "global_veto": global_v,
         "feat": feat,
     }
