@@ -731,6 +731,9 @@ WRF_SHADOW_BAND_WIDTH = _wrf_f("WRF_SHADOW_BAND_WIDTH", 0.03)  # 플로어 아�
 WRF_D_SHADOW       = os.getenv("WRF_D_SHADOW", "true").lower() not in ("0", "false", "no", "")
 WRF_D_BBPCTB_HI    = _wrf_f("WRF_D_BBPCTB_HI", 0.80)   # 숏: BB %b ≥ (상단 밴드터치)
 WRF_D_BBPCTB_LO    = _wrf_f("WRF_D_BBPCTB_LO", 0.20)   # 롱: BB %b ≤ (하단 밴드터치)
+# 심볼+방향 쿨다운(중복 억제): 직전 N시간 내 같은 심볼·방향 섀도신호가 로그됐으면 skip.
+# 클러스터(연속봉 무더기 발화)를 1건으로 수렴. 0이면 쿨다운 OFF. 상태=JSONL shadow_logged.
+WRF_D_SHADOW_COOLDOWN_H = _wrf_i("WRF_D_SHADOW_COOLDOWN_H", 12)
 
 # ── 신뢰게이트(보정 자격) — 미충족 셀은 전부 보수적 prior로 동작 ────────
 WRF_CELL_N_MIN        = _wrf_i("WRF_CELL_N_MIN", 100)   # 셀 탈중첩 독립표본 최소치

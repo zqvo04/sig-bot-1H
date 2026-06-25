@@ -64,6 +64,43 @@ def record_snapshot(row: dict) -> bool:
     return True
 
 
+def recent_shadow_dirs(symbol: str, ts, cooldown_h: float) -> set:
+    """직전 cooldown_h 시간 내 '로그된'(shadow_logged=True) D-shadow 신호의 방향 집합.
+
+    심볼+방향 쿨다운(중복 억제)의 상태원(state)이다 — JSONL이 이 봇의 유일한 영속
+    상태이므로 별도 파일 없이 여기서 읽는다. JSONL 미존재/비활성이면 빈 집합(쿨다운
+    무효=degrade gracefully). 월경계는 현재월+직전월 파일을 함께 본다."""
+    dirs: set = set()
+    try:
+        if cooldown_h is None or float(cooldown_h) <= 0:
+            return dirs
+        t = pd.Timestamp(ts)
+        cutoff = t - pd.Timedelta(hours=float(cooldown_h))
+        paths = {research_logger._month_file(symbol, t),
+                 research_logger._month_file(symbol, cutoff)}  # 월경계 대비
+        for path in paths:
+            if not os.path.exists(path):
+                continue
+            with open(path, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        r = json.loads(line)
+                        rts = pd.Timestamp(r.get("ts"))
+                    except Exception:
+                        continue
+                    if rts < cutoff or rts >= t:
+                        continue
+                    for c in r.get("candidates", []):
+                        if c.get("shadow_logged"):
+                            dirs.add(c.get("dir"))
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[wrf.logger] recent_shadow_dirs 실패(격리): {e}")
+    return dirs
+
+
 def capture_paths(symbol: str, df_1h: "pd.DataFrame") -> int:
     """성숙 행의 72h 경로 증분 캡처(스키마 무관 머신 재사용)."""
     if not enabled():

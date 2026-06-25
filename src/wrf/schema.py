@@ -31,6 +31,7 @@ def build_row(engine_out: dict, legacy_meta: dict = None) -> dict:
             "shadow_band": c.get("shadow_band", False),
             "d_shadow": c.get("d_shadow", False),
             "shadow_fire": c.get("shadow_fire", False),
+            "shadow_logged": c.get("shadow_logged", False),
         }
         for c in engine_out.get("candidates", [])
     ]
