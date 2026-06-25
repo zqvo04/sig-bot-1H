@@ -254,8 +254,9 @@ python analysis/backtest.py --ab              # prior vs 보정 P̂ Brier·캘�
   `NOTION_TOKEN`, `NOTION_SIGNALS_DB_ID` / `NOTION_SNAPSHOTS_DB_ID`(또는
   `NOTION_PARENT_PAGE_ID`로 자동 생성)
 - **Variable**: `ALERT_ENABLED`, `WRF_*` 파라미터 오버라이드
-- **실질 튜닝(3~5개)**: `WRF_PCT_WINDOW`(백분위 윈도), `WRF_PCT_EXTREME_HI/LO`(극단컷),
-  `WRF_WIN_FLOOR`(승률 플로어), `WRF_CELL_N_MIN`(신뢰게이트). 단일변수·워크포워드.
+- **실질 튜닝(3~5개)**: `WRF_PCT_WINDOW`(백분위 윈도), `WRF_PCT_EXTREME_HI/LO`(극단컷 —
+  이제 MR RSI 극단을 실제 구동, 구버전은 死파라미터였음), `WRF_WIN_FLOOR`(승률 플로어),
+  `WRF_CELL_N_MIN`(신뢰게이트). 단일변수·워크포워드.
 - **전략 정합 토글**(전부 되돌리기 가능): `WRF_SL_ATR_CUSHION`(구조SL ATR쿠션, 0=구동작),
   `WRF_MR_TP_TARGET`(mid|opposite), `WRF_MR_BOX_WINDOW`, `WRF_RV_REQUIRE_CHOCH/RETEST`(전환
   시퀀스 강제), `WRF_TF_FIB_PULLBACK`(피보 깊은눌림 경로), `WRF_REV_VOL_MULT`(반전봉 거래량
@@ -263,9 +264,12 @@ python analysis/backtest.py --ab              # prior vs 보정 P̂ Brier·캘�
 - **레이어 연결 토글**: `WRF_BO_IN_RANGING`(RANGING 박스돌파 허용), `WRF_RV_MACRO_EXEMPT`
   (RV 거시베토 면제), `WRF_TF_LATE_MATURITY_MULT`(성숙추세 TF 감쇠, 1.0=없음),
   `WRF_CONFLUENCE_L_BONUS`(컨플루언스→L 가점, 0=OFF).
-- **grind-fix 토글**(기본 OFF=구동작, 백테스트 대칭검증 후 ON): `WRF_REGIME_ER_TREND`
-  (효율비 추세 승격 — ADX 지연 보강), `WRF_REGIME_ER_TREND_MIN`(승격 ER 임계, 0.50),
-  `WRF_BO_SL_NEAR`(BO 손절을 박스 반대편→돌파경계 near), `WRF_BO_SL_ATR_CUSHION`(near 쿠션).
+- **감사 처방 토글**(기본 **ON** — 감사 4 pillar 구현, 전부 되돌리기 가능): `WRF_REGIME_ER_PCTL`
+  (ER 백분위화)·`WRF_REGIME_SLOPE_PERSIST`(방향지속 승격)·`WRF_ROUTING_SELF_STRUCT`(라우팅 BTC
+  종속성 분리) — Pillar1 | `WRF_RV_SOFT_PRECOND`(RV 하드AND→소프트) — Pillar2 |
+  `WRF_PRIOR_MIN_AXIS_SOFT`(min-axis 연속화)·`WRF_EV_GATE`(EV-결합 RR게이트) — Pillar3 |
+  `WRF_PCT_MIDRANK`·`WRF_TF_MACD_SYM`·`WRF_RV_SIDED_SIGNALS` — Pillar4. 기존 grind-fix
+  `WRF_REGIME_ER_TREND`·`WRF_BO_SL_NEAR`·`WRF_REGIME_ROUTING`도 기본 ON으로 승격.
 
 ### 전략 정합 개선 (2026-06, win-rate-first 골격 유지)
 
@@ -316,17 +320,48 @@ python analysis/backtest.py --ab              # prior vs 보정 P̂ Brier·캘�
   **SL이 박스 반대편(far)이라 손절=박스높이 → RR≈1**(BTC 0.99/ETH 0.91)로 발사컷.
 - **veto·플로어는 무죄**: 숏은 DOWNLEG 정합이라 거시베토 없음, BO p̂=0.65>플로어. 순수 RR.
 
-**교정(둘 다 토글 OFF=구동작 보존, 측정·기하학 결함만 교정, 임계 미인하)**:
+### 감사 처방 구현 (2026-06, 4 pillar · win-rate-first 골격 유지 · 기본 ON)
 
-- **(A) ER 추세 승격**(`WRF_REGIME_ER_TREND`): `classify_market_regime`이 스퀴즈·레인지가
-  아닌데 효율비≥0.50이면 TRENDING 승격(ADX 미달이어도). ER은 방향무관 → **상승·하락
-  grind를 동일 포착(롱/숏 대칭)**, chop은 불변. 셀키 차원 불변. → TF 라우팅 복원.
-- **(B) BO 손절 재배치**(`WRF_BO_SL_NEAR`): 박스 반대편(far)→**돌파된 경계(near)∓ATR쿠션**
-  (돌파-리테스트 무효화선). RR이 박스높이/쿠션으로 정상화. 롱/숏 대칭. min/max_sl 클램프 유지.
-- **검증**: 토글 OFF시 백테스트 출력 무변(회귀). ON시 — 합성 grind-up/down 모두 TRENDING
-  승격(대칭)·chop 불변, 실데이터 ETH 숏 RR 0.909→3.11(박제값 재현 후 교정)·합성 롱숏 RR
-  동일. **Gate-Out**: `backtest.py`로 상승 grind(롱)·하락 grind(숏) 동시 개선 + 기존 발사
-  무악화가 다레짐 표본에서 확인되면 env로 ON.
+위 grind-fix(ER 절대 0.50 승격 + BO near-SL)는 **fast trend·RR 산술**만 고쳐 정작 **slow
+grind**는 놓쳤다(ER 0.50은 느린 grind의 ER 0.15~0.35를 영영 못 만남). 정량 감사 결과
+"하드 AND 게이트 다단 직렬 + 추세정의 절대임계 + P̂/RR 분리"가 FN의 3중 구조원인으로 확정
+(실측: precond 통과 50건 중 **38건(76%)이 floor=min-axis 하드절벽에서 사망**, BO는 RR에서 4/7
+전사). 처방은 **하드 게이트를 점수로 강등하고 판정을 floor에 위임**하는 한 원리로 수렴한다.
+
+- **Pillar1 — 레짐/라우팅 지연**: ① ER을 코인 자기분포 **백분위**로(`WRF_REGIME_ER_PCTL`,
+  절대 0.50 폐기·철학 정합) ② **방향지속**(MA20 기울기 부호 일관성) 승격을 `is_ranging` 앞에
+  배치(`WRF_REGIME_SLOPE_PERSIST`) → ER이 못 잡는 slow grind를 RANGING 함정에서 구출, chop은
+  기울기 비일관 → 미승격(FP 방어) ③ 라우팅을 BTC매크로 종속에서 **심볼 자체구조**로 분리
+  (`WRF_ROUTING_SELF_STRUCT`) → BTC 횡보 중 홀로 흐르는 알트도 TF 라우팅.
+- **Pillar2 — precond 경직성**: RV 5중 동시 AND를 **소프트 스코어**로(`WRF_RV_SOFT_PRECOND`) —
+  안전 최소치(소진≥1∧반전캔들∧확인≥2)만 게이트, CHoCH·리테스트는 L 감쇠로 흡수(부분정렬
+  반전도 후보화하되 약하면 floor가 탈락). BO near-SL은 **타이트니스 P̂ 보정**(`WRF_BO_SL_TIGHT_PEN`)
+  으로 SL을 당긴 만큼 실제 승률↓를 prior에 반영.
+- **Pillar3 — min-axis/RR 병목**: ① min-axis 하드절벽(0.55 고정=위장 하드베토)을 **연속 페널티**
+  로(`WRF_PRIOR_MIN_AXIS_SOFT`) — 0.10 근방 매끄럽게(near-miss 회복)·음수축은 강차단, prior·보정
+  일관 적용(불연속 제거) ② 고정 RR≥1.5를 **EV-결합 게이트**로(`WRF_EV_GATE`, EV=P̂·RR−(1−P̂)≥0.15)
+  → 고확률·중RR 셋업 회생, win-rate-first(MR TP=mid)와 정합.
+- **Pillar4 — 숨은 L/S 비대칭**: `pct_rank` **midrank**(동점 +1/(2n) 편향 제거·완전대칭),
+  TF 모멘텀 **대칭화**(숏도 명시적 약세 요구), `WRF_RV_SIDED_SIGNALS` 기본 ON(청산을 진입방향
+  적합한 쪽만), 死파라미터 `WRF_PCT_EXTREME_*` 배선.
+
+**검증(`scratchpad/verify_*` 재현 가능)**: ① 게이트 재채점(실데이터 50후보) — NEW가 OLD
+대비 발사 회수(연속 min-axis가 floor에서 죽던 후보 부활), 집계 성능은 실제 라이브 이력과 정합
+(PF 3.16). ② 합성 컴포넌트 — grind-down **ER=0.16**(승격임계 밑)을 slope_persist=1.0이 단독
+구출→TRENDING(상/하 대칭), chop=RANGING 유지 / 알트 grind는 BTC=CHOP에도 route=down / RV
+부분정렬 숏 OLD 0개→NEW 1개 생성 / min-axis 단조연속(음수축 강차단) / EV게이트 0.65×1.0 회생 /
+midrank 완전대칭 / BO RR 0.99→3.33. ③ **핵심 진단**: 숏 발사 수는 재채점(게이트)만으로 불변 —
+숏 FN은 **후보 생성**(Pillar1 라우팅+Pillar2 precond) 문제이지 게이트 문제가 아님을 데이터로 확정.
+
+### 밴드반전 원트랙 일원화 (구 D-shadow 투트랙 폐지)
+
+구 **D-shadow**는 BB 밴드복귀 반전을 잡되 **섀도 전용**(라이브 발사 무영향, Notion '(shadow)'
+별도 트랙)이었다. floor의 연속 min-axis·라우팅 역추세 억제가 충분한 품질 통제를 제공하므로
+**원트랙으로 승격** — `_detect_band_reversal`(구 `_detect_d_shadow`)이 `setup=RV` 후보를 다른
+디텍터와 **동일하게 라이브 발사**한다. 엔진이 `(setup,dir)` 중복은 더 높은 P̂만 남긴다. Notion은
+'(shadow)' 표식 없이 일반 신호로 기록. 제거된 군더더기: `fired_shadow`·`shadow_fire`·
+`shadow_logged`·`_shadow_cooldown_filter`·`recent_shadow_dirs`·`WRF_D_SHADOW_COOLDOWN_H`·
+`analysis/shadow_report.py`. (near-miss `shadow_band`은 별개 — 유지.)
 
 ---
 

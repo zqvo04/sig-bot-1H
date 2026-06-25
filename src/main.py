@@ -81,28 +81,6 @@ def _alert(cand: dict, engine_out: dict):
         logger.warning(f"[main] 알림 실패(격리): {e}")
 
 
-def _shadow_cooldown_filter(out: dict, symbol: str) -> list:
-    """D-shadow fired_shadow에 심볼+방향 쿨다운(중복 억제) 적용.
-
-    직전 WRF_D_SHADOW_COOLDOWN_H 시간 내 같은 심볼·방향 섀도신호가 로그됐으면 skip →
-    연속봉 클러스터를 1건으로 수렴. 통과분만 shadow_logged=True 표식(같은 dict 참조라
-    이어지는 build_row가 JSONL에 영속 → 다음 시간 쿨다운 판정의 상태). 섀도 전용·손익 무관.
-    """
-    cands = out.get("fired_shadow", []) or []
-    if not cands:
-        return []
-    cd = getattr(config, "WRF_D_SHADOW_COOLDOWN_H", 12)
-    recent = wrf_logger.recent_shadow_dirs(symbol, out["ts"], cd) if cd and cd > 0 else set()
-    keep = []
-    for c in cands:
-        if c["dir"] in recent:
-            continue  # 쿨다운 중 — 중복 억제
-        c["shadow_logged"] = True
-        recent.add(c["dir"])  # 동일 런 내 양방향 중복 방지
-        keep.append(c)
-    return keep
-
-
 def run_signal(symbol: str, exchange) -> None:
     """signal 모드: 한 심볼 전체 파이프라인. 엔진 본체는 try/except 격리."""
     collected = collect(exchange, symbol)
@@ -133,13 +111,9 @@ def run_signal(symbol: str, exchange) -> None:
         btc_macro = _btc_macro_for(symbol, exchange, ohlcv)
         out = wrf_engine.run_engine(symbol, measures, ohlcv, collected, btc_macro)
 
-        # [D-shadow 쿨다운] 심볼+방향 중복 억제 — build_row 이전에 shadow_logged 표식.
-        shadow_to_log = _shadow_cooldown_filter(out, symbol)
-
         logger.info(
             f"[WRF] {symbol} {out['ctx']['fp_key']} | 후보 {len(out['candidates'])} "
-            f"발사 {len(out['fired'])} | D-shadow {len(out.get('fired_shadow', []))}"
-            f"→{len(shadow_to_log)}(쿨다운후) | 전역베토 {out['global_veto']}")
+            f"발사 {len(out['fired'])} | 전역베토 {out['global_veto']}")
 
         # schema v3 스냅샷 적재(전량 기록) + 경로 캡처
         row = wrf_schema.build_row(out)
@@ -150,13 +124,10 @@ def run_signal(symbol: str, exchange) -> None:
         notion_wrf.log_snapshot(out)
         notion_wrf.evaluate_open_signals(symbol, ohlcv.get("1h"))
 
-        # 발사(페이퍼): Notion 기록 + (ALERT 시) 알림
+        # 발사(페이퍼): Notion 기록 + (ALERT 시) 알림 — 밴드반전 포함 원트랙
         for cand in out["fired"]:
             notion_wrf.log_signal(cand, out)
             _alert(cand, out)
-        # [D-shadow] 두 번째 트랙 — 쿨다운 통과분만 '(shadow)'로 기록(발사·알림 없음).
-        for cand in shadow_to_log:
-            notion_wrf.log_signal(cand, out, shadow=True)
     except Exception as e:
         logger.error(f"[main] {symbol} 엔진 실패(격리): {e}\n{traceback.format_exc()}")
 

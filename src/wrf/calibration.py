@@ -82,12 +82,30 @@ def prior_raw_p(setup: str, C: float, L: float, F: float) -> float:
     return _sigmoid(_prior_logodds(setup, C, L, F))
 
 
+def _min_axis_penalty(C: float, L: float, F: float) -> float:
+    """[Pillar3-①/②] 직교 3축 동의 게이트의 '연속' 페널티(로그오즈 차감, ≥0).
+
+    구버전은 한 축이라도 <min_axis면 p를 floor-0.03(=0.55)로 고정 → floor 통과 불가한
+    '위장 하드베토'(불연속 절벽). 대신 가장 약한 축의 '부족분'(min_axis−m)에 비례하는 연속
+    페널티를 로그오즈에서 뺀다 — m이 0.10 근방이면 미미(near-miss FN 회복), m이 음수(역추세
+    칼받기·무소진)면 급증(FP 보존). prior·보정 경로에 동일 적용해 불연속을 제거한다."""
+    min_axis = getattr(config, "WRF_PRIOR_MIN_AXIS", 0.10)
+    m = min(C, L, F)
+    if m >= min_axis:
+        return 0.0
+    lam = getattr(config, "WRF_PRIOR_MIN_AXIS_LAMBDA", 2.5)
+    return lam * (min_axis - m)
+
+
 def prior_p_hat(setup: str, C: float, L: float, F: float) -> float:
     """보수적 고정 직교게이트 prior(발사용). 셋업별 b0 비대칭 + 캡 + min-axis 게이트."""
     cap = getattr(config, "WRF_PRIOR_CAP", 0.65)
-    p = min(cap, _sigmoid(_prior_logodds(setup, C, L, F)))
-    # 직교 3축 광범위 동의 게이트: 한 축이라도 최소동의 미만이면 콜드스타트 발사 보류.
-    # (가중합이 높아도 단일 축 과의존으로 발사되던 약발 신호 차단. 보정셀엔 미적용.)
+    z = _prior_logodds(setup, C, L, F)
+    if getattr(config, "WRF_PRIOR_MIN_AXIS_SOFT", True):
+        # 연속 페널티(소프트) — 약한 축은 매끄럽게, 역행 축은 강하게 차단.
+        return min(cap, _sigmoid(z - _min_axis_penalty(C, L, F)))
+    # 구동작: 하드 절벽(한 축이라도 <min_axis → floor-0.03 고정).
+    p = min(cap, _sigmoid(z))
     min_axis = getattr(config, "WRF_PRIOR_MIN_AXIS", 0.10)
     if min(C, L, F) < min_axis:
         floor = getattr(config, "WRF_WIN_FLOOR", 0.58)
@@ -121,6 +139,10 @@ def calibrated_p_hat(setup: str, C: float, L: float, F: float,
         return prior_p_hat(setup, C, L, F), "prior", floor
     cap = getattr(config, "WRF_CALIB_CAP", 0.72)
     z = _prior_logodds(setup, C, L, F) + delta
+    # [Pillar3-②] min-axis 페널티를 보정 경로에도 일관 적용 — 콜드스타트↔보정 불연속 제거
+    # (구버전은 보정셀이 min-axis 보호를 우회 → 같은 C/L/F가 보정 후 갑자기 발사되던 비일관).
+    if getattr(config, "WRF_PRIOR_MIN_AXIS_SOFT", True):
+        z -= _min_axis_penalty(C, L, F)
     p = min(cap, _sigmoid(z))
     cell_floor = float(cell.get("win_floor", floor))
     return p, "calibrated", cell_floor

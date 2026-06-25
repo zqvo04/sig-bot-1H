@@ -710,8 +710,24 @@ ALERT_ENABLED = os.getenv("ALERT_ENABLED", "false").lower() not in ("0", "false"
 # ── 실질 튜닝 파라미터 (하드캡 최소화: 백분위 윈도·극단컷·플로어) ────────
 WRF_PCT_WINDOW     = _wrf_i("WRF_PCT_WINDOW", 200)    # 자기분포 백분위 윈도(1H 봉 수)
 WRF_VWAP_WINDOW    = _wrf_i("WRF_VWAP_WINDOW", 48)    # 롤링 VWAP 윈도(1H 봉 수)
-WRF_PCT_EXTREME_HI = _wrf_f("WRF_PCT_EXTREME_HI", 0.85)  # 상단 극단 컷(백분위)
-WRF_PCT_EXTREME_LO = _wrf_f("WRF_PCT_EXTREME_LO", 0.15)  # 하단 극단 컷(백분위)
+WRF_PCT_EXTREME_HI = _wrf_f("WRF_PCT_EXTREME_HI", 0.85)  # 상단 극단 컷(백분위) — MR RSI 극단(숏)
+WRF_PCT_EXTREME_LO = _wrf_f("WRF_PCT_EXTREME_LO", 0.15)  # 하단 극단 컷(백분위) — MR RSI 극단(롱)
+# [Pillar4-⑤] 극단컷 중앙화: 위 WRF_PCT_EXTREME_HI/LO는 README가 핵심 튜닝노브로 광고했으나
+# 실제 코드 어디에도 배선되지 않은 死파라미터였다(디텍터가 0.1/0.9·0.12/0.88을 하드코딩).
+# 이제 MR의 RSI 극단컷을 이 노브로 구동(배선)하고, 나머지 극단컷도 아래 명시 파라미터로 분리.
+WRF_MR_BB_EXTREME_LO = _wrf_f("WRF_MR_BB_EXTREME_LO", 0.10)  # MR BB %b 극단(롱)
+WRF_MR_BB_EXTREME_HI = _wrf_f("WRF_MR_BB_EXTREME_HI", 0.90)  # MR BB %b 극단(숏)
+WRF_RV_RSI_EXTREME_LO = _wrf_f("WRF_RV_RSI_EXTREME_LO", 0.12)  # RV RSI 극단(롱·MR보다 타이트)
+WRF_RV_RSI_EXTREME_HI = _wrf_f("WRF_RV_RSI_EXTREME_HI", 0.88)  # RV RSI 극단(숏)
+WRF_RV_FUND_EXTREME_LO = _wrf_f("WRF_RV_FUND_EXTREME_LO", 0.10)  # RV 펀딩 극단(롱)
+WRF_RV_FUND_EXTREME_HI = _wrf_f("WRF_RV_FUND_EXTREME_HI", 0.90)  # RV 펀딩 극단(숏)
+# [Pillar4-①] pct_rank 동점/경계 편향 제거(midrank): (arr<=v).mean()은 추정 백분위를 +1/(2n)
+# 상향 편향 → 상단 극단(숏 트리거)은 쉽고 하단 극단(롱 트리거)은 어려운 L/S 비대칭을 만든다.
+# midrank=((arr<v)+(arr<=v))/2 로 대칭화(엄밀 정정). 기본 ON.
+WRF_PCT_MIDRANK = os.getenv("WRF_PCT_MIDRANK", "true").lower() not in ("0", "false", "no", "")
+# [Pillar4-②] TF 모멘텀 확인 대칭화: 구버전은 롱=macd_bull(엄격 강세)·숏=not macd_bull(중립0
+# 포함)으로 숏에 관대(비대칭). 숏도 명시적 약세(히스토그램<0)를 요구해 대칭화.
+WRF_TF_MACD_SYM = os.getenv("WRF_TF_MACD_SYM", "true").lower() not in ("0", "false", "no", "")
 WRF_WIN_FLOOR      = _wrf_f("WRF_WIN_FLOOR", 0.58)    # 승률 플로어(발사 임계)
 
 # ── near-miss 섀도 밴드 (콜드스타트 데이터 수집 · 발사 무영향) ──────────────
@@ -722,18 +738,14 @@ WRF_WIN_FLOOR      = _wrf_f("WRF_WIN_FLOOR", 0.58)    # 승률 플로어(발사 
 WRF_SHADOW_BAND       = os.getenv("WRF_SHADOW_BAND", "true").lower() not in ("0", "false", "no", "")
 WRF_SHADOW_BAND_WIDTH = _wrf_f("WRF_SHADOW_BAND_WIDTH", 0.03)  # 플로어 아래 포착 폭
 
-# ── [D-shadow] BB 밴드터치 반전 트리거 (섀도 전용 · 라이브 발사 무영향) ──────────
-# 기존 MR/RV precond(CHoCH·반전봉)가 놓치는 반전 후보를 '고전적 BB 밴드터치'로 무장.
-# 절대 발사하지 않으며(engine이 fire=False 강제) shadow_fire(=라이브와 동일 게이트
-# p_hat≥floor ∧ ¬veto ∧ rr_ok 통과)만 1H Signal Log에 '(shadow)' 제목으로 기록·판정.
-# 방향적합성/칼받기 차단은 prior C/L/F + floor(min-axis 직교동의)가 담당 → 트리거 임계는
-# 과적합 경계상 원칙적 밴드터치(0.80/0.20)로 단순화. 기본 ON(섀도 데이터 축적).
+# ── [밴드반전] BB 밴드복귀 반전 디텍터 (원트랙 · 라이브 발사) ──────────────────
+# 기존 MR/RV precond(CHoCH·반전봉)가 놓치는 소진반전 후보를 'BB 밴드복귀'로 포착해
+# 다른 디텍터와 동일하게 라이브 발사한다(원트랙). 방향적합성/칼받기 차단은 prior C/L/F +
+# floor(min-axis 소프트게이트) + 레짐 라우팅 역추세 억제가 담당. 트리거 임계는 과적합 경계상
+# 원칙적 밴드복귀(0.80/0.20)로 단순화. 기본 ON. (구 'D-shadow 투트랙'을 원트랙으로 일원화.)
 WRF_D_SHADOW       = os.getenv("WRF_D_SHADOW", "true").lower() not in ("0", "false", "no", "")
 WRF_D_BBPCTB_HI    = _wrf_f("WRF_D_BBPCTB_HI", 0.80)   # 숏: BB %b ≥ (상단 밴드터치)
 WRF_D_BBPCTB_LO    = _wrf_f("WRF_D_BBPCTB_LO", 0.20)   # 롱: BB %b ≤ (하단 밴드터치)
-# 심볼+방향 쿨다운(중복 억제): 직전 N시간 내 같은 심볼·방향 섀도신호가 로그됐으면 skip.
-# 클러스터(연속봉 무더기 발화)를 1건으로 수렴. 0이면 쿨다운 OFF. 상태=JSONL shadow_logged.
-WRF_D_SHADOW_COOLDOWN_H = _wrf_i("WRF_D_SHADOW_COOLDOWN_H", 12)
 # 밴드복귀 확증(Path2-① · 과적합 경계 · 양방향): 밴드 외곽 이탈 후 '밴드 안 복귀'(턴)에서만
 # 무장 → 밴드를 타고 오르는 강추세(band-ride=칼받기 FP)와 진짜 소진반전을 분리. 신규
 # 파라미터 0개(기존 bb_hi/lo 재사용). df 부족 시 밴드터치로 graceful 폴백. False=구동작.
@@ -763,6 +775,12 @@ WRF_PRIOR_CAP = _wrf_f("WRF_PRIOR_CAP", 0.65) # prior P̂ 상한(검증데이터
 # 한 축이라도 ~중립/역행(< 이 값)이면 '광범위 동의' 불충족 → 발사 보류(플로어 미만).
 # 한 축(특히 위치 L)만 강해서 발사되던 약발(약흐름 추세롱) 차단. 보정셀엔 미적용.
 WRF_PRIOR_MIN_AXIS = _wrf_f("WRF_PRIOR_MIN_AXIS", 0.10)
+# [Pillar3-①/②] min-axis 연속화: 구버전은 한 축이라도 <0.10이면 p를 floor-0.03(=0.55)로
+# 고정 → 사실상 floor 통과 불가한 '위장 하드베토'(불연속 절벽). 대신 약한 축의 '부족분'에
+# 비례하는 연속 페널티를 로그오즈에서 차감 — 0.10 근방은 매끄럽게(near-miss FN 회복),
+# 음수(역추세 칼받기) 축은 강하게 차단(FP 보존). prior·보정 양 경로에 일관 적용(불연속 제거).
+WRF_PRIOR_MIN_AXIS_SOFT   = os.getenv("WRF_PRIOR_MIN_AXIS_SOFT", "true").lower() not in ("0", "false", "no", "")
+WRF_PRIOR_MIN_AXIS_LAMBDA = _wrf_f("WRF_PRIOR_MIN_AXIS_LAMBDA", 2.5)  # 로그오즈 페널티 기울기
 
 # ── L0 VETO 하드캡 (≈4) ──────────────────────────────────────────────
 WRF_VETO_SPREAD_BP    = _wrf_f("WRF_VETO_SPREAD_BP", 8.0)    # 스프레드 폭발(bp)
@@ -782,6 +800,12 @@ WRF_REV_CTX_BASE = _wrf_f("WRF_REV_CTX_BASE", 0.25)
 # ── 최소 RR 품질필터: prior 발사는 RR 이 이 값 미만이면 제외(저RR 잡신호 컷). ──
 # 보정셀(calibrated)은 학습된 승률을 존중해 이 필터를 우회한다.
 WRF_MIN_RR = _wrf_f("WRF_MIN_RR", 1.5)
+# [Pillar3-③] EV-결합 게이트: 고정 RR≥1.5는 P̂을 무시해 고확률·중RR 셋업(예: P̂=0.65·RR=1.0,
+# EV=+0.30R)을 학살하고 win-rate-first(MR TP=mid)와 모순. 대신 기대값 EV(R)=P̂·RR−(1−P̂)이
+# EV_MIN 이상이면 통과(고확률일수록 RR 요구 완화 = EV 정합). 저확률·저RR 잡신호는 여전히 컷.
+WRF_EV_GATE  = os.getenv("WRF_EV_GATE", "true").lower() not in ("0", "false", "no", "")
+WRF_EV_MIN   = _wrf_f("WRF_EV_MIN", 0.15)   # 발사 최소 기대R(리스크 1단위당)
+WRF_EV_RR_FLOOR = _wrf_f("WRF_EV_RR_FLOOR", 1.0)  # 퇴행(스크래치) 방지 RR 하한(EV 통과해도 적용)
 
 # ── [G3] 구조 SL + ATR 쿠션: SL = 직전 스윙 ∓ ATR×cushion (TF/RV) ───────
 # 스윙 바로 밑 0.1% 버퍼는 노이즈 윅에 취약 → ATR 쿠션으로 구조적 여유 부여.
@@ -801,17 +825,30 @@ WRF_MR_TP_TARGET   = os.getenv("WRF_MR_TP_TARGET", "mid")  # "mid" | "opposite"
 WRF_RV_REQUIRE_CHOCH  = os.getenv("WRF_RV_REQUIRE_CHOCH", "true").lower() not in ("0", "false", "no", "")
 WRF_RV_REQUIRE_RETEST = os.getenv("WRF_RV_REQUIRE_RETEST", "true").lower() not in ("0", "false", "no", "")
 WRF_RV_MIN_CONFIRMS   = _wrf_i("WRF_RV_MIN_CONFIRMS", 3)
+# [Pillar2-①] RV precond 연성화(hard AND → soft score): 5중 동시 AND(n_exh·rev_candle·
+# choch·retest·confirms≥3)는 grind에서 ∏pᵢ로 기하급수 소멸 → 숏 후보 자체가 생성 불가(FN의
+# 핵심 발생지). 안전 최소치(n_exh≥1 ∧ rev_candle)만 게이트로 남기고 choch·retest·confirms는
+# L에 가점/감점으로 흡수 → 부분정렬 반전도 후보화하되 약하면 P̂<floor로 자동 탈락(FP는 floor가 통제).
+WRF_RV_SOFT_PRECOND   = os.getenv("WRF_RV_SOFT_PRECOND", "true").lower() not in ("0", "false", "no", "")
+WRF_RV_SOFT_NO_CHOCH_MULT  = _wrf_f("WRF_RV_SOFT_NO_CHOCH_MULT", 0.82)  # CHoCH 부재 시 L 감쇠
+WRF_RV_SOFT_NO_RETEST_MULT = _wrf_f("WRF_RV_SOFT_NO_RETEST_MULT", 0.90) # 리테스트 부재 시 L 감쇠
+WRF_RV_SOFT_MIN_CONFIRMS   = _wrf_i("WRF_RV_SOFT_MIN_CONFIRMS", 2)      # 소프트모드 최소 확인수(완화)
 # [Path1-②] 방향-사이드 신호(precision/FP): RV 청산·키레벨 거부를 진입방향에 맞는 쪽만
 # 카운트(롱=숏청산·지지선거부 / 숏=롱청산·저항선거부). 감사결과 precond 임계는 이미
 # 대칭이고 숏 FN은 시장(약세-과매도 편중)·엄격 precond 산물 — 본 토글은 '잘못된 쪽'
-# 트리거 제거로 FP만 줄인다(양방향 대칭). 기본 OFF(라이브 안전) — 섀도 비교 검증 후 ON.
-WRF_RV_SIDED_SIGNALS  = os.getenv("WRF_RV_SIDED_SIGNALS", "false").lower() not in ("0", "false", "no", "")
+# 트리거 제거로 FP만 줄인다(양방향 대칭). [Pillar4-③] 기본 ON으로 승격(방향정합 — 하락장
+# 롱청산이 칼받기 롱을 부추기던 비사이드 기본값 교정).
+WRF_RV_SIDED_SIGNALS  = os.getenv("WRF_RV_SIDED_SIGNALS", "true").lower() not in ("0", "false", "no", "")
 # [Path1-①] 레짐 조건부 라우팅(라이브 FP/FN 동시 — 가장 큰 레버·검증 후 ON): ema_4h·
 # bias_1d·btc_macro 3중 정렬 강확정 추세에서만 작동(횡보 93%는 무변경 → idea B 함정 회피).
 #   추세확정 시: ① 역추세 반전(MR/RV 추세반대 방향) 억제(칼받기 FP↓)
 #               ② TF(추세추종) 활성화 — 1h-ADX 지연으로 RANGING이어도 추종 라우팅 복원(FN↓).
-# 기본 OFF(라이브 안전). shadow_report 승격게이트로 다레짐 검증 후 ON 권장(콜드스타트 보호).
-WRF_REGIME_ROUTING    = os.getenv("WRF_REGIME_ROUTING", "false").lower() not in ("0", "false", "no", "")
+# [Pillar1] 기본 ON으로 승격. 역추세 억제는 밴드반전 원트랙 발사의 FP 통제와도 짝을 이룬다.
+WRF_REGIME_ROUTING    = os.getenv("WRF_REGIME_ROUTING", "true").lower() not in ("0", "false", "no", "")
+# [Pillar1-③] 라우팅 BTC-종속성 분리: 트리거를 btc_macro==DOWNLEG(=BTC 종속·지연) 대신
+# 심볼 자신의 구조(ema_4h·bias_1d·ema_1d_struct)로 판정. BTC가 횡보해도 홀로 흘러내리는
+# 알트가 TF 라우팅을 받는다(FN↓). btc_macro는 OR-가산(여전히 도움)·veto는 별도 유지.
+WRF_ROUTING_SELF_STRUCT = os.getenv("WRF_ROUTING_SELF_STRUCT", "true").lower() not in ("0", "false", "no", "")
 
 # ── [A1] TF 되돌림(피보) 배선: 4H 피보 zone(optimal/deep) 눌림 경로 ──────
 # 얕은 눌림(1H EMA 정렬 유지 + loc 밴드) 외에, 깊은 눌림(피보 50~61.8%)도
@@ -860,13 +897,29 @@ WRF_CONFLUENCE_L_BONUS = _wrf_f("WRF_CONFLUENCE_L_BONUS", 0.05)
 # (A) ER 추세 승격: classify_market_regime 가 효율비(ER=순이동/경로길이)로 ADX가
 #     놓친 방향성 추세를 TRENDING 승격(스퀴즈·레인지 판정 이후 = 노이즈 미승격).
 #     ER은 방향무관 → 상승·하락 grind를 동일하게 포착(대칭). 셀키 차원 불변.
-WRF_REGIME_ER_TREND     = os.getenv("WRF_REGIME_ER_TREND", "false").lower() not in ("0", "false", "no", "")
-WRF_REGIME_ER_TREND_MIN = _wrf_f("WRF_REGIME_ER_TREND_MIN", 0.50)  # 순이동/경로 ≥ → 방향성
+WRF_REGIME_ER_TREND     = os.getenv("WRF_REGIME_ER_TREND", "true").lower() not in ("0", "false", "no", "")
+WRF_REGIME_ER_TREND_MIN = _wrf_f("WRF_REGIME_ER_TREND_MIN", 0.50)  # 순이동/경로 ≥ → 방향성(절대모드 폴백)
+# [Pillar1-①] ER 백분위화: 절대임계 0.50(전 코인 공통·알트 변동성 편향·시스템 철학 위반)
+# 대신 코인 자기 ER 분포의 백분위로 승격(>=ER_PCTL_MIN). 시스템의 "절대임계 없음" 원칙과 정합.
+WRF_REGIME_ER_PCTL      = os.getenv("WRF_REGIME_ER_PCTL", "true").lower() not in ("0", "false", "no", "")
+WRF_REGIME_ER_PCTL_MIN  = _wrf_f("WRF_REGIME_ER_PCTL_MIN", 0.70)   # ER 자기분포 상위 30% → 승격
+WRF_REGIME_ER_PCTL_WIN  = _wrf_i("WRF_REGIME_ER_PCTL_WIN", 150)    # ER 백분위 표본 윈도(봉)
+# [Pillar1-②] 방향지속(slope persistence) 승격 — 느린 grind의 핵심 판별자. ADX·ER이 모두
+# 놓치는 slow grind(낮은 ER·낮은 ADX이나 단일방향 지속)를 MA20 기울기 부호 일관성으로 포착.
+# is_ranging '앞'에서 평가 → RANGING 함정 탈출(FN↓). 기울기 일관성 낮은 진짜 chop은 통과 안 함(FP↓).
+WRF_REGIME_SLOPE_PERSIST  = os.getenv("WRF_REGIME_SLOPE_PERSIST", "true").lower() not in ("0", "false", "no", "")
+WRF_REGIME_SLOPE_WIN      = _wrf_i("WRF_REGIME_SLOPE_WIN", 20)     # 기울기 일관성 판정 윈도(봉)
+WRF_REGIME_SLOPE_MIN_FRAC = _wrf_f("WRF_REGIME_SLOPE_MIN_FRAC", 0.70)  # 동방향 기울기 비율 ≥ → 추세
 # (B) BO 손절 재배치: 박스 반대편(far, 손절=박스높이 → RR≈1 고착) → 돌파된 경계
 #     (near) ∓ ATR쿠션(돌파-리테스트 무효화). RR이 박스높이/쿠션으로 정상화(>>1.5).
 #     min_sl/max_sl 클램프가 과도한 타이트/와이드를 방지. TF/RV 구조SL 철학과 동일.
-WRF_BO_SL_NEAR          = os.getenv("WRF_BO_SL_NEAR", "false").lower() not in ("0", "false", "no", "")
+WRF_BO_SL_NEAR          = os.getenv("WRF_BO_SL_NEAR", "true").lower() not in ("0", "false", "no", "")
 WRF_BO_SL_ATR_CUSHION   = _wrf_f("WRF_BO_SL_ATR_CUSHION", 1.0)  # 돌파경계 외곽 ATR 쿠션
+# [Pillar2-③] BO near-SL의 P̂ 보정: prior P̂은 C/L/F만의 함수라 SL 거리를 모른다 → SL을
+# 박스높이에서 ~1ATR로 당기면 실제 승률은 떨어지는데 P̂은 불변(win-rate floor 무력화 위험).
+# r_dist/박스높이 = '타이트니스'가 REF보다 작을수록 p_hat을 소폭 깎아 기하-확률 결합을 복원.
+WRF_BO_SL_TIGHT_PEN     = _wrf_f("WRF_BO_SL_TIGHT_PEN", 0.15)   # 타이트니스 p_hat 페널티 계수
+WRF_BO_SL_TIGHT_REF     = _wrf_f("WRF_BO_SL_TIGHT_REF", 0.60)   # 이 비율 이상이면 무페널티
 
 # ── btc_macro 태깅 임계 (BTC 7D/30D 추세·EMA구조) ───────────────────────
 WRF_MACRO_UP_PCT   = _wrf_f("WRF_MACRO_UP_PCT", 0.03)   # 7D 변화 ±3% 이상 → leg
