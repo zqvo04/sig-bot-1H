@@ -258,10 +258,14 @@ def _detect_rv(feat: dict, measures: dict):
     wk = measures.get("weekly_levels", {})
     for direction in ("long", "short"):
         long = direction == "long"
+        # [Path1-②] 방향-사이드 신호(기본 OFF·라이브안전): 청산·키레벨 거부를 진입방향에
+        # 맞는 쪽만 카운트(롱=숏청산/지지거부, 숏=롱청산/저항거부). OFF면 구동작(방향무관).
+        sided = getattr(config, "WRF_RV_SIDED_SIGNALS", False)
         # ── 소진(exhaustion) 신호: 추세가 지쳤는가 ──────────────────────
         div = rsi_m.get("bullish_divergence") if long else rsi_m.get("bearish_divergence")
         rsi_extreme = (pcts.get("rsi", 0.5) <= 0.12) if long else (pcts.get("rsi", 0.5) >= 0.88)
-        liq_flush = bool(raw.get("liq_spike"))
+        liq_flush = ((raw.get("liq_signal") == ("short_liq_detected" if long else "long_liq_detected"))
+                     if sided else bool(raw.get("liq_spike")))
         funding_extreme = (pcts.get("funding", 0.5) <= 0.1) if long \
             else (pcts.get("funding", 0.5) >= 0.9)
         oi_flush = raw.get("oi_quadrant") in ("reversal_long", "weak_bounce") if long else \
@@ -270,7 +274,8 @@ def _detect_rv(feat: dict, measures: dict):
         # ── 트리거(trigger) 신호: 전환이 시작됐는가 (CHoCH는 선택) ─────────
         rev_candle = (c1.get("bullish_pin") or c1.get("bullish_engulf")) if long \
             else (c1.get("bearish_pin") or c1.get("bearish_engulf"))
-        key_reject = bool(wk.get("near_level"))
+        key_reject = bool(wk.get("near_level") and (
+            (((not wk.get("is_resistance")) if long else wk.get("is_resistance"))) if sided else True))
         # 실패한 돌파/유동성 스윕: failed_break +1=하향이탈실패(롱) / -1=상향이탈실패(숏)
         swept = (raw.get("failed_break") == 1) if long else (raw.get("failed_break") == -1)
         choch = (raw.get("choch") == 1 or raw.get("choch_4h") == 1) if long \

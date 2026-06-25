@@ -801,6 +801,11 @@ WRF_MR_TP_TARGET   = os.getenv("WRF_MR_TP_TARGET", "mid")  # "mid" | "opposite"
 WRF_RV_REQUIRE_CHOCH  = os.getenv("WRF_RV_REQUIRE_CHOCH", "true").lower() not in ("0", "false", "no", "")
 WRF_RV_REQUIRE_RETEST = os.getenv("WRF_RV_REQUIRE_RETEST", "true").lower() not in ("0", "false", "no", "")
 WRF_RV_MIN_CONFIRMS   = _wrf_i("WRF_RV_MIN_CONFIRMS", 3)
+# [Path1-②] 방향-사이드 신호(precision/FP): RV 청산·키레벨 거부를 진입방향에 맞는 쪽만
+# 카운트(롱=숏청산·지지선거부 / 숏=롱청산·저항선거부). 감사결과 precond 임계는 이미
+# 대칭이고 숏 FN은 시장(약세-과매도 편중)·엄격 precond 산물 — 본 토글은 '잘못된 쪽'
+# 트리거 제거로 FP만 줄인다(양방향 대칭). 기본 OFF(라이브 안전) — 섀도 비교 검증 후 ON.
+WRF_RV_SIDED_SIGNALS  = os.getenv("WRF_RV_SIDED_SIGNALS", "false").lower() not in ("0", "false", "no", "")
 
 # ── [A1] TF 되돌림(피보) 배선: 4H 피보 zone(optimal/deep) 눌림 경로 ──────
 # 얕은 눌림(1H EMA 정렬 유지 + loc 밴드) 외에, 깊은 눌림(피보 50~61.8%)도
