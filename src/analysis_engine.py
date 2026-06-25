@@ -455,7 +455,7 @@ def classify_market_regime(df_1h, adx, bb):
         return {"regime":"UNKNOWN","threshold":64,"description":"데이터 부족","icon":"❓"}
     adx_val=adx.get("adx",0.0); bw=bb.get("band_width",0.0); avg_bw=bb.get("avg_band_width",bw)
     squeeze=bb.get("squeeze",False); bw_ratio=bw/avg_bw if avg_bw>0 else 1.0
-    ma20_cross=0; er=1.0; er_pctl=None; slope_persist=0.0
+    ma20_cross=0; er=1.0; er_pctl=None; slope_persist=0.0; slope_drift=0.0
     try:
         close=df_1h["close"].astype(float); ma20=close.rolling(20).mean()
         lb=min(40,len(close)-1)
@@ -473,20 +473,27 @@ def classify_market_regime(df_1h, adx, bb):
             er_ser=er_ser[np.isfinite(er_ser)]
             tail=er_ser.iloc[-int(getattr(config,"WRF_REGIME_ER_PCTL_WIN",150)):]
             if len(tail)>=20: er_pctl=float((tail<=er).mean())
-        # [Pillar1-②] 방향지속 — MA20 기울기 부호 일관성(느린 grind 핵심 판별자, 방향무관)
+        # [Pillar1-②] 방향지속 — MA20 기울기 부호 일관성 + 순드리프트 magnitude(chop 차단용).
+        # ★실데이터: 기울기 일관성만으론 down-grind와 chop 분리 불가 → 드리프트 AND 게이트 필수.
         sw=int(getattr(config,"WRF_REGIME_SLOPE_WIN",20))
         mdiff=ma20.diff().iloc[-sw:].dropna()
         if len(mdiff)>=max(5,sw//2):
             slope_persist=float(max((mdiff>0).mean(),(mdiff<0).mean()))
+        if len(close)>sw:
+            cN=float(close.iloc[-1])
+            slope_drift=abs(cN-float(close.iloc[-sw-1]))/cN if cN else 0.0
     except: pass
     is_ranging=((ma20_cross>=2 and er<0.35) or er<0.15)
-    # 승격 신호(둘 다 방향무관 → 상승/하락 grind 대칭)
+    # 승격 신호(둘 다 방향무관 → 상승/하락 grind 대칭 · 순드리프트 AND로 chop FP 통제)
     slope_sig=(getattr(config,"WRF_REGIME_SLOPE_PERSIST",False)
-               and slope_persist>=getattr(config,"WRF_REGIME_SLOPE_MIN_FRAC",0.70))
+               and slope_persist>=getattr(config,"WRF_REGIME_SLOPE_MIN_FRAC",0.85)
+               and slope_drift>=getattr(config,"WRF_REGIME_SLOPE_MIN_DRIFT",0.02))
     if getattr(config,"WRF_REGIME_ER_TREND",False):
-        er_sig=((er_pctl is not None and er_pctl>=getattr(config,"WRF_REGIME_ER_PCTL_MIN",0.70))
-                if getattr(config,"WRF_REGIME_ER_PCTL",False)
-                else er>=getattr(config,"WRF_REGIME_ER_TREND_MIN",0.50))
+        if getattr(config,"WRF_REGIME_ER_PCTL",False):
+            er_sig=(er_pctl is not None and er_pctl>=getattr(config,"WRF_REGIME_ER_PCTL_MIN",0.90)
+                    and slope_drift>=getattr(config,"WRF_REGIME_ER_DRIFT_MIN",0.015))
+        else:
+            er_sig=er>=getattr(config,"WRF_REGIME_ER_TREND_MIN",0.50)
     else: er_sig=False
     if squeeze and adx_val<config.REGIME_TREND_ADX: regime,desc,icon="SQUEEZE",f"BB스퀴즈+ADX낮음({adx_val:.0f})","🔄"
     elif adx_val>=config.REGIME_STRONG_ADX and bw_ratio>=1.2: regime,desc,icon="EXPLOSIVE",f"ADX강({adx_val:.0f})+BB확장({bw_ratio:.1f}x)","💥"

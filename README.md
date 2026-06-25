@@ -329,10 +329,12 @@ grind**는 놓쳤다(ER 0.50은 느린 grind의 ER 0.15~0.35를 영영 못 만�
 전사). 처방은 **하드 게이트를 점수로 강등하고 판정을 floor에 위임**하는 한 원리로 수렴한다.
 
 - **Pillar1 — 레짐/라우팅 지연**: ① ER을 코인 자기분포 **백분위**로(`WRF_REGIME_ER_PCTL`,
-  절대 0.50 폐기·철학 정합) ② **방향지속**(MA20 기울기 부호 일관성) 승격을 `is_ranging` 앞에
-  배치(`WRF_REGIME_SLOPE_PERSIST`) → ER이 못 잡는 slow grind를 RANGING 함정에서 구출, chop은
-  기울기 비일관 → 미승격(FP 방어) ③ 라우팅을 BTC매크로 종속에서 **심볼 자체구조**로 분리
-  (`WRF_ROUTING_SELF_STRUCT`) → BTC 횡보 중 홀로 흐르는 알트도 TF 라우팅.
+  절대 0.50 폐기·철학 정합) ② **방향지속**(MA20 기울기 일관성 + **순드리프트 magnitude**) 승격을
+  `is_ranging` 앞에 배치(`WRF_REGIME_SLOPE_PERSIST`) ③ 라우팅을 BTC매크로 종속에서 **심볼
+  자체구조**로 분리(`WRF_ROUTING_SELF_STRUCT`). **★실데이터 튜닝(323스냅샷)**: 기울기 일관성만으론
+  하락 grind(sp=0.74)와 chop(sp=0.79)이 분리 안 됨(slow grind는 backward 통계가 chop과 닮음) →
+  드리프트 AND 게이트(≥0.02) + 임계 상향(0.85)으로 chop 오승격을 42%→**8%**로 통제. 회수율은
+  보수적(하락추세 21%) — 초저속 grind는 FP 통제 비용으로 일부 미승격(숏 FN의 주 해결은 Pillar2).
 - **Pillar2 — precond 경직성**: RV 5중 동시 AND를 **소프트 스코어**로(`WRF_RV_SOFT_PRECOND`) —
   안전 최소치(소진≥1∧반전캔들∧확인≥2)만 게이트, CHoCH·리테스트는 L 감쇠로 흡수(부분정렬
   반전도 후보화하되 약하면 floor가 탈락). BO near-SL은 **타이트니스 P̂ 보정**(`WRF_BO_SL_TIGHT_PEN`)
@@ -345,13 +347,15 @@ grind**는 놓쳤다(ER 0.50은 느린 grind의 ER 0.15~0.35를 영영 못 만�
   TF 모멘텀 **대칭화**(숏도 명시적 약세 요구), `WRF_RV_SIDED_SIGNALS` 기본 ON(청산을 진입방향
   적합한 쪽만), 死파라미터 `WRF_PCT_EXTREME_*` 배선.
 
-**검증(`scratchpad/verify_*` 재현 가능)**: ① 게이트 재채점(실데이터 50후보) — NEW가 OLD
-대비 발사 회수(연속 min-axis가 floor에서 죽던 후보 부활), 집계 성능은 실제 라이브 이력과 정합
-(PF 3.16). ② 합성 컴포넌트 — grind-down **ER=0.16**(승격임계 밑)을 slope_persist=1.0이 단독
-구출→TRENDING(상/하 대칭), chop=RANGING 유지 / 알트 grind는 BTC=CHOP에도 route=down / RV
-부분정렬 숏 OLD 0개→NEW 1개 생성 / min-axis 단조연속(음수축 강차단) / EV게이트 0.65×1.0 회생 /
-midrank 완전대칭 / BO RR 0.99→3.33. ③ **핵심 진단**: 숏 발사 수는 재채점(게이트)만으로 불변 —
-숏 FN은 **후보 생성**(Pillar1 라우팅+Pillar2 precond) 문제이지 게이트 문제가 아님을 데이터로 확정.
+**검증(`scratchpad/verify_*` 재현 가능)**: ① **실데이터 레짐 재현**(323스냅샷, p0=실종가·
+raw.adx=실ADX) — 하락추세 회수 21%(전부 숏 적격)·chop 오승격 8%·승격 정밀도 62%·TRENDING률
+3.1%→18%(타당). ② 게이트 재채점(실데이터 50후보) — 연속 min-axis가 floor에서 죽던 후보 부활,
+집계 성능은 실제 라이브 이력과 정합(PF 3.16). ③ 합성 컴포넌트 9/9 — grind 상/하 대칭 승격·chop
+미승격 / 알트 grind는 BTC=CHOP에도 route=down / RV 부분정렬 숏 0→1 생성 / min-axis 단조연속
+(음수축 강차단) / EV게이트 0.65×1.0 회생 / midrank 완전대칭 / BO RR 0.99→3.33.
+④ **핵심 진단**: 숏 발사 수는 게이트 재채점만으로 불변 + 레짐신호가 하락 grind를 chop과 분리
+못함 → 숏 FN의 주 해결은 **Pillar2(RANGING 내 RV 생성)**, Pillar1은 FP-안전 보조. (표본 ≈5일·
+단일레짐 → 모든 수치는 인프라/논리 검증용, OOS 재검증 전제.)
 
 ### 밴드반전 원트랙 일원화 (구 D-shadow 투트랙 폐지)
 

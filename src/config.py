@@ -902,14 +902,17 @@ WRF_REGIME_ER_TREND_MIN = _wrf_f("WRF_REGIME_ER_TREND_MIN", 0.50)  # 순이동/�
 # [Pillar1-①] ER 백분위화: 절대임계 0.50(전 코인 공통·알트 변동성 편향·시스템 철학 위반)
 # 대신 코인 자기 ER 분포의 백분위로 승격(>=ER_PCTL_MIN). 시스템의 "절대임계 없음" 원칙과 정합.
 WRF_REGIME_ER_PCTL      = os.getenv("WRF_REGIME_ER_PCTL", "true").lower() not in ("0", "false", "no", "")
-WRF_REGIME_ER_PCTL_MIN  = _wrf_f("WRF_REGIME_ER_PCTL_MIN", 0.70)   # ER 자기분포 상위 30% → 승격
+WRF_REGIME_ER_PCTL_MIN  = _wrf_f("WRF_REGIME_ER_PCTL_MIN", 0.90)   # ER 자기분포 상위 10% (실데이터 튜닝: FP 통제)
 WRF_REGIME_ER_PCTL_WIN  = _wrf_i("WRF_REGIME_ER_PCTL_WIN", 150)    # ER 백분위 표본 윈도(봉)
-# [Pillar1-②] 방향지속(slope persistence) 승격 — 느린 grind의 핵심 판별자. ADX·ER이 모두
-# 놓치는 slow grind(낮은 ER·낮은 ADX이나 단일방향 지속)를 MA20 기울기 부호 일관성으로 포착.
-# is_ranging '앞'에서 평가 → RANGING 함정 탈출(FN↓). 기울기 일관성 낮은 진짜 chop은 통과 안 함(FP↓).
+WRF_REGIME_ER_DRIFT_MIN = _wrf_f("WRF_REGIME_ER_DRIFT_MIN", 0.015) # ER 승격에도 순드리프트 동반 요구
+# [Pillar1-②] 방향지속(slope persistence) 승격 — 느린 grind 포착 시도. ★실데이터 진단(2026-06,
+# 323스냅샷): MA20 기울기 부호 일관성만으로는 하락 grind(sp=0.74)와 chop(sp=0.79)이 분리 안 됨
+# (slow grind는 본질상 backward 통계가 chop과 닮음). → 순드리프트 magnitude 게이트를 AND로
+# 추가하고 임계를 높여(0.70→0.85·drift≥0.02) FP를 통제. is_ranging '앞'에서 평가하되 보수적.
 WRF_REGIME_SLOPE_PERSIST  = os.getenv("WRF_REGIME_SLOPE_PERSIST", "true").lower() not in ("0", "false", "no", "")
-WRF_REGIME_SLOPE_WIN      = _wrf_i("WRF_REGIME_SLOPE_WIN", 20)     # 기울기 일관성 판정 윈도(봉)
-WRF_REGIME_SLOPE_MIN_FRAC = _wrf_f("WRF_REGIME_SLOPE_MIN_FRAC", 0.70)  # 동방향 기울기 비율 ≥ → 추세
+WRF_REGIME_SLOPE_WIN      = _wrf_i("WRF_REGIME_SLOPE_WIN", 20)     # 기울기 일관성·드리프트 윈도(봉)
+WRF_REGIME_SLOPE_MIN_FRAC = _wrf_f("WRF_REGIME_SLOPE_MIN_FRAC", 0.85)  # 동방향 기울기 비율 ≥
+WRF_REGIME_SLOPE_MIN_DRIFT = _wrf_f("WRF_REGIME_SLOPE_MIN_DRIFT", 0.02)  # |순드리프트|/price ≥ (chop 차단)
 # (B) BO 손절 재배치: 박스 반대편(far, 손절=박스높이 → RR≈1 고착) → 돌파된 경계
 #     (near) ∓ ATR쿠션(돌파-리테스트 무효화). RR이 박스높이/쿠션으로 정상화(>>1.5).
 #     min_sl/max_sl 클램프가 과도한 타이트/와이드를 방지. TF/RV 구조SL 철학과 동일.
