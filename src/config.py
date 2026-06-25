@@ -734,6 +734,10 @@ WRF_D_BBPCTB_LO    = _wrf_f("WRF_D_BBPCTB_LO", 0.20)   # 롱: BB %b ≤ (하단 
 # 심볼+방향 쿨다운(중복 억제): 직전 N시간 내 같은 심볼·방향 섀도신호가 로그됐으면 skip.
 # 클러스터(연속봉 무더기 발화)를 1건으로 수렴. 0이면 쿨다운 OFF. 상태=JSONL shadow_logged.
 WRF_D_SHADOW_COOLDOWN_H = _wrf_i("WRF_D_SHADOW_COOLDOWN_H", 12)
+# 밴드복귀 확증(Path2-① · 과적합 경계 · 양방향): 밴드 외곽 이탈 후 '밴드 안 복귀'(턴)에서만
+# 무장 → 밴드를 타고 오르는 강추세(band-ride=칼받기 FP)와 진짜 소진반전을 분리. 신규
+# 파라미터 0개(기존 bb_hi/lo 재사용). df 부족 시 밴드터치로 graceful 폴백. False=구동작.
+WRF_D_REQUIRE_REENTRY = os.getenv("WRF_D_REQUIRE_REENTRY", "true").lower() not in ("0", "false", "no", "")
 
 # ── 신뢰게이트(보정 자격) — 미충족 셀은 전부 보수적 prior로 동작 ────────
 WRF_CELL_N_MIN        = _wrf_i("WRF_CELL_N_MIN", 100)   # 셀 탈중첩 독립표본 최소치

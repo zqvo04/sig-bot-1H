@@ -309,6 +309,23 @@ def _detect_rv(feat: dict, measures: dict):
     return out
 
 
+def _bb_pctb_prev(df, period: int, std_dev: float):
+    """직전봉 BB %b (현재봉은 raw.bb_pctb). 밴드복귀 확증용. df 부족/오류 시 None."""
+    try:
+        c = df["close"].astype(float)
+        if len(c) < period + 2:
+            return None
+        mid = c.rolling(period).mean()
+        sd = c.rolling(period).std()
+        lower = mid - std_dev * sd
+        rng = (mid + std_dev * sd) - lower
+        pb = (c - lower) / rng.replace(0, float("nan"))
+        v = pb.iloc[-2]
+        return float(v) if v == v else None   # NaN 가드
+    except Exception:
+        return None
+
+
 # ── [D-shadow] BB 밴드터치로 무장하는 반전 후보 (섀도 전용 · 양방향 대칭) ──────
 # 설계: 트리거는 '고전적 BB 밴드터치'(상단≥hi=숏 / 하단≤lo=롱)로 단순·대칭하게 무장만
 # 하고, 방향적합성·소진·맥락 판정은 prior(C/L/F)+floor에 위임한다. 특히 floor의 min-axis
@@ -330,27 +347,37 @@ def _detect_d_shadow(feat: dict, measures: dict):
     dv = raw.get("dist_vwap_atr"); r4 = raw.get("rsi_4h")  # 기록용(무장 조건엔 미사용)
     bb_hi = getattr(config, "WRF_D_BBPCTB_HI", 0.80)
     bb_lo = getattr(config, "WRF_D_BBPCTB_LO", 0.20)
+    # [Path2-①] 밴드복귀 확증: 직전봉이 밴드 외곽이고 현재봉이 밴드 안으로 복귀(턴)한
+    # 경우만 무장 → band-ride(강추세 칼받기 FP)와 소진반전을 분리. 직전 %b 부재 시 밴드터치 폴백.
+    require_re = getattr(config, "WRF_D_REQUIRE_REENTRY", True)
+    bb_prev = (_bb_pctb_prev(feat.get("df_1h"), getattr(config, "BOLLINGER_PERIOD", 20),
+                             getattr(config, "BOLLINGER_STD", 2.0))
+               if require_re else None)
+    use_re = require_re and bb_prev is not None
     out = []
     for direction in ("long", "short"):
-        # 고전적 밴드터치(과적합 경계): 상단(≥hi)=숏 / 하단(≤lo)=롱. 방향적합성은
-        # prior C축(역레그 페이드면 C<0 → floor의 min-axis가 차단)이 판정한다.
-        if direction == "short":   # 상단 밴드 터치 → 페이드 숏
-            armed = bb >= bb_hi
-            stretch = max(0.0, (bb - bb_hi) / max(1e-6, 1.0 - bb_hi))
-        else:                      # 하단 밴드 터치 → 페이드 롱
-            armed = bb <= bb_lo
-            stretch = max(0.0, (bb_lo - bb) / max(1e-6, bb_lo))
+        # 상단(≥hi)=숏 / 하단(≤lo)=롱. 방향적합성은 prior C축(역레그 페이드면 C<0 →
+        # floor의 min-axis가 차단)이 판정. 무장 = 밴드복귀(use_re) 또는 밴드터치(폴백).
+        if direction == "short":   # 상단 이탈 → 밴드 안 복귀(턴) = 페이드 숏
+            armed = (bb_prev >= bb_hi and bb < bb_hi) if use_re else (bb >= bb_hi)
+            ext = bb_prev if use_re else bb
+            stretch = max(0.0, (ext - bb_hi) / max(1e-6, 1.0 - bb_hi))
+        else:                      # 하단 이탈 → 밴드 안 복귀(턴) = 페이드 롱
+            armed = (bb_prev <= bb_lo and bb > bb_lo) if use_re else (bb <= bb_lo)
+            ext = bb_prev if use_re else bb
+            stretch = max(0.0, (bb_lo - ext) / max(1e-6, bb_lo))
         if not armed:
             continue
         C = _ctx_exhaustion(ctx, direction)
         L = _clip(0.5 + 0.5 * min(1.0, stretch))
         L = _confluence_bonus(L, raw, direction)
         F = _flow_exhaustion(raw, pcts, direction)
+        mode = (f"밴드복귀 %b={bb_prev:.2f}→{bb:.2f}" if use_re else f"밴드터치 %b={bb:.2f}")
         out.append({
             "setup": "RV", "dir": direction, "precond": True, "d_shadow": True,
             "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
             "confluence_n": raw.get(f"confluence_{direction}", 0),
-            "reason": f"[D-shadow] 스트레치소진 bb%b={bb:.2f}"
+            "reason": f"[D-shadow] {mode}"
                       f"{f'/rsi4h={r4:.0f}' if r4 is not None else ''}"
                       f"{f'/vwapATR={dv:+.1f}' if dv is not None else ''}",
         })
