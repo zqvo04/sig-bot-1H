@@ -936,6 +936,10 @@ WRF_SIZE_MAX  = _wrf_f("WRF_SIZE_MAX", 2.0)     # 사이즈 상한 단위
 WRF_CALIB_TABLE = os.getenv("WRF_CALIB_TABLE", "data/calibration_table.json")
 WRF_SCHEMA_VERSION = 3
 
+# 단일 버전 식별자 — 수집·측정·스냅샷 로그 배너의 유일한 출처(레거시 v3.0/v3.6 표기 폐기).
+# 아키텍처는 WRF-4(Win-Rate-First, 4-Setup), 적재 스키마는 v{WRF_SCHEMA_VERSION}.
+BOT_VERSION = "WRF-4"
+
 # ══════════════════════════════════════════════════════════════════════
 # [Phase 2] 계층적 부분풀링(partial pooling) 보정 — "심장을 다시 뛰게"
 # ══════════════════════════════════════════════════════════════════════

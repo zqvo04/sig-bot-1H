@@ -143,7 +143,7 @@ def analyze_mtf_rsi(df_1h, df_4h, df_1d):
     pb_tag=((" ★눌림목롱(강)" if pls else " ★눌림목롱(약)" if plw else " ★눌림목롱(미)" if plm else "")+
             (" ★눌림목숏(강)" if pss else " ★눌림목숏(약)" if psw else " ★눌림목숏(미)" if psm else ""))
     div_tag=((" 📊히든롱" if hbd else "")+(" 📊히든숏" if hsd else ""))
-    logger.info(f"[MTF-RSI] 1h:{v1hs} 4h:{v4hs} 1d:{v1ds} 가중:{v_weighted:.1f} [{state}] 롱:{long_score:.1f} 숏:{short_score:.1f}"+pb_tag+div_tag)
+    logger.info(f"[MTF-RSI] 1h:{v1hs} 4h:{v4hs} 1d:{v1ds} 가중:{v_weighted:.1f} [{state}]"+pb_tag+div_tag)
     rsi_1d_slope = None
     if df_1d is not None and len(df_1d) >= config.RSI_PERIOD + 4:
         _r1d = calculate_rsi(df_1d)
@@ -271,7 +271,6 @@ def calculate_ema_multiplier(ohlcv_dict, direction, regime="UNKNOWN"):
     same_count=sum(1 for s in tf_signals.values() if s==("bullish" if direction=="long" else "bearish"))
     mult=config.REGIME_EMA_MULTIPLIERS.get(regime,config.EMA_MULTIPLIER).get(reverse_count,1.0)
     ema_dir="bullish" if same_count==3 and direction=="long" else "bearish" if same_count==3 and direction=="short" else "mixed"
-    logger.info(f"[EMA배율/{direction.upper()}] {tf_signals} → ×{mult:.2f} [{regime}]")
     return {"tf_signals":tf_signals,"same_count":same_count,"reverse_count":reverse_count,"multiplier":mult,"direction":ema_dir,"regime":regime,
             "reason":f"EMA {same_count}/3 일치 (역:{reverse_count}개 → ×{mult:.2f}) [{regime}]"}
 
@@ -331,7 +330,7 @@ def analyze_funding_rate(funding_data):
         t=rate/config.FUNDING_LONG_MILD if rate<0 else rate/config.FUNDING_SHORT_MILD
         ls=50-t*15; ss=50+t*15; bias,st="neutral","neutral"
     ls=round(min(100,max(0,ls)),2); ss=round(min(100,max(0,ss)),2)
-    logger.info(f"[FundingRate] {rate*100:+.4f}% [{bias}] 롱:{ls:.1f} 숏:{ss:.1f}")
+    logger.info(f"[FundingRate] {rate*100:+.4f}% [{bias}]")
     return {"rate":rate,"rate_pct":round(rate*100,6),"long_score":ls,"short_score":ss,"bias":bias,"strength":st,"available":True}
 
 def analyze_long_short_ratio(ls_data, regime_name="RANGING"):
@@ -354,7 +353,7 @@ def analyze_long_short_ratio(ls_data, regime_name="RANGING"):
         else:
             t=(lp-0.5)*2; ss=50+t*10; ls=100-ss; bias="neutral"
     ls=round(min(100,max(0,ls)),2); ss=round(min(100,max(0,ss)),2)
-    logger.info(f"[LS비율] 롱:{lp*100:.1f}% [{bias}/{regime_name}] 롱pt:{ls} 숏pt:{ss}")
+    logger.info(f"[LS비율] 롱:{lp*100:.1f}% [{bias}/{regime_name}]")
     return {"long_score":ls,"short_score":ss,"bias":bias,"long_pct":lp,"short_pct":sp,"available":True}
 
 def analyze_taker_volume(taker_data):
@@ -368,7 +367,7 @@ def analyze_taker_volume(taker_data):
     elif sr>=0.55: ss=65+(sr-0.55)/(config.TAKER_STRONG_SELL-0.55)*20; ls=100-ss
     else: ls=50+(br-0.5)*80; ss=100-ls
     ls=round(min(100,max(0,ls)),2); ss=round(min(100,max(0,ss)),2)
-    logger.info(f"[Taker] 매수:{br*100:.1f}% [{bias}/{strength}] 롱:{ls:.1f} 숏:{ss:.1f}")
+    logger.info(f"[Taker] 매수:{br*100:.1f}% [{bias}/{strength}]")
     return {"long_score":ls,"short_score":ss,"bias":bias,"strength":strength,"buy_ratio":br,"sell_ratio":sr,"available":True}
 
 
@@ -450,7 +449,7 @@ def analyze_liquidations(liq_data, df_1h=None):
             "favorable_direction":fav,"display_hint":hint,"available":True}
 
 
-def classify_market_regime(df_1h, adx, bb):
+def classify_market_regime(df_1h, adx, bb, tf="1H"):
     if df_1h is None or len(df_1h)<25 or not bb.get("available"):
         return {"regime":"UNKNOWN","threshold":64,"description":"데이터 부족","icon":"❓"}
     adx_val=adx.get("adx",0.0); bw=bb.get("band_width",0.0); avg_bw=bb.get("avg_band_width",bw)
@@ -509,23 +508,11 @@ def classify_market_regime(df_1h, adx, bb):
         regime,desc,icon="TRENDING",f"{tag},ADX:{adx_val:.0f}","📈"
     else: regime,desc,icon="RANGING",f"ADX낮음({adx_val:.0f})+BB평행","↔️"
     thr=config.REGIME_THRESHOLDS.get(regime,64)
-    logger.info(f"[국면] {icon} {regime} — {desc} (임계:{thr}pt)")
+    logger.info(f"[국면/{tf}] {icon} {regime} — {desc}")
     return {"regime":regime,"threshold":thr,"description":desc,"icon":icon,
             "adx":adx_val,"bw_ratio":round(bw_ratio,3),"squeeze":squeeze,"ma20_cross_count":ma20_cross,
             "efficiency_ratio":er,"er_pctl":(round(er_pctl,3) if er_pctl is not None else None),
             "slope_persist":round(slope_persist,3)}
-
-def evaluate_gates(direction, funding, ls_ratio_result):
-    fb=funding.get("bias","neutral"); lb_=ls_ratio_result.get("bias","neutral")
-    pf=1.0; pr=None
-    if direction=="long": fr_bad=(fb=="short_favorable"); ls_bad=(lb_ in ("short_favorable","short_extreme"))
-    else: fr_bad=(fb=="long_favorable"); ls_bad=(lb_ in ("long_favorable","long_extreme"))
-    if fr_bad and ls_bad: pf=config.GATE_PENALTY_DUAL; pr=f"펀딩비·롱숏 모두 {direction} 불리 ×{pf}"; logger.info(f"[Gate] ⚠️ {direction.upper()} 복합 패널티")
-    elif fr_bad: pf=config.GATE_PENALTY_SINGLE; pr=f"펀딩비 불리 ×{pf}"
-    elif ls_bad: pf=config.GATE_PENALTY_SINGLE; pr=f"롱숏비율 불리 ×{pf}"
-    else: logger.info(f"[Gate] ✅ {direction.upper()} 통과")
-    return {"passed":True,"funding_penalty":pf,"block_reason":None,"penalty_reason":pr}
-
 
 # ══════════════════════════════════════════════════════════════════════
 # 7. SMC (FVG, BOS, Fibonacci)
@@ -995,46 +982,6 @@ def analyze_funding_history_trend(funding_hist: dict) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# [v3.0] ⑥ 멀티TF 모멘텀 정합
-# ══════════════════════════════════════════════════════════════════════
-
-def analyze_mtf_momentum(df_1h, df_4h, df_1d) -> dict:
-    _empty = {"available": False, "alignment": 0, "direction": "neutral",
-              "long_score_adj": 0, "short_score_adj": 0, "slopes": {}}
-    MIN = config.MTF_MOMENTUM_RSI_SLOPE_MIN
-    def _slope(df):
-        if df is None or len(df) < 8: return 0.0
-        rsi = calculate_rsi(df)
-        return float(rsi.iloc[-1] - rsi.iloc[-4])
-    s1h = _slope(df_1h); s4h = _slope(df_4h); s1d = _slope(df_1d)
-    def _dir(s):
-        if s >  MIN: return "bull"
-        if s < -MIN: return "bear"
-        return "neutral"
-    d1h = _dir(s1h); d4h = _dir(s4h); d1d = _dir(s1d)
-    bull_cnt = [d1h,d4h,d1d].count("bull"); bear_cnt = [d1h,d4h,d1d].count("bear")
-    ls_adj = ss_adj = 0; direction = "neutral"; alignment = 0
-    if bull_cnt == 3:
-        ls_adj = config.BONUS_MTF_MOMENTUM_FULL; alignment = 3; direction = "bull"
-        logger.info(f"[멀티TF모멘텀] ★★★ 3/3 상승 정합 → 롱+{ls_adj}pt")
-    elif bull_cnt == 2 and bear_cnt == 0:
-        ls_adj = config.BONUS_MTF_MOMENTUM_PARTIAL; alignment = 2; direction = "bull"
-        logger.info(f"[멀티TF모멘텀] ★★ 2/3 상승 정합 → 롱+{ls_adj}pt")
-    elif bear_cnt == 3:
-        ss_adj = config.BONUS_MTF_MOMENTUM_FULL; alignment = -3; direction = "bear"
-        logger.info(f"[멀티TF모멘텀] ★★★ 3/3 하락 정합 → 숏+{ss_adj}pt")
-    elif bear_cnt == 2 and bull_cnt == 0:
-        ss_adj = config.BONUS_MTF_MOMENTUM_PARTIAL; alignment = -2; direction = "bear"
-        logger.info(f"[멀티TF모멘텀] ★★ 2/3 하락 정합 → 숏+{ss_adj}pt")
-    else:
-        logger.debug(f"[멀티TF모멘텀] 혼조 (1h:{d1h} 4h:{d4h} 1d:{d1d})")
-    return {"available":True,"alignment":alignment,"direction":direction,
-            "long_score_adj":ls_adj,"short_score_adj":ss_adj,
-            "slopes":{"1h":round(s1h,2),"4h":round(s4h,2),"1d":round(s1d,2)},
-            "dirs":{"1h":d1h,"4h":d4h,"1d":d1d}}
-
-
-# ══════════════════════════════════════════════════════════════════════
 # [v3.0] ⑧ 주간 키레벨 S/R
 # ══════════════════════════════════════════════════════════════════════
 
@@ -1107,22 +1054,22 @@ def analyze_1d_ema_structure(df_1d, current_price: float) -> dict:
             structure = "bull"
             lt_adj = config.EMA_STRUCTURE_ALIGN_ADJ
             st_adj = config.EMA_STRUCTURE_AGAINST_ADJ
-            logger.info(f"[1D-EMA구조] 📈 강세구조 price>{ema20:.0f}>EMA50 → 롱임계{lt_adj:+d}pt")
+            logger.info(f"[1D-EMA구조] 📈 강세구조 price>{ema20:.0f}>EMA50")
         elif bear_struct:
             structure = "bear"
             st_adj = config.EMA_STRUCTURE_ALIGN_ADJ
             lt_adj = config.EMA_STRUCTURE_AGAINST_ADJ
-            logger.info(f"[1D-EMA구조] 📉 약세구조 price<{ema20:.0f}<EMA50 → 숏임계{st_adj:+d}pt")
+            logger.info(f"[1D-EMA구조] 📉 약세구조 price<{ema20:.0f}<EMA50")
         else:
             structure = "neutral"
             logger.debug(f"[1D-EMA구조] 중립 (price:{current_price:.0f} EMA20:{ema20:.0f} EMA50:{ema50:.0f})")
         if dist200 is not None and abs(dist200) >= config.EMA_DISTANCE_EXTREME:
             if dist200 > 0:
                 lt_adj += config.EMA_DISTANCE_EXTREME_ADJ
-                logger.info(f"[1D-EMA구조] ⚠️ EMA200 상방 {dist200:.0%} 이격 → 롱임계+{config.EMA_DISTANCE_EXTREME_ADJ}pt")
+                logger.info(f"[1D-EMA구조] ⚠️ EMA200 상방 {dist200:.0%} 이격")
             else:
                 st_adj += config.EMA_DISTANCE_EXTREME_ADJ
-                logger.info(f"[1D-EMA구조] ⚠️ EMA200 하방 {dist200:.0%} 이격 → 숏임계+{config.EMA_DISTANCE_EXTREME_ADJ}pt")
+                logger.info(f"[1D-EMA구조] ⚠️ EMA200 하방 {dist200:.0%} 이격")
         return {"available":True,"structure":structure,"ema20":round(ema20,4),"ema50":round(ema50,4),
                 "ema200":round(ema200,4) if ema200 else None,"dist_from_200":round(dist200,4) if dist200 is not None else None,
                 "long_threshold_adj":lt_adj,"short_threshold_adj":st_adj}
@@ -1147,7 +1094,7 @@ def analyze_daily_bias(df_1d):
         if bc>=2: bias,al,as_="BULL",config.DAILY_BIAS_THRESHOLD_ADJ_ALIGN,config.DAILY_BIAS_THRESHOLD_ADJ_AGAINST
         elif berc>=2: bias,al,as_="BEAR",config.DAILY_BIAS_THRESHOLD_ADJ_AGAINST,config.DAILY_BIAS_THRESHOLD_ADJ_ALIGN
         else: bias,al,as_="NEUTRAL",0,0
-        logger.info(f"[일봉바이어스] {bias} (강세:{bc}/3 약세:{berc}/3) | 롱임계:{al:+d}pt 숏임계:{as_:+d}pt")
+        logger.info(f"[일봉바이어스] {bias} (강세:{bc}/3 약세:{berc}/3)")
         return {"bias":bias,"threshold_adj_long":al,"threshold_adj_short":as_,"bull_count":bc,"bear_count":berc,"ema9":round(e9,4),"ema21":round(e21,4)}
     except Exception as e:
         logger.warning(f"[일봉바이어스] 오류: {e}"); return _neutral
@@ -1160,7 +1107,7 @@ def analyze_daily_bias(df_1d):
 def run_full_analysis(symbol, collected_data):
     import datetime
     logger.info(f"{chr(8213)*50}")
-    logger.info(f"🔬 분석 [1H봇 v3.6]: {symbol}")
+    logger.info(f"🔬 측정 [{config.BOT_VERSION}]: {symbol}")
 
     ohlcv        = collected_data.get("ohlcv", {})
     ticker       = collected_data.get("ticker") or {}
@@ -1196,13 +1143,10 @@ def run_full_analysis(symbol, collected_data):
     fvg       = detect_fvg(df_1h)
     bos_1h    = detect_bos_choch(df_1h, lookback=60, n=3)
     fib       = check_fibonacci_levels(df_1h)
-    ema_long  = calculate_ema_multiplier(ohlcv, "long",  regime_name)
-    ema_short = calculate_ema_multiplier(ohlcv, "short", regime_name)
-    gate_long = evaluate_gates("long",  funding, ls_ratio)
-    gate_short= evaluate_gates("short", funding, ls_ratio)
+    ema_long  = calculate_ema_multiplier(ohlcv, "long",  regime_name)  # tf_signals만 소비(방향무관)
 
     bb_4h        = analyze_bollinger_bands(df_4h)
-    regime_4h    = classify_market_regime(df_4h, adx_4h, bb_4h)
+    regime_4h    = classify_market_regime(df_4h, adx_4h, bb_4h, tf="4H")
     bos_4h       = detect_bos_choch(df_4h, lookback=30, n=2)
     daily_bias   = analyze_daily_bias(df_1d)
 
@@ -1211,7 +1155,6 @@ def run_full_analysis(symbol, collected_data):
     smart_money  = analyze_smart_money_divergence(top_trader, ls_raw)
     oi_matrix    = analyze_oi_matrix(oi_raw, df_1h)
     fund_trend   = analyze_funding_history_trend(fund_hist)
-    mtf_momentum = analyze_mtf_momentum(df_1h, df_4h, df_1d)
     weekly_lvl   = detect_weekly_levels(df_1d, price)
     ema_struct   = analyze_1d_ema_structure(df_1d, price)
 
@@ -1221,22 +1164,21 @@ def run_full_analysis(symbol, collected_data):
     retracement  = analyze_retracement_depth(df_4h, price)
 
     logger.info(
-        f"  MTF-RSI: 1h:{rsi['value']:.1f} 4h:{rsi.get('value_4h') or '-'} "
+        f"  [측정] MTF-RSI: 1h:{rsi['value']:.1f} 4h:{rsi.get('value_4h') or '-'} "
         f"1d:{rsi.get('value_1d') or '-'} [{rsi['state']}] | "
         f"BB:{bb['state']}(%B={bb['pct_b']:.2f}) | ADX:{adx_1h['adx']:.1f} | "
         f"1h국면:{regime_name} | Vol:{vol['ratio']:.2f}x | "
         f"Taker:{taker.get('bias','?')} | 청산:{liq.get('signal','none')} → {liq.get('favorable_direction','?')}"
     )
     logger.info(
-        f"  [v3.0] 스마트머니:{smart_money.get('smart_direction','?')}(괴리:{smart_money.get('divergence',0):+.1%}) | "
+        f"  [포지셔닝] 스마트머니:{smart_money.get('smart_direction','?')}(괴리:{smart_money.get('divergence',0):+.1%}) | "
         f"OI매트릭스:{oi_matrix.get('quadrant','?')} | "
         f"펀딩추세:{fund_trend.get('signal','?')} | "
-        f"모멘텀정합:{mtf_momentum.get('direction','?')}({mtf_momentum.get('alignment',0)}/3) | "
         f"1D-EMA:{ema_struct.get('structure','?')} | "
         f"주간레벨:{weekly_lvl.get('level_type','없음')}"
     )
     logger.info(
-        f"  [v3.6] OB:롱{order_blocks.get('in_bullish_ob')}/숏{order_blocks.get('in_bearish_ob')} | "
+        f"  [구조] OB:롱{order_blocks.get('in_bullish_ob')}/숏{order_blocks.get('in_bearish_ob')} | "
         f"성숙도:{maturity.get('maturity','?')}(상{maturity.get('bull_count',0)}/하{maturity.get('bear_count',0)}) | "
         f"되돌림:롱{retracement.get('long_zone','-')}/숏{retracement.get('short_zone','-')} | "
         f"ADX기울기:{adx_1h.get('adx_slope',0):+.1f} | OI기울기:{oi_matrix.get('oi_slope',0):+.2%}"
@@ -1248,12 +1190,10 @@ def run_full_analysis(symbol, collected_data):
         "rsi":              rsi,
         "bollinger":        bb,
         "ema_long":         ema_long,
-        "ema_short":        ema_short,
         "adx_1h":           adx_1h,
         "adx_4h":           adx_4h,
         "funding_rate":     funding,
         "ls_ratio":         ls_ratio,
-        "oi_change":        {"available": False},
         "taker_volume":     taker,
         "liquidations":     liq,
         "volume":           vol,
@@ -1263,8 +1203,6 @@ def run_full_analysis(symbol, collected_data):
         "daily_bias":       daily_bias,
         "bos_choch":        bos_1h,
         "bos_choch_4h":     bos_4h,
-        "gate_long":        gate_long,
-        "gate_short":       gate_short,
         "candle_pattern":   candle_1h,
         "candle_pattern_4h":candle_4h,
         "candle_pattern_1d":candle_1d,
@@ -1275,7 +1213,6 @@ def run_full_analysis(symbol, collected_data):
         "smart_money":      smart_money,
         "oi_matrix":        oi_matrix,
         "funding_trend":    fund_trend,
-        "mtf_momentum":     mtf_momentum,
         "weekly_levels":    weekly_lvl,
         "ema_structure":    ema_struct,
         "macd_1h":          macd_1h,

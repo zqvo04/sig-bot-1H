@@ -396,7 +396,7 @@ def collect_funding_history(symbol: str) -> dict:
 
 def collect(exchange: ccxt.okx, symbol: str) -> dict:
     logger.info(f"{'─'*50}")
-    logger.info(f"📡 수집 [1H봇 v3.0]: {symbol}")
+    logger.info(f"📡 수집 [{config.BOT_VERSION}]: {symbol}")
 
     ohlcv        = collect_ohlcv(exchange, symbol)
     funding_rate = collect_funding_rate(exchange, symbol)

@@ -59,7 +59,7 @@ def record_snapshot(row: dict) -> bool:
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
     n_fire = sum(1 for c in row.get("candidates", []) if c.get("fire"))
     logger.info(
-        f"[wrf.logger] 📸 v3 스냅샷 {row['symbol']} @ {row['ts']} "
+        f"[wrf.logger] 📸 스냅샷 v{getattr(config, 'WRF_SCHEMA_VERSION', 3)} {row['symbol']} @ {row['ts']} "
         f"({row['ctx']['fp_key']}) 후보 {len(row.get('candidates', []))}개 발사 {n_fire}개")
     return True
 
