@@ -916,6 +916,12 @@ WRF_REGIME_SLOPE_PERSIST  = os.getenv("WRF_REGIME_SLOPE_PERSIST", "true").lower(
 WRF_REGIME_SLOPE_WIN      = _wrf_i("WRF_REGIME_SLOPE_WIN", 20)     # 기울기 일관성·드리프트 윈도(봉)
 WRF_REGIME_SLOPE_MIN_FRAC = _wrf_f("WRF_REGIME_SLOPE_MIN_FRAC", 0.85)  # 동방향 기울기 비율 ≥
 WRF_REGIME_SLOPE_MIN_DRIFT = _wrf_f("WRF_REGIME_SLOPE_MIN_DRIFT", 0.02)  # |순드리프트|/price ≥ (chop 차단)
+# [강등] ADX 단독트리거: 분기 ⑤(ADX≥REGIME_TREND_ADX 단독으로 TRENDING 승격)는 후행 EWM인 ADX가
+# 움직임 끝물(소진)에 정점을 찍어 '추세' 라벨을 '반전 직전'으로 만드는 결함. 누적데이터: 그 라벨의
+# 추종이 돈 비율 15%(기준 37%)·R_추종 −0.59 vs 페이드 −0.09, 특히 ADX 상승 하위는 추종 0%·페이드
+# +0.76. ★기본 강등(False): 분기 ⑤ 비활성 → 효율(er_sig)이 최종판정, 미충족 시 RANGING. 확인된
+# 추세(slope_sig·er_sig)는 먼저 잡혀 불변(인버전 아님·제거). 복귀(구동작): WRF_REGIME_ADX_SOLE=true.
+WRF_REGIME_ADX_SOLE = os.getenv("WRF_REGIME_ADX_SOLE", "false").lower() not in ("0", "false", "no", "")
 # (B) BO 손절 재배치: 박스 반대편(far, 손절=박스높이 → RR≈1 고착) → 돌파된 경계
 #     (near) ∓ ATR쿠션(돌파-리테스트 무효화). RR이 박스높이/쿠션으로 정상화(>>1.5).
 #     min_sl/max_sl 클램프가 과도한 타이트/와이드를 방지. TF/RV 구조SL 철학과 동일.

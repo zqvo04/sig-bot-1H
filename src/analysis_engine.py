@@ -501,7 +501,10 @@ def classify_market_regime(df_1h, adx, bb, tf="1H"):
         # 함정에서 구출(FN↓). 기울기 일관성 낮은 진짜 chop은 여기 도달 못 함(FP 방어).
         regime,desc,icon="TRENDING",f"방향지속({slope_persist:.0%},ADX:{adx_val:.0f})","📈"
     elif is_ranging: regime,desc,icon="RANGING",f"MA20교차{ma20_cross}회+ER:{er:.2f}(ADX:{adx_val:.0f})","↔️"
-    elif adx_val>=config.REGIME_TREND_ADX: regime,desc,icon="TRENDING",f"ADX추세({adx_val:.0f})","📈"
+    elif adx_val>=config.REGIME_TREND_ADX and getattr(config,"WRF_REGIME_ADX_SOLE",False):
+        # [강등] ADX 단독 TRENDING 승격(분기 ⑤). 기본 OFF(WRF_REGIME_ADX_SOLE=false) — 후행 ADX
+        # 스파이크는 소진/반전 직전이라 추종 라우팅이 음(−)스킬. OFF면 아래 er_sig(효율)로 위임.
+        regime,desc,icon="TRENDING",f"ADX추세({adx_val:.0f})","📈"
     elif er_sig:
         # [Pillar1-①] is_ranging '뒤' — 비-레인지 중간효율 추세를 ER 백분위로 승격(chop 미승격).
         tag=(f"ER백분위({er_pctl:.0%})" if er_pctl is not None else f"ER({er:.2f})")

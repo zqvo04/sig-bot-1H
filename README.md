@@ -233,6 +233,7 @@ export SINGLE_SYMBOL="BTC/USDT"
 python src/main.py --mode signal     # 신호(페이퍼) + 스냅샷 적재
 python src/main.py --mode score      # 경로 채점 + 신호 판정
 python analysis/situation_report.py --wrf    # 셀 진단(오프라인 연구용)
+python analysis/routing_scorecard.py         # 레짐 라우팅-유틸리티 진단(추종vs반전 실현R·ADX AUC)
 
 # [Phase 1] 백테스트/리플레이 하니스 — 저장된 72h 경로로 현 prior 성능 측정
 python analysis/backtest.py                   # 전체+setup별 성능 + 게이트 퍼널
@@ -268,7 +269,10 @@ python analysis/backtest.py --ab              # prior vs 보정 P̂ Brier·캘�
   `WRF_CONFLUENCE_L_BONUS`(컨플루언스→L 가점, 0=OFF).
 - **감사 처방 토글**(기본 **ON** — 감사 4 pillar 구현, 전부 되돌리기 가능): `WRF_REGIME_ER_PCTL`
   (ER 백분위화)·`WRF_REGIME_SLOPE_PERSIST`(방향지속 승격)·`WRF_ROUTING_SELF_STRUCT`(라우팅 BTC
-  종속성 분리) — Pillar1 | `WRF_RV_SOFT_PRECOND`(RV 하드AND→소프트) — Pillar2 |
+  종속성 분리)·`WRF_REGIME_ADX_SOLE`(ADX 단독 TRENDING 트리거 — 기본 **강등**(false)·true=구동작.
+  후행 ADX 스파이크는 소진/반전 직전이라 추종 라우팅이 음(−)스킬[추종 15% vs 기준 37%]이므로
+  검증 후 강등; 확인된 추세(slope_sig·er_sig)는 불변) — Pillar1 |
+  `WRF_RV_SOFT_PRECOND`(RV 하드AND→소프트) — Pillar2 |
   `WRF_PRIOR_MIN_AXIS_SOFT`(min-axis 연속화)·`WRF_EV_GATE`(EV-결합 RR게이트)·`WRF_EV_RR_FLOOR`
   (RR 하한, 기본 **0.85**=완화·1.0=구동작 — RR<1.0 잔존플로어가 EV-게이트 취지와 모순해 고확신
   BO숏을 동결하던 것을 검증 후 완화) — Pillar3 |
@@ -422,7 +426,8 @@ sig-bot-1H/
 │   ├── labels.py                # triple-barrier·exret·class·candidate_dataset
 │   ├── calibrate.py             # ★[Phase 2] 부분풀링 보정 잡(계층 수축→셀별 δ_eff)
 │   ├── backtest.py              # ★[Phase 1] 백테스트/리플레이 하니스(성능+퍼널)
-│   └── situation_report.py      # 상황·WRF 셀 진단(+ --perf 하니스 위임)
+│   ├── situation_report.py      # 상황·WRF 셀 진단(+ --perf 하니스 위임)
+│   └── routing_scorecard.py     # 레짐 라우팅-유틸리티 스코어카드(추종vs반전 실현R·오프라인 측정)
 ├── scripts/migrate_notion_wrf.py
 ├── data/
 │   ├── research/{SYM}/{YYYY-MM}.jsonl
