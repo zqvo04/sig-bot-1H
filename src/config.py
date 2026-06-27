@@ -805,7 +805,10 @@ WRF_MIN_RR = _wrf_f("WRF_MIN_RR", 1.5)
 # EV_MIN 이상이면 통과(고확률일수록 RR 요구 완화 = EV 정합). 저확률·저RR 잡신호는 여전히 컷.
 WRF_EV_GATE  = os.getenv("WRF_EV_GATE", "true").lower() not in ("0", "false", "no", "")
 WRF_EV_MIN   = _wrf_f("WRF_EV_MIN", 0.15)   # 발사 최소 기대R(리스크 1단위당)
-WRF_EV_RR_FLOOR = _wrf_f("WRF_EV_RR_FLOOR", 1.0)  # 퇴행(스크래치) 방지 RR 하한(EV 통과해도 적용)
+# [검증·완화] RR 하한. 구 1.0은 EV-게이트 취지(고확률일수록 RR 요구 완화)와 모순 —
+# P̂=0.65·EV=+0.24인 고확신 BO숏을 RR<1.0만으로 발사동결(누적데이터 5건, far-SL 실현 4/5 TP·+3.7R).
+# 0.85로 완화 → 품질은 EV_MIN이 담당. 저확률·저RR 잡신호는 EV_MIN이 여전히 컷. 되돌리기: =1.0.
+WRF_EV_RR_FLOOR = _wrf_f("WRF_EV_RR_FLOOR", 0.85)  # RR 하한(EV 통과해도 적용)
 
 # ── [G3] 구조 SL + ATR 쿠션: SL = 직전 스윙 ∓ ATR×cushion (TF/RV) ───────
 # 스윙 바로 밑 0.1% 버퍼는 노이즈 윅에 취약 → ATR 쿠션으로 구조적 여유 부여.

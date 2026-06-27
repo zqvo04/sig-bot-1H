@@ -148,7 +148,7 @@ P̂_prior = min( 0.65,  sigmoid( b0[셋업] + 1.1·C + 1.3·L + 1.2·F − min-a
    · min-axis: 약한 축(<0.10) '부족분'에 비례하는 **연속 페널티**(2.5×deficit) — 구 0.55 절벽 폐기.
      0.10 근방 매끄럽게 회복(near-miss FN↓), 음수축(역추세)은 급차단(FP↓). prior·보정 일관.
 
-발사(fire) ⟺  P̂ ≥ 0.58  ∧  ¬VETO  ∧  (prior면) **EV-게이트**[ EV=P̂·RR−(1−P̂) ≥ 0.15 ∧ RR ≥ 1.0 ]
+발사(fire) ⟺  P̂ ≥ 0.58  ∧  ¬VETO  ∧  (prior면) **EV-게이트**[ EV=P̂·RR−(1−P̂) ≥ 0.15 ∧ RR ≥ 0.85 ]
    · VETO(L0): 스프레드폭발 · 청산캐스케이드 · 데이터신선도(>90분)
      · 거시정면충돌(롱+DOWNLEG/숏+UPLEG) — 단 RV는 면제(자체 강게이트로 통제)
    · 발사분 → 사이징 ∝ P̂ → Notion 1H Signal Log 기록 + (ALERT_ON 시) 텔레그램
@@ -269,7 +269,9 @@ python analysis/backtest.py --ab              # prior vs 보정 P̂ Brier·캘�
 - **감사 처방 토글**(기본 **ON** — 감사 4 pillar 구현, 전부 되돌리기 가능): `WRF_REGIME_ER_PCTL`
   (ER 백분위화)·`WRF_REGIME_SLOPE_PERSIST`(방향지속 승격)·`WRF_ROUTING_SELF_STRUCT`(라우팅 BTC
   종속성 분리) — Pillar1 | `WRF_RV_SOFT_PRECOND`(RV 하드AND→소프트) — Pillar2 |
-  `WRF_PRIOR_MIN_AXIS_SOFT`(min-axis 연속화)·`WRF_EV_GATE`(EV-결합 RR게이트) — Pillar3 |
+  `WRF_PRIOR_MIN_AXIS_SOFT`(min-axis 연속화)·`WRF_EV_GATE`(EV-결합 RR게이트)·`WRF_EV_RR_FLOOR`
+  (RR 하한, 기본 **0.85**=완화·1.0=구동작 — RR<1.0 잔존플로어가 EV-게이트 취지와 모순해 고확신
+  BO숏을 동결하던 것을 검증 후 완화) — Pillar3 |
   `WRF_PCT_MIDRANK`·`WRF_TF_MACD_SYM`·`WRF_RV_SIDED_SIGNALS` — Pillar4. 기존 grind-fix
   `WRF_REGIME_ER_TREND`·`WRF_BO_SL_NEAR`·`WRF_REGIME_ROUTING`도 기본 ON으로 승격.
 
