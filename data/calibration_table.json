@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-22T10:50:04.691475+00:00",
+  "generated_at": "2026-06-28T07:56:43.315290+00:00",
   "schema_version": 3,
   "params": {
     "method": "partial_pooling",
@@ -13,31 +13,77 @@
     "floor": 0.58
   },
   "global": {
-    "win_rate": 0.4,
-    "n_decided": 10
+    "win_rate": 0.4773,
+    "n_decided": 44
   },
   "setups": {
-    "MR": 0.4146,
-    "RV": 0.4014,
-    "TF": 0.3902
+    "BO": 0.5137,
+    "MR": 0.49,
+    "RV": 0.4719,
+    "TF": 0.4656
   },
   "bases": {
-    "MR|RANGING": 0.4335,
-    "RV|RANGING": 0.3971,
-    "RV|TRENDING": 0.4207,
-    "TF|RANGING": 0.3777,
-    "TF|SQUEEZE": 0.3777
+    "BO|RANGING": 0.5579,
+    "BO|SQUEEZE": 0.5294,
+    "MR|RANGING": 0.5065,
+    "RV|RANGING": 0.4679,
+    "RV|SQUEEZE": 0.462,
+    "RV|TRENDING": 0.4736,
+    "TF|RANGING": 0.4506,
+    "TF|SQUEEZE": 0.4506
   },
-  "n_cells": 5,
-  "n_calibrated": 1,
+  "n_cells": 11,
+  "n_calibrated": 5,
   "cells": {
+    "BO|RANGING|CHOP": {
+      "n": 2,
+      "n_indep": 1,
+      "base": "BO|RANGING",
+      "win_rate": 1.0,
+      "wr_pooled": 0.5749,
+      "wr_parent": 0.5579,
+      "macro_coverage": 0,
+      "beta_illusion": false,
+      "win_floor": 0.58,
+      "p_source": "prior",
+      "delta_eff": 0.0
+    },
+    "BO|RANGING|DOWNLEG": {
+      "n": 3,
+      "n_indep": 2,
+      "base": "BO|RANGING",
+      "win_rate": 1.0,
+      "wr_pooled": 0.5907,
+      "wr_parent": 0.5579,
+      "macro_coverage": 0,
+      "beta_illusion": false,
+      "win_floor": 0.58,
+      "p_source": "calibrated",
+      "delta_eff": -0.1575,
+      "p_prior_mean": 0.8909,
+      "delta": -1.7328,
+      "confidence": 0.0909
+    },
+    "BO|SQUEEZE|DOWNLEG": {
+      "n": 1,
+      "n_indep": 1,
+      "base": "BO|SQUEEZE",
+      "win_rate": 1.0,
+      "wr_pooled": 0.5475,
+      "wr_parent": 0.5294,
+      "macro_coverage": 0,
+      "beta_illusion": false,
+      "win_floor": 0.58,
+      "p_source": "prior",
+      "delta_eff": 0.0
+    },
     "MR|RANGING|CHOP": {
       "n": 1,
       "n_indep": 1,
       "base": "MR|RANGING",
       "win_rate": 1.0,
-      "wr_pooled": 0.4553,
-      "wr_parent": 0.4335,
+      "wr_pooled": 0.5255,
+      "wr_parent": 0.5065,
       "macro_coverage": 0,
       "beta_illusion": false,
       "win_floor": 0.58,
@@ -45,41 +91,89 @@
       "delta_eff": 0.0
     },
     "RV|RANGING|CHOP": {
-      "n": 6,
-      "n_indep": 2,
+      "n": 9,
+      "n_indep": 3,
+      "base": "RV|RANGING",
+      "win_rate": 0.5556,
+      "wr_pooled": 0.4773,
+      "wr_parent": 0.4679,
+      "macro_coverage": 2,
+      "beta_illusion": false,
+      "win_floor": 0.58,
+      "p_source": "calibrated",
+      "delta_eff": 0.0268,
+      "p_prior_mean": 0.4264,
+      "delta": 0.2057,
+      "confidence": 0.1304
+    },
+    "RV|RANGING|DOWNLEG": {
+      "n": 12,
+      "n_indep": 1,
       "base": "RV|RANGING",
       "win_rate": 0.3333,
-      "wr_pooled": 0.3924,
-      "wr_parent": 0.3971,
+      "wr_pooled": 0.4628,
+      "wr_parent": 0.4679,
+      "macro_coverage": 2,
+      "beta_illusion": false,
+      "win_floor": 0.58,
+      "p_source": "calibrated",
+      "delta_eff": -0.0002,
+      "p_prior_mean": 0.4641,
+      "delta": -0.0052,
+      "confidence": 0.0476
+    },
+    "RV|SQUEEZE|DOWNLEG": {
+      "n": 6,
+      "n_indep": 1,
+      "base": "RV|SQUEEZE",
+      "win_rate": 0.1667,
+      "wr_pooled": 0.4507,
+      "wr_parent": 0.462,
       "macro_coverage": 1,
       "beta_illusion": false,
       "win_floor": 0.58,
       "p_source": "calibrated",
-      "delta_eff": 0.016,
-      "p_prior_mean": 0.3513,
-      "delta": 0.1761,
-      "confidence": 0.0909
+      "delta_eff": -0.002,
+      "p_prior_mean": 0.4609,
+      "delta": -0.0411,
+      "confidence": 0.0476
     },
     "RV|TRENDING|CHOP": {
       "n": 1,
       "n_indep": 1,
       "base": "RV|TRENDING",
       "win_rate": 1.0,
-      "wr_pooled": 0.443,
-      "wr_parent": 0.4207,
-      "macro_coverage": 0,
+      "wr_pooled": 0.4939,
+      "wr_parent": 0.4736,
+      "macro_coverage": 1,
       "beta_illusion": false,
       "win_floor": 0.58,
       "p_source": "prior",
       "delta_eff": 0.0
+    },
+    "RV|TRENDING|DOWNLEG": {
+      "n": 7,
+      "n_indep": 1,
+      "base": "RV|TRENDING",
+      "win_rate": 0.4286,
+      "wr_pooled": 0.4719,
+      "wr_parent": 0.4736,
+      "macro_coverage": 1,
+      "beta_illusion": false,
+      "win_floor": 0.58,
+      "p_source": "calibrated",
+      "delta_eff": -0.0166,
+      "p_prior_mean": 0.5585,
+      "delta": -0.3477,
+      "confidence": 0.0476
     },
     "TF|RANGING|CHOP": {
       "n": 1,
       "n_indep": 1,
       "base": "TF|RANGING",
       "win_rate": 0.0,
-      "wr_pooled": 0.3631,
-      "wr_parent": 0.3777,
+      "wr_pooled": 0.4333,
+      "wr_parent": 0.4506,
       "macro_coverage": 0,
       "beta_illusion": false,
       "win_floor": 0.58,
@@ -91,8 +185,8 @@
       "n_indep": 1,
       "base": "TF|SQUEEZE",
       "win_rate": 0.0,
-      "wr_pooled": 0.3631,
-      "wr_parent": 0.3777,
+      "wr_pooled": 0.4333,
+      "wr_parent": 0.4506,
       "macro_coverage": 0,
       "beta_illusion": false,
       "win_floor": 0.58,
@@ -101,30 +195,60 @@
     }
   },
   "drift": {
+    "BO|RANGING|CHOP": {
+      "n": 2,
+      "win_rate": 1.0,
+      "wr_pooled": 0.5749
+    },
+    "BO|RANGING|DOWNLEG": {
+      "n": 3,
+      "win_rate": 1.0,
+      "wr_pooled": 0.5907
+    },
+    "BO|SQUEEZE|DOWNLEG": {
+      "n": 1,
+      "win_rate": 1.0,
+      "wr_pooled": 0.5475
+    },
     "MR|RANGING|CHOP": {
       "n": 1,
       "win_rate": 1.0,
-      "wr_pooled": 0.4553
+      "wr_pooled": 0.5255
     },
     "RV|RANGING|CHOP": {
-      "n": 6,
+      "n": 9,
+      "win_rate": 0.5556,
+      "wr_pooled": 0.4773
+    },
+    "RV|RANGING|DOWNLEG": {
+      "n": 12,
       "win_rate": 0.3333,
-      "wr_pooled": 0.3924
+      "wr_pooled": 0.4628
+    },
+    "RV|SQUEEZE|DOWNLEG": {
+      "n": 6,
+      "win_rate": 0.1667,
+      "wr_pooled": 0.4507
     },
     "RV|TRENDING|CHOP": {
       "n": 1,
       "win_rate": 1.0,
-      "wr_pooled": 0.443
+      "wr_pooled": 0.4939
+    },
+    "RV|TRENDING|DOWNLEG": {
+      "n": 7,
+      "win_rate": 0.4286,
+      "wr_pooled": 0.4719
     },
     "TF|RANGING|CHOP": {
       "n": 1,
       "win_rate": 0.0,
-      "wr_pooled": 0.3631
+      "wr_pooled": 0.4333
     },
     "TF|SQUEEZE|CHOP": {
       "n": 1,
       "win_rate": 0.0,
-      "wr_pooled": 0.3631
+      "wr_pooled": 0.4333
     }
   }
 }
