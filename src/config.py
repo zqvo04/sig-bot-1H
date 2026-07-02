@@ -795,9 +795,18 @@ WRF_TMAX = {"TF": 48, "BO": 36, "MR": 24, "RV": 48, "BR": 48}
 # ── BO 리테스트 허용 근접도 (돌파봉 이후 현재봉이 경계로 되돌아온 정도) ────
 WRF_BO_RETEST_TOL = _wrf_f("WRF_BO_RETEST_TOL", 0.002)
 
-# ── 반전형(MR/RV) 맥락축 베이스: CHOP(레인지)에서 페이드 허용 정도 ───────
+# ── 반전형(MR/RV/BR) 맥락축 베이스: CHOP(레인지)에서 페이드 허용 정도 ───────
 # 레인지 톱/바텀 반전은 완만 통과(>min_axis), 신선한 동방향 거시레그면 차단.
 WRF_REV_CTX_BASE = _wrf_f("WRF_REV_CTX_BASE", 0.25)
+# [Phase C] 반전형 C축 v2(심볼-로컬 구조 주입 · 기본 OFF): 구버전은 btc_macro echo만
+# 써서 DOWNLEG×숏이 코인 자기상태와 무관하게 C=1.0으로 포화(고유값 3개 → floor·사이징
+# 변별력 상실, 알트 예측력 약함). v2는 _ctx_struct_align(4H추세·일봉EMA·바이어스)을
+# 주입해 macro 유효가중 0.75→0.34로 낮추고 심볼 자체 구조로 채운다. 출력 envelope
+# [-0.5,1.0]·극단은 구설계와 동일(중간 해상도만 추가), 롱/숏 부호 대칭.
+# 검증(오프라인 47결판·독립재구현): 고유값 3→10, IC +0.13→+0.20(시간분할 양구간 일관),
+# 의미론 비반전. 단 데이터가 DOWNLEG/CHOP 단일레짐 → fade 방향은 UPLEG 관측 후 재검증
+# 전제로 기본 OFF(5-I 검증→점등). 되돌리기·점등: WRF_REV_CTX_V2=true.
+WRF_REV_CTX_V2 = os.getenv("WRF_REV_CTX_V2", "false").lower() not in ("0", "false", "no", "")
 
 # ── 최소 RR 품질필터: prior 발사는 RR 이 이 값 미만이면 제외(저RR 잡신호 컷). ──
 # 보정셀(calibrated)은 학습된 승률을 존중해 이 필터를 우회한다.

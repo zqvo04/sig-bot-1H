@@ -46,18 +46,22 @@ def _rev_vol_ok(raw: dict) -> bool:
 
 
 # ── 연속형(TF/BO) 축: 추세 정합 ─────────────────────────────────────────
-def _ctx_align(ctx: dict, raw: dict, direction: str) -> float:
-    """C(연속) — 거시·일봉바이어스·4H추세·일봉EMA20/50 정합 (추종 셋업용).
+def _ctx_struct_align(ctx: dict, raw: dict) -> float:
+    """구조 맥락 부호합(양수=강세). 거시·일봉바이어스·4H추세·일봉EMA20/50, [-1,1].
 
-    [연결결함#4] 보정 셀(setup×regime_1h×btc_macro)이 누락하는 맥락(4H 추세방향
-    ema_4h·일봉 EMA20/50 구조)을 C축에 연속 피처로 주입 → 셀 키를 늘리지 않고도
-    (콜드스타트·과적합 보호) 셀 내부 로지스틱이 분리 학습 가능. 가중치는 측정
-    부호의 고정 합성(새 임계 없음)."""
+    가중치는 측정 부호의 고정 합성(새 임계·튜닝 없음, 합=1.0). _ctx_align(추종)과
+    _ctx_exhaustion v2(반전)가 공유 — 심볼-로컬 맥락(4H·일봉구조)을 셀 키를 늘리지
+    않고 C축 연속피처로 주입(콜드스타트·과적합 보호)."""
     m = {"UPLEG": 1.0, "DOWNLEG": -1.0, "CHOP": 0.0}.get(ctx.get("btc_macro", "CHOP"), 0.0)
     b = {"BULL": 1.0, "BEAR": -1.0, "NEUTRAL": 0.0}.get(ctx.get("bias_1d", "NEUTRAL"), 0.0)
     h4 = float(raw.get("ema_4h") or 0)        # 4H 추세 방향(±1)
     ds = float(raw.get("ema_1d_struct") or 0)  # 일봉 EMA20/50 구조(±1)
-    base = 0.45 * m + 0.25 * b + 0.20 * h4 + 0.10 * ds   # 가중합 1.0
+    return 0.45 * m + 0.25 * b + 0.20 * h4 + 0.10 * ds
+
+
+def _ctx_align(ctx: dict, raw: dict, direction: str) -> float:
+    """C(연속) — 거시·일봉바이어스·4H추세·일봉EMA20/50 정합 (추종 셋업용)."""
+    base = _ctx_struct_align(ctx, raw)
     return _clip(base if direction == "long" else -base)
 
 
@@ -78,12 +82,28 @@ def _flow_align(raw: dict, pcts: dict, direction: str) -> float:
 #   C = "거스를 추세가 신선한 거시레그가 아닌가"(레인지 톱/바텀이면 통과,
 #        신선한 동방향 거시레그면 차단=나이프캐칭 방지 유지)
 #   F = 모멘텀 *소진* + 군중 역포지션(과열RSI·펀딩극단·테이커소진·스마트머니 반대)
-def _ctx_exhaustion(ctx: dict, direction: str) -> float:
-    """C(반전) — 페이드 대상 추세의 신선도 기반. CHOP은 완만 통과, 신선한 역행레그는 차단."""
-    m = {"UPLEG": 1.0, "DOWNLEG": -1.0, "CHOP": 0.0}.get(ctx.get("btc_macro", "CHOP"), 0.0)
-    # 롱반전(하락 페이드)은 거시가 DOWN(신선)이면 위험 → fade_align=m; 숏반전은 -m
-    fade_align = m if direction == "long" else -m
+def _ctx_exhaustion(ctx: dict, raw: dict, direction: str) -> float:
+    """C(반전) — 페이드 대상 추세의 신선도 기반. CHOP은 완만 통과, 신선한 역행레그는 차단.
+
+    [Phase C] v2(WRF_REV_CTX_V2, 기본 OFF): 구버전은 btc_macro echo만 써서 DOWNLEG×숏이
+    코인 자기상태와 무관하게 C=1.0으로 **포화**(실측: 고유값 3개 → floor·사이징이 변별력
+    상실, 매크로 태그의 알트 예측력도 약함). v2는 심볼-로컬 구조(_ctx_struct_align:
+    4H추세·일봉EMA·바이어스)를 주입해 macro 유효가중을 0.75→0.34로 낮추고 나머지를
+    심볼 자체 구조로 채운다. **출력 envelope[-0.5,1.0]과 극단(깨끗한정렬=+1·신선칼받기=-0.5)은
+    구설계와 동일 — 중간 해상도만 추가**(구설계가 맞았던 극단은 불변). 롱/숏 대칭은 부호
+    반전으로 보장(5-D).
+
+    검증(오프라인 47결판·독립재구현): 고유값 3→10, IC old +0.13→new +0.20(시간분할 양
+    구간 일관), 의미론 비반전. **단 데이터가 DOWNLEG/CHOP 단일레짐이라 fade 방향의 통계
+    확증은 UPLEG 관측 후 재검증 전제 → 기본 OFF(5-I).**"""
     base = getattr(config, "WRF_REV_CTX_BASE", 0.25)
+    if getattr(config, "WRF_REV_CTX_V2", False):
+        align = _ctx_struct_align(ctx, raw)
+        align = align if direction == "long" else -align   # 진입방향 정합(양수=안전 페이드)
+        return _clip(base + (1.0 - base) * align)           # envelope [2·base−1, 1] = 구설계와 동일
+    # 구동작: btc_macro echo만(롱반전=하락페이드는 거시 DOWN 신선이면 위험 → fade=m; 숏=-m)
+    m = {"UPLEG": 1.0, "DOWNLEG": -1.0, "CHOP": 0.0}.get(ctx.get("btc_macro", "CHOP"), 0.0)
+    fade_align = m if direction == "long" else -m
     return _clip(base + 0.75 * fade_align)
 
 
@@ -241,7 +261,7 @@ def _detect_mr(feat: dict, measures: dict):
         # [A5] 반전캔들 거래량 확증
         if not _rev_vol_ok(raw):
             continue
-        C = _ctx_exhaustion(ctx, direction)
+        C = _ctx_exhaustion(ctx, raw, direction)
         # MR은 평균회귀 — 극단일수록 L 강함(방향 정렬: 롱이면 저극단 = +)
         depth = (0.15 - rsi_p) / 0.15 if long else (rsi_p - 0.85) / 0.15
         L = _clip(0.5 + max(0.0, depth))
@@ -323,7 +343,7 @@ def _detect_rv(feat: dict, measures: dict):
         # [A5] 반전캔들 거래량 확증
         if not _rev_vol_ok(raw):
             continue
-        C = _ctx_exhaustion(ctx, direction)
+        C = _ctx_exhaustion(ctx, raw, direction)
         L = _clip(0.4 + 0.1 * confirms)
         if soft:
             # 강확증 시퀀스 부재 → L 감쇠(소진은 됐으나 구조확정 약함). floor가 최종 품질필터.
@@ -402,7 +422,7 @@ def _detect_band_reversal(feat: dict, measures: dict):
             stretch = max(0.0, (bb_lo - ext) / max(1e-6, bb_lo))
         if not armed:
             continue
-        C = _ctx_exhaustion(ctx, direction)
+        C = _ctx_exhaustion(ctx, raw, direction)
         L = _clip(0.5 + 0.5 * min(1.0, stretch))
         L = _confluence_bonus(L, raw, direction)
         F = _flow_exhaustion(raw, pcts, direction)
