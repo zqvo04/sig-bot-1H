@@ -60,7 +60,8 @@ L3 보정 승률 P̂: isotonic(로지스틱(C,L,F)) · 셀=(setup×regime_1h×bt
    └ 신뢰게이트 미충족 → 보수적 고정 prior (콜드스타트)
    └ ★셀 키는 거친 채로 둔다(콜드스타트·과적합 보호). 누락 맥락(4H추세·일봉EMA20/50)은
      셀 키를 늘리는 대신 C축에 연속 피처로 주입 → 셀 내부에서 분리 학습.
-L4 발사+청산: 발사 ⟺ P̂ ≥ W_floor ∧ ¬VETO → TP/SL/타임스톱 산출, 사이징 ∝ P̂ (페이퍼)
+L4 발사+청산: 발사 ⟺ P̂ ≥ W_floor ∧ ¬VETO ∧ ¬격리[Phase A: 섀도셋업(BR)·발사권강등 셀]
+   → TP/SL/타임스톱 산출, 사이징 ∝ P̂ (페이퍼)
 ```
 
 빈도는 넓은 유니버스 × 4셋업 × 양방향의 **합집합**으로 산다(플로어 불변=승률 불변).
@@ -149,8 +150,10 @@ P̂_prior = min( 0.65,  sigmoid( b0[셋업] + 1.1·C + 1.3·L + 1.2·F − min-a
      0.10 근방 매끄럽게 회복(near-miss FN↓), 음수축(역추세)은 급차단(FP↓). prior·보정 일관.
 
 발사(fire) ⟺  P̂ ≥ 0.58  ∧  ¬VETO  ∧  (prior면) **EV-게이트**[ EV=P̂·RR−(1−P̂) ≥ 0.15 ∧ RR ≥ 0.85 ]
+             ∧  ¬**격리**[Phase A: 섀도셋업(WRF_SHADOW_SETUPS, 기본 BR) ∨ 발사권 강등 셀]
    · VETO(L0): 스프레드폭발 · 청산캐스케이드 · 데이터신선도(>90분)
-     · 거시정면충돌(롱+DOWNLEG/숏+UPLEG) — 단 RV는 면제(자체 강게이트로 통제)
+     · 거시정면충돌(롱+DOWNLEG/숏+UPLEG) — 단 RV·BR은 면제(자체 강게이트로 통제)
+   · 격리 후보는 발사만 차단 — 기록·오프라인 채점은 계속(quarantine 태그, 복권 증거 축적)
    · 발사분 → 사이징 ∝ P̂ → Notion 1H Signal Log 기록 + (ALERT_ON 시) 텔레그램
 ```
 
@@ -267,6 +270,11 @@ python analysis/backtest.py --ab              # prior vs 보정 P̂ Brier·캘�
 - **레이어 연결 토글**: `WRF_BO_IN_RANGING`(RANGING 박스돌파 허용), `WRF_RV_MACRO_EXEMPT`
   (RV 거시베토 면제), `WRF_TF_LATE_MATURITY_MULT`(성숙추세 TF 감쇠, 1.0=없음),
   `WRF_CONFLUENCE_L_BONUS`(컨플루언스→L 가점, 0=OFF).
+- **[Phase A] 발사권 게이트 토글**: `WRF_SHADOW_SETUPS`(섀도 셋업 목록, 기본 `BR` —
+  빈 문자열=전부 라이브), `WRF_FIRE_RIGHTS_ENABLED`(강등 셀 격리, 기본 true),
+  `WRF_FR_PRIOR_N`(사후검정 중립 prior 의사관측수 10), `WRF_FR_DEMOTE_P`(강등선 0.15),
+  `WRF_FR_PROMOTE_P`(복권선 0.50), `WRF_FR_MIN_DECIDED`(강등 최소 발사결판 8) —
+  거버넌스 상수(튜닝 파라미터 아님·워크포워드 대상 제외).
 - **감사 처방 토글**(기본 **ON** — 감사 4 pillar 구현, 전부 되돌리기 가능): `WRF_REGIME_ER_PCTL`
   (ER 백분위화)·`WRF_REGIME_SLOPE_PERSIST`(방향지속 승격)·`WRF_ROUTING_SELF_STRUCT`(라우팅 BTC
   종속성 분리)·`WRF_REGIME_ADX_SOLE`(ADX 단독 TRENDING 트리거 — 기본 **강등**(false)·true=구동작.
@@ -374,6 +382,39 @@ raw.adx=실ADX) — 하락추세 회수 21%(전부 숏 적격)·chop 오승격 8
 '(shadow)' 표식 없이 일반 신호로 기록. 제거된 군더더기: `fired_shadow`·`shadow_fire`·
 `shadow_logged`·`_shadow_cooldown_filter`·`recent_shadow_dirs`·`WRF_D_SHADOW_COOLDOWN_H`·
 `analysis/shadow_report.py`. (near-miss `shadow_band`은 별개 — 유지.)
+**→ [Phase A]에서 setup=BR로 분리 + 섀도 강등 — 아래 참조.**
+
+### [Phase A] BR 셋업 분리 + 발사권(fire-rights) 게이트 (2026-07)
+
+2주 라이브 페이퍼(결판 23)·오프라인 리플레이(결판 55)·순수 가격데이터(1,001 스냅샷)의
+**삼중 교차진단** 결과를 반영한 구조 교정. 예측 파라미터 추가 0개(과적합 무관 — 분류
+교정 + 발사권 박탈/복권만).
+
+- **진단**: ① 위 '원트랙 승격'은 섀도 실측 검증 없이 논리 근거만으로 이뤄져 5-I(검증→점등)
+  위반이었고, 승격 후 밴드반전이 라이브 물량 95%를 차지하며 **실측 승률 40%**(floor 0.58
+  미달, 순 R −1.1)로 판명. ② 밴드반전은 트리거(밴드복귀 1개)·경제성이 RV_proper(소진+
+  반전캔들+확인≥2, 실측 6/6승)와 다른 **이질 모집단**인데 같은 `setup=RV` 셀에 섞여 보정이
+  "둘의 평균"만 배울 수 있었다(편향 고착). ③ 목적함수 `max N s.t. WR≥floor`의 제약이
+  ex-ante(P̂)로만 존재 — 셀의 실현 승률이 아무리 낮아도 발사권을 잃지 않는 **폐루프 부재**.
+- **A-1 BR 분리**: `_detect_band_reversal` → `setup="BR"`. b0·T_max·레벨·거시베토 면제는
+  RV와 동일하게 이관(분리=재분류, 동작 보존). 과거 JSONL은 `labels.split_band_reversal`이
+  **소급 재분류** — 후보에 reason이 없어 무장조건(완성 직전봉 %b 밴드외곽→복귀)을 path
+  복원 종가로 재유도(라이브 발화 26건 대조: 후보 기록된 21건 전부 일치·오류 0). 원본
+  파일 불변(오프라인 메모리 재라벨). 엔진 dedup은 BR·RV를 같은 반전 패밀리로 묶어 유지.
+- **A-2 발사권 게이트**: 주간 `calibrate.py`가 셀별 **'발사 ∪ 격리-미발사' 결판**의
+  Beta-Binomial 사후분포로 `P(WR ≥ floor)`를 계산해 `fire_rights ∈ {live, shadow}` 발행
+  (floor가 거부한 후보의 손실로 강등하지 않음 — 제약은 발사분 승률). 강등 셀 후보는
+  `quarantine=[FIRE_RIGHTS]`로 기록만 되고 발사 안 됨. 히스테리시스 비대칭(강등 0.15 /
+  복권 0.50) 근거 = 손실 비대칭: 오발사는 실손 R 영구, 오강등은 기회비용 일시(섀도로
+  증거가 계속 쌓여 자동 복권). 라이브는 테이블의 이 필드만 읽는다(5-B 무손상).
+- **BR 섀도 강등**: `WRF_SHADOW_SETUPS`(기본 `"BR"`)의 셋업은 `quarantine=[SHADOW_SETUP]`
+  — 신규·미검증 셋업의 기본 상태(5-G "새 셋업은 보정 검증 후에만"의 집행). 셀별 발사권
+  게이트가 표본 축적(셀당 발사결판 8+) 후 공식 판정을 내리면, 사람 심사를 거쳐 목록에서
+  제거해 재점등한다. **되돌리기**: `WRF_SHADOW_SETUPS=""` + `WRF_FIRE_RIGHTS_ENABLED=false`
+  = 구동작 완전 복귀.
+- **알려진 데이터 한계**(이번 검증에서 발견, 별도 과제): 같은 시각 워크플로 재실행 시
+  멱등 append가 뒤 실행분을 skip해 **후보가 빈 행**이 남을 수 있다(라이브 발화 26건 중
+  5건이 JSONL에 후보 미적재). 오프라인 통계는 그만큼 라이브보다 표본이 적다.
 
 ---
 

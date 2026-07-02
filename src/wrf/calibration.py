@@ -158,6 +158,8 @@ def evaluate(candidate: dict, ctx: dict, table: dict = None) -> dict:
       p_hat     : 발사에 쓸 값(WRF_CALIB_DISABLED=true면 p_prior, false면 p_cal)
       source    : p_hat의 출처
       floor     : 발사 플로어
+      fire_rights: [Phase A] 셀 발사권('live'|'shadow') — 주간 잡이 실현 승률의
+                   사후검정으로 발행. 셀/필드 부재 시 'live'(콜드스타트 = 발사 허용).
     보정 계산은 스위치와 무관하게 항상 수행 — 그림자 평가(backtest --ab)용.
     """
     setup = candidate["setup"]
@@ -175,12 +177,17 @@ def evaluate(candidate: dict, ctx: dict, table: dict = None) -> dict:
         logger.warning(f"[calib] 셀 {key} 보정 실패 → prior: {e}")
         p_cal, cal_source, cal_floor = p_prior, "prior", floor
 
+    # [Phase A] 발사권 — P̂ 추정경로(prior/보정)와 무관하게 셀의 실현 승률 검정 결과.
+    fire_rights = (cell or {}).get("fire_rights") or "live"
+
     disabled = getattr(config, "WRF_CALIB_DISABLED", True)
     if disabled or cal_source != "calibrated":
         return {"p_prior": p_prior, "p_cal": p_cal, "cal_source": cal_source,
-                "p_hat": p_prior, "source": "prior", "floor": floor}
+                "p_hat": p_prior, "source": "prior", "floor": floor,
+                "fire_rights": fire_rights}
     return {"p_prior": p_prior, "p_cal": p_cal, "cal_source": cal_source,
-            "p_hat": p_cal, "source": "calibrated", "floor": cal_floor}
+            "p_hat": p_cal, "source": "calibrated", "floor": cal_floor,
+            "fire_rights": fire_rights}
 
 
 def compute_p_hat(candidate: dict, ctx: dict, table: dict = None) -> tuple:

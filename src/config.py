@@ -766,6 +766,8 @@ WRF_PRIOR_B0 = {
     "BO": _wrf_f("WRF_PRIOR_B0_BO", -0.75),
     "MR": _wrf_f("WRF_PRIOR_B0_MR", -0.25),
     "RV": _wrf_f("WRF_PRIOR_B0_RV", -0.95),
+    # [Phase A] BR(밴드반전) — RV에서 셋업 분리. b0는 RV와 동일(분리=재분류, 피팅 아님).
+    "BR": _wrf_f("WRF_PRIOR_B0_BR", -0.95),
 }
 WRF_PRIOR_WC = _wrf_f("WRF_PRIOR_WC", 1.10)   # 맥락(C) 가중
 WRF_PRIOR_WL = _wrf_f("WRF_PRIOR_WL", 1.30)   # 위치(L) 가중
@@ -787,8 +789,8 @@ WRF_VETO_SPREAD_BP    = _wrf_f("WRF_VETO_SPREAD_BP", 8.0)    # 스프레드 폭�
 WRF_VETO_DATA_AGE_MIN = _wrf_f("WRF_VETO_DATA_AGE_MIN", 90)  # 데이터 신선도(분)
 WRF_VETO_LIQ_CASCADE  = _wrf_i("WRF_VETO_LIQ_CASCADE", 5)    # 진입 정면 대량청산 캐스케이드 건수
 
-# ── 셋업별 타임스톱(시간) — §4 사양 ──────────────────────────────────
-WRF_TMAX = {"TF": 48, "BO": 36, "MR": 24, "RV": 48}
+# ── 셋업별 타임스톱(시간) — §4 사양. BR=RV 동일(분리 이관·동작 보존) ──────
+WRF_TMAX = {"TF": 48, "BO": 36, "MR": 24, "RV": 48, "BR": 48}
 
 # ── BO 리테스트 허용 근접도 (돌파봉 이후 현재봉이 경계로 되돌아온 정도) ────
 WRF_BO_RETEST_TOL = _wrf_f("WRF_BO_RETEST_TOL", 0.002)
@@ -973,6 +975,31 @@ WRF_CALIB_K_CONF      = _wrf_f("WRF_CALIB_K_CONF", 20.0)   # δ 신뢰도 가중
 WRF_CALIB_MIN_DECIDED = _wrf_i("WRF_CALIB_MIN_DECIDED", 3) # 보정셀 생성 최소 결판수
 WRF_CALIB_DELTA_CAP   = _wrf_f("WRF_CALIB_DELTA_CAP", 1.2) # |δ_eff| 로그오즈 하드캡
 WRF_CALIB_CAP         = _wrf_f("WRF_CALIB_CAP", 0.72)      # 보정 P̂ 상한(근거기반, prior 0.65↑)
+
+# ══════════════════════════════════════════════════════════════════════
+# [Phase A] 발사권(fire-rights) 게이트 + 섀도 셋업 — ex-post 플로어 폐루프
+# ══════════════════════════════════════════════════════════════════════
+# 목적함수 max N s.t. WR≥floor 의 제약이 ex-ante(P̂)로만 존재하고 실현 승률로
+# 강제되지 않던 결함(폐루프 부재)을 메운다. 주간 오프라인 잡(calibrate.py)이
+# 셀별 '발사 ∪ 격리-미발사' 결판(WIN/LOSS — 제약은 발사분 승률에 대한 것이라
+# floor가 거부한 후보는 제외)의 Beta-Binomial 사후분포로 P(WR ≥ floor)를 계산해
+# fire_rights ∈ {live, shadow} 를 테이블에 발행 — 라이브는 읽기만(5-B 무손상).
+#   · 강등: P(WR≥floor) < DEMOTE_P ∧ 결판 ≥ MIN_DECIDED (셀이 플로어 미달로 판명)
+#   · 복권: 강등 셀은 P(WR≥floor) ≥ PROMOTE_P 회복 시 live (히스테리시스 —
+#     비대칭 손실 반영: 오발사=실손 R 영구, 오강등=기회비용 일시+섀도로 데이터
+#     계속 쌓여 자동 복권). 예측 파라미터 학습 없음(발사권 박탈/복권만) — 과적합 무관.
+# 강등 후보는 quarantine 태그로 기록만 되고 발사 안 됨(전량 기록·채점은 계속).
+WRF_FIRE_RIGHTS_ENABLED = os.getenv("WRF_FIRE_RIGHTS_ENABLED", "true").lower() not in ("0", "false", "no", "")
+WRF_FR_PRIOR_N     = _wrf_f("WRF_FR_PRIOR_N", 10.0)     # floor 중심 중립 prior 의사관측수
+WRF_FR_DEMOTE_P    = _wrf_f("WRF_FR_DEMOTE_P", 0.15)    # 강등: P(WR≥floor) < 이 값
+WRF_FR_PROMOTE_P   = _wrf_f("WRF_FR_PROMOTE_P", 0.50)   # 복권: P(WR≥floor) ≥ 이 값
+WRF_FR_MIN_DECIDED = _wrf_i("WRF_FR_MIN_DECIDED", 8)    # 강등 최소 결판수(소표본 오강등 방지)
+
+# ── 섀도 셋업: 라이브 발사권이 없는 셋업(기록·채점만) ─────────────────────
+# [Phase A] BR(밴드반전)은 검증 없는 점등(5-I 위반)으로 라이브에 승격됐다가 실측 승률
+# 미달(결판 15건 승률 40% < floor 0.58)로 섀도 원상복귀. 재점등은 발사권 게이트 통과 +
+# 사람 심사 후 이 목록에서 제거(env WRF_SHADOW_SETUPS=""=전부 라이브 → 구동작 복귀).
+WRF_SHADOW_SETUPS = {s.strip() for s in os.getenv("WRF_SHADOW_SETUPS", "BR").split(",") if s.strip()}
 
 # ── 보정 발사 스위치(그림자 운영) ────────────────────────────────────────
 # true(기본): 라이브는 prior로 '발사', 보정 P̂은 계산·기록만(A/B 그림자).

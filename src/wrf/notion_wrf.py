@@ -61,7 +61,7 @@ _SYNCED = set()   # 스키마 동기화 완료한 db_id (프로세스당 1회만
 
 _REGIME_OPTS = [{"name": n} for n in ("TRENDING", "EXPLOSIVE", "RANGING", "SQUEEZE", "UNKNOWN")]
 _MACRO_OPTS = [{"name": n} for n in ("UPLEG", "DOWNLEG", "CHOP")]
-_SETUP_OPTS = [{"name": n} for n in ("TF", "BO", "MR", "RV")]
+_SETUP_OPTS = [{"name": n} for n in ("TF", "BO", "MR", "RV", "BR")]
 
 
 def enabled() -> bool:

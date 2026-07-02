@@ -360,14 +360,15 @@ def _bb_pctb_prev(df, period: int, std_dev: float):
         return None
 
 
-# ── [밴드반전] BB 밴드복귀로 무장하는 반전 후보 (원트랙 · 라이브 발사 · 양방향 대칭) ──
+# ── [밴드반전=BR] BB 밴드복귀로 무장하는 반전 후보 (양방향 대칭) ──────────────
 # 설계: 트리거는 'BB 밴드복귀'(상단 외곽→복귀=숏 / 하단 외곽→복귀=롱)로 단순·대칭하게 무장만
-# 하고, 방향적합성·소진·맥락 판정은 prior(C/L/F)+floor에 위임한다. 특히 floor의 min-axis(연속
-# 페널티)가 반(反)추세 칼받기(역레그 C<0)·무소진(F<0)을 강하게 차단 → 과발화·오발 방지.
-# 기존 MR/RV precond(CHoCH·반전봉)가 놓치는 소진반전 후보를 setup="RV"로 무장해 다른 디텍터와
-# 동일하게 라이브 발사한다(원트랙). 엔진이 (setup,dir) 중복은 더 높은 P̂만 남긴다.
-# [이력] 구 'D-shadow 투트랙'(섀도 전용·발사 무영향)을 원트랙으로 일원화 — floor·라우팅
-# (역추세 억제)·min-axis 연속게이트가 충분한 품질 통제를 제공하므로 라이브 발사로 승격.
+# 하고, 방향적합성·소진·맥락 판정은 prior(C/L/F)+floor에 위임한다.
+# [Phase A] setup="BR"로 분리: 구현은 setup="RV"에 편승했으나 트리거(밴드복귀 1개)·경제성이
+# RV_proper(소진≥1+반전캔들+확인≥2)와 다른 이질 모집단 — 라이브 실측 승률 40% vs 100%로
+# 확인돼 셀·보정·발사권을 분리한다. prior 계수(b0)·레벨·거시베토 면제는 RV와 동일하게
+# 이관(동작 보존 — 분리 자체는 로직 변경이 아님). BR은 WRF_SHADOW_SETUPS로 섀도 강등:
+# 후보 생성·기록·오프라인 채점은 계속되나 라이브 발사는 안 함(검증→점등, 5-I 원상복구).
+# [이력] D-shadow 투트랙 → 원트랙(RV 편승) 승격 → 라이브 성적 미달로 BR 분리+섀도 강등.
 def _detect_band_reversal(feat: dict, measures: dict):
     if not getattr(config, "WRF_D_SHADOW", True):
         return []
@@ -407,7 +408,7 @@ def _detect_band_reversal(feat: dict, measures: dict):
         F = _flow_exhaustion(raw, pcts, direction)
         mode = (f"밴드복귀 %b={bb_prev:.2f}→{bb:.2f}" if use_re else f"밴드터치 %b={bb:.2f}")
         out.append({
-            "setup": "RV", "dir": direction, "precond": True,
+            "setup": "BR", "dir": direction, "precond": True,
             "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
             "confluence_n": raw.get(f"confluence_{direction}", 0),
             "reason": f"[밴드반전] {mode}"
@@ -419,7 +420,8 @@ def _detect_band_reversal(feat: dict, measures: dict):
 
 def detect_all(feat: dict) -> list:
     """5디텍터 실행 → 후보 리스트(발사 무관 전량). 디텍터별 try/except 격리.
-    _detect_band_reversal 은 BB 밴드복귀 반전(setup=RV) — 원트랙으로 라이브 발사된다."""
+    _detect_band_reversal 은 BB 밴드복귀 반전(setup=BR) — [Phase A] RV에서 분리,
+    WRF_SHADOW_SETUPS 기본값에 포함돼 기록만 되고 라이브 발사는 안 된다."""
     measures = feat.get("measures", {})
     cands = []
     for fn in (_detect_tf, _detect_bo, _detect_mr, _detect_rv, _detect_band_reversal):

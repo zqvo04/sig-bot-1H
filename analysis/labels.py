@@ -13,12 +13,118 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import timedelta
+
+import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from build_dataset import _entry_ref, fwd_ret, mfe_mae, path_efficiency  # noqa: E402
 
+try:  # 임계 일관성(calibrate 경유 시 src 가 sys.path 에 있음). 부재 시 기본값.
+    import config
+except ImportError:  # pragma: no cover
+    config = None
+
 _HORIZONS = (4, 12, 24, 48, 72)
 _DEAD_ZONE = 0.005  # exret 데드존 ±0.5% → FLAT (베타 잡음 흡수)
+
+
+def _cfg(name: str, default):
+    return getattr(config, name, default) if config is not None else default
+
+
+def _recon_pctb_map(rows: list) -> dict:
+    """path에서 완성봉 종가를 복원해 심볼별 %b 시계열을 만든다 → {(symbol, ts): %b}.
+
+    행 ts=T의 path는 'T 이후' 봉들의 상대값(o/c/h/l ÷ p0)이므로
+      close(봉 K) = p0(행 K−1h) × (1 + c[0](행 K−1h))
+    가 완성봉 종가의 정확한 복원이다(경로는 완성 후 재캡처돼 최종값). 여기에 라이브
+    `_bb_pctb_prev`와 동일한 rolling(period).mean/std(ddof=1)로 %b를 계산한다.
+    ★ 직전 행의 raw.bb_pctb를 그대로 쓰면 안 된다 — 그 값은 봉 형성 초기(:05)
+    스냅샷이라 완성봉 %b와 다르다(라이브 발화 19건 대조: 복원 19/19 일치·기록값 5건 불일치).
+    """
+    period = _cfg("BOLLINGER_PERIOD", 20)
+    std = _cfg("BOLLINGER_STD", 2.0)
+    by_sym: dict = {}
+    for r in rows:
+        path, p0 = r.get("path") or {}, r.get("p0")
+        c = path.get("c") or []
+        ts = pd.to_datetime(r.get("ts"), utc=True, errors="coerce")
+        if c and p0 and ts is not None and not pd.isna(ts):
+            by_sym.setdefault(r.get("symbol"), {})[ts + timedelta(hours=1)] = \
+                float(p0) * (1.0 + float(c[0]))
+    out = {}
+    for sym, closes in by_sym.items():
+        s = pd.Series(closes).sort_index()
+        if len(s) < period:
+            continue
+        mid = s.rolling(period).mean()
+        sd = s.rolling(period).std()
+        lower = mid - std * sd
+        rng = (mid + std * sd) - lower
+        pb = (s - lower) / rng.replace(0, float("nan"))
+        for ts, v in pb.items():
+            if v == v:  # NaN 가드
+                out[(sym, ts)] = float(v)
+    return out
+
+
+def split_band_reversal(rows: list) -> list:
+    """[Phase A] 소급 재분류 — 과거 JSONL의 밴드반전 후보(setup='RV')를 setup='BR'로.
+
+    JSONL 후보에는 디텍터 출처(reason)가 저장되지 않아, 밴드반전의 무장조건(직전
+    완성봉 %b 밴드 외곽 → 현재봉 밴드 안 복귀; 직전 %b 부재 시 밴드터치 폴백 —
+    라이브 `_detect_band_reversal`과 동일)을 재유도해 판별한다.
+      · 직전 완성봉 %b는 path 복원(_recon_pctb_map)이 1차, 직전 행 raw.bb_pctb가
+        2차 폴백(복원 불가 구간), 둘 다 없으면 밴드터치 폴백(라이브와 동일).
+      · setup='BR' 후보가 이미 있는 행(셋업 분리 후 적재분)은 원본이 권위 — 건너뜀.
+        (분리 후에는 무장 ∧ RV허용레짐 ⟹ BR 후보가 반드시 존재하므로 안전.)
+      · 무장 시 해당 방향 RV 후보 중 '마지막' 것이 밴드반전 — 디텍터 실행 순서
+        (_detect_rv → _detect_band_reversal)가 candidates 배열에 보존되기 때문.
+      · 멱등(재적용 무해)·원본 파일 불변(메모리 재라벨만). 라이브 경로는 이 함수를
+        호출하지 않는다(candidate_dataset 전용).
+    검증(2026-07): 라이브 발화 26건 대조 — JSONL에 후보가 기록된 21건 전부 일치
+    (BR 16 / RV 4 / MR 1), 나머지 5건은 동시각 재실행 멱등충돌로 후보 자체가 미적재.
+    """
+    bb_hi = _cfg("WRF_D_BBPCTB_HI", 0.80)
+    bb_lo = _cfg("WRF_D_BBPCTB_LO", 0.20)
+    require_re = _cfg("WRF_D_REQUIRE_REENTRY", True)
+
+    recon = _recon_pctb_map(rows)
+    # 2차 폴백: (symbol, ts) → 기록된 raw.bb_pctb (형성 초기값 — 복원 불가 시에만)
+    bb_map = {}
+    for r in rows:
+        ts = pd.to_datetime(r.get("ts"), utc=True, errors="coerce")
+        bb = (r.get("raw") or {}).get("bb_pctb")
+        if ts is not None and not pd.isna(ts) and bb is not None:
+            bb_map[(r.get("symbol"), ts)] = float(bb)
+
+    for r in rows:
+        cands = r.get("candidates") or []
+        if not cands or any(c.get("setup") == "BR" for c in cands):
+            continue
+        cur = (r.get("raw") or {}).get("bb_pctb")
+        if cur is None:
+            continue
+        cur = float(cur)
+        ts = pd.to_datetime(r.get("ts"), utc=True, errors="coerce")
+        prev = None
+        if ts is not None and not pd.isna(ts):
+            key = (r.get("symbol"), ts - timedelta(hours=1))
+            prev = recon.get(key, bb_map.get(key))
+        use_re = require_re and prev is not None
+        armed = {
+            "short": (prev >= bb_hi and cur < bb_hi) if use_re else (cur >= bb_hi),
+            "long": (prev <= bb_lo and cur > bb_lo) if use_re else (cur <= bb_lo),
+        }
+        for direction, is_armed in armed.items():
+            if not is_armed:
+                continue
+            rvs = [c for c in cands
+                   if c.get("setup") == "RV" and c.get("dir") == direction]
+            if rvs:
+                rvs[-1]["setup"] = "BR"
+    return rows
 
 
 def triple_barrier(path: dict, direction: str, sl_frac: float, tp_frac: float,
@@ -107,9 +213,10 @@ def candidate_dataset(rows: list, sl_priority: bool = True):
 
     각 후보 1행: setup·dir·regime·btc_macro·C·L·F·p_hat·p_source·fire +
     파생라벨(tb_win·tb_outcome·exret_24h·class·mfe/mae·path_eff). 경로 없는 행 skip.
+    [Phase A] 밴드반전 소급 재분류(RV→BR)를 먼저 적용 — 모든 오프라인 소비자
+    (calibrate/backtest/situation_report)가 이 함수를 거치므로 단일 지점에서 일관.
     """
-    import pandas as pd
-
+    rows = split_band_reversal(rows)
     btc_map = build_btc_ret_map(rows)
     recs = []
     for r in rows:
@@ -147,6 +254,7 @@ def candidate_dataset(rows: list, sl_priority: bool = True):
                 "p_cal_source": c.get("p_cal_source"),
                 "win_floor": c.get("win_floor"), "rr": c.get("rr"),
                 "fire": c.get("fire"), "veto_n": len(c.get("veto") or []),
+                "quarantine_n": len(c.get("quarantine") or []),
                 "tb_win": (tb or {}).get("tb_win"),
                 "tb_outcome": (tb or {}).get("outcome"),
                 "tb_exit_h": (tb or {}).get("exit_h"),
