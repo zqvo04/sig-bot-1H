@@ -46,13 +46,69 @@ def _existing_ids(path: str) -> set:
     return ids
 
 
+def _find_row(path: str, sid: str) -> dict | None:
+    """snapshot_id로 기존 행 조회(회계 누수 수리 판정용). 없으면 None."""
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("snapshot_id") == sid:
+                    return r
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[wrf.logger] 행 조회 실패: {e}")
+    return None
+
+
+def _replace_row(path: str, sid: str, new_row: dict) -> None:
+    """snapshot_id 행을 new_row로 교체하고 파일을 원자적 재기록(temp+rename)."""
+    out = []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            s = line.strip()
+            if not s:
+                continue
+            try:
+                r = json.loads(s)
+            except json.JSONDecodeError:
+                out.append(s)
+                continue
+            out.append(json.dumps(new_row, ensure_ascii=False)
+                       if r.get("snapshot_id") == sid else s)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(out) + "\n")
+    os.replace(tmp, path)
+
+
 def record_snapshot(row: dict) -> bool:
-    """schema v3 행을 월별 JSONL에 멱등 append."""
+    """schema v3 행을 월별 JSONL에 멱등 append.
+
+    [회계 누수 수리] 멱등키(snapshot_id) 선점 시 무조건 skip하던 규칙이, 같은 봉의
+    이른 실행이 후보 0으로 행을 먼저 쓰면(데이터 미정착) 후보를 생성한 재실행을
+    영구 skip시켜 '발사했는데 JSONL만 빈 행'을 남겼다(라이브 26건 중 5건 — fire-rights·
+    보정이 읽는 원장이 현실보다 관대해짐). 수리: 기존 행의 path가 아직 null(=같은 시각
+    재실행 창)이고 새 행이 후보가 더 많으면 교체한다(결정적·전략무관). path가 형성된
+    행은 절대 훼손하지 않는다(성숙 데이터 보호)."""
     if not enabled():
         return False
     ts = pd.Timestamp(row["ts"])
     path = research_logger._month_file(row["symbol"], ts)
-    if row["snapshot_id"] in _existing_ids(path):
+    existing = _find_row(path, row["snapshot_id"])
+    if existing is not None:
+        if (existing.get("path") is None
+                and len(row.get("candidates", [])) > len(existing.get("candidates", []))):
+            _replace_row(path, row["snapshot_id"], row)
+            logger.info(f"[wrf.logger] 🔧 빈-후보 행 교체(회계 누수 수리) {row['snapshot_id']}: "
+                        f"{len(existing.get('candidates', []))}→{len(row.get('candidates', []))}후보")
+            return True
         logger.debug(f"[wrf.logger] 중복 스냅샷 skip: {row['snapshot_id']}")
         return False
     with open(path, "a", encoding="utf-8") as fh:
