@@ -432,6 +432,16 @@ raw.adx=실ADX) — 하락추세 회수 21%(전부 숏 적격)·chop 오승격 8
   국한 → C축 v2와 동일한 '제거된 모집단 신기루' → **미채택**. 데이터 축적 후 재실행으로
   자동 재판정(non-BR 플래토 개선 시 채택). 재무장 히스테리시스도 같은 이유로 보류(급성
   클러스터링 위험원 BR이 이미 섀도 — 재점등 시 동반 구현).
+- **grind→TF 채널 재측정→현행 유지(Tier 2, `analysis/audit/verify_grind_tf.py`)**: 하락
+  grind 숏의 올바른 주인은 페이드(밴드반전)가 아니라 TF(추세추종)이나, ADX 지연으로
+  grind가 RANGING 오분류돼 TF가 배제된다. Pillar1 slope_sig가 유일한 구출 레버 → 전체
+  820스냅샷(7월 DOWNLEG grind 포함)으로 실제 `classify_market_regime`을 직접 호출해 단일변수
+  9종 스윕(분류 지표만 — 단일레짐 실현 R은 국면학습 함정). **전부 사전등록 게이트 탈락**:
+  회수↑는 전부 chop-FP↑·정밀도↓로 상쇄(현행이 효율 프론티어). **grind-숏 회수 ~15%가 구조적
+  상한**(느린 grind가 slope-persist에서 chop과 준-구별불가). er_pctl은 grind 회수에 무효
+  (is_ranging 뒤 판정 — 설계상 chop-FP 보호). → **레짐 파라미터 무변경**. 함의: grind-숏
+  빈도의 근본 회복은 튜닝이 아니라 신규 방향신호(Phase 4·다레짐 검증)의 몫 — 밴드반전
+  승격이 메운 공백은 실재했으며 파라미터로 대체 불가임이 정량 확인됨.
 
 ### [Phase C] 반전형 C축 v2 — macro-echo 포화 해소 (기본 OFF · 과적합 경계)
 
