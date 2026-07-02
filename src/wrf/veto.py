@@ -57,7 +57,8 @@ def directional_vetoes(candidate: dict, feat: dict, collected: dict) -> list:
     # ④ 거시 정면충돌 — 단, RV(전환)는 면제. RV는 CHoCH+리테스트+소진(=구조붕괴
     #    증거)을 이미 강제하므로 하드베토가 본분(전환 포착)을 무력화한다. 역추세
     #    위험은 C축(_ctx_exhaustion)·min-axis 소프트게이트로 통제(역할 분담).
-    rv_exempt = (candidate.get("setup") == "RV"
+    #    [Phase A] BR은 RV에서 분리 이관 — 종전 동작 보존 위해 면제도 동일 적용.
+    rv_exempt = (candidate.get("setup") in ("RV", "BR")
                  and getattr(config, "WRF_RV_MACRO_EXEMPT", True))
     macro = ctx.get("btc_macro", "CHOP")
     if not rv_exempt and ((long and macro == "DOWNLEG") or ((not long) and macro == "UPLEG")):

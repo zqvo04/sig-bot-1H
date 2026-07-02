@@ -1,6 +1,7 @@
 """WRF-4 엔진 — L0~L4 오케스트레이션 (무상태·페이퍼).
 
-발사 ⟺ P̂ ≥ W_floor ∧ ¬VETO. 사이징 ∝ P̂. 발사 무관 모든 후보를 기록한다
+발사 ⟺ P̂ ≥ W_floor ∧ ¬VETO ∧ ¬격리(섀도셋업·발사권강등 — Phase A).
+사이징 ∝ P̂. 발사 무관 모든 후보를 기록한다
 (전량 기록 → 오프라인 보정 데이터). 본체는 main에서 try/except로 격리되며,
 디텍터/베토/레벨 각각도 내부 격리한다.
 """
@@ -83,7 +84,12 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
     if route:
         counter = "long" if route == "down" else "short"    # 추세 반대 = 칼받기 → 억제
         cands = [c for c in cands
-                 if not (c.get("setup") in ("MR", "RV") and c.get("dir") == counter)]
+                 if not (c.get("setup") in ("MR", "RV", "BR") and c.get("dir") == counter)]
+
+    # [Phase A] 발사권 통제: 섀도 셋업(신규·미검증 — 기본 BR)과 발사권 강등 셀은
+    # 후보 생성·기록·오프라인 채점은 그대로 하되 라이브 발사만 차단(검증→점등).
+    shadow_setups = getattr(config, "WRF_SHADOW_SETUPS", set())
+    fire_rights_on = getattr(config, "WRF_FIRE_RIGHTS_ENABLED", True)
 
     enriched = []
     fired = []
@@ -113,7 +119,15 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
                     and lv["rr"] >= getattr(config, "WRF_EV_RR_FLOOR", 1.0))
             else:
                 rr_ok = (source == "calibrated") or (lv["rr"] >= getattr(config, "WRF_MIN_RR", 1.5))
-            fire = bool(p_hat >= floor and not vetoes and rr_ok)
+            # [Phase A] 격리(quarantine): 발사조건과 무관한 발사권 통제(거버넌스 게이트).
+            #   SHADOW_SETUP — 미검증 셋업(WRF_SHADOW_SETUPS)  ·  FIRE_RIGHTS — 실현
+            #   승률 사후검정 강등 셀(테이블 발행). 격리돼도 기록·오프라인 채점은 계속.
+            quarantine = []
+            if c["setup"] in shadow_setups:
+                quarantine.append("SHADOW_SETUP")
+            if fire_rights_on and pe.get("fire_rights") == "shadow":
+                quarantine.append("FIRE_RIGHTS")
+            fire = bool(p_hat >= floor and not vetoes and rr_ok and not quarantine)
             # [near-miss 섀도 밴드] 플로어만 못 넘은 '문턱탈락'(veto·RR은 통과) 후보 태깅.
             # 발사엔 무영향 — 표본 굶주린 클래스(특히 숏)의 near-miss 기록용(오프라인 보정).
             band_w = getattr(config, "WRF_SHADOW_BAND_WIDTH", 0.03)
@@ -135,6 +149,7 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
                 "confluence_n": c.get("confluence_n", 0),
                 "veto": vetoes, "size": size, "fire": fire,
                 "shadow_band": shadow_band,
+                "quarantine": quarantine,
                 "reason": c.get("reason", ""),
             }
             enriched.append(rec)
@@ -143,11 +158,12 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
         except Exception as e:  # pragma: no cover
             logger.warning(f"[engine] 후보 처리 실패(격리) {c.get('setup')}/{c.get('dir')}: {e}")
 
-    # [원트랙] 발사 후보 (setup,dir) 중복 제거 — 디텍터-RV와 밴드복귀-RV가 같은 방향을 동시
-    # 발화할 수 있어, 더 높은 P̂만 남기고 패자는 비발사로 강등(이중 발사/이중 기록 방지·JSONL 정합).
+    # 발사 후보 (setup,dir) 중복 제거 — 더 높은 P̂만 남기고 패자는 비발사로 강등(이중
+    # 발사/이중 기록 방지·JSONL 정합). BR(밴드반전)은 RV와 같은 반전 패밀리로 묶는다
+    # (원트랙 시절 '디텍터-RV vs 밴드복귀 동시발화 방지' 의도를 분리 후에도 보존).
     _best = {}
     for r in fired:
-        k = (r["setup"], r["dir"])
+        k = ("RV" if r["setup"] == "BR" else r["setup"], r["dir"])
         if k not in _best or r["p_hat"] > _best[k]["p_hat"]:
             _best[k] = r
     _winners = {id(r) for r in _best.values()}
