@@ -808,6 +808,21 @@ WRF_REV_CTX_BASE = _wrf_f("WRF_REV_CTX_BASE", 0.25)
 # 전제로 기본 OFF(5-I 검증→점등). 되돌리기·점등: WRF_REV_CTX_V2=true.
 WRF_REV_CTX_V2 = os.getenv("WRF_REV_CTX_V2", "false").lower() not in ("0", "false", "no", "")
 
+# ── [Phase C-v4] 임펄스-페이드 킬 (반전형 C축 개혁 — FP 누수 봉합·양방향 대칭) ──
+# 진단(2026-06~07 반사실 3종 + 킬 검증, analysis/audit/verify_rev_ctx_reform.py):
+#   · 게이트 열기(C를 stretch/decel 복합으로 완화 — 바닥 롱 개방) 실험 3종은 실현 승률
+#     33~36%로 전부 기각 — 1h 상태피처로는 캐피출레이션 내부 바닥 타이밍이 분해 불가
+#     (decel류 전환확인은 구조적으로 후행 → 반등 후 추격 진입만 산다).
+#   · 반면 현행의 실측 출혈원은 반대쪽: macro 태그가 전환을 수일 후행하는 동안
+#     '이미 돌아선 시장'에 대한 페이드(랠리 숏)가 C=+0.25~+1.0 확신으로 발사(결판 전패).
+# 처방: 페이드 대상 레그가 자기분포 극단 스트레치(loc_vwap 백분위)이면서 심볼 자기
+# 단기구조(1h EMA·MACD부호·BOS/CHoCH)상 아직 살아있으면(≥2/3) C=−0.5 강제.
+# 사전등록 검증: 발사집합 승률 47.6→53.8%·평균R +0.278→+0.333, 새 발사 0(출혈 0).
+# 표본 소수(자기상관) — fire-rights 사후검정이 계속 감시. OFF면 구동작(되돌리기).
+WRF_REV_IMPULSE_KILL = os.getenv("WRF_REV_IMPULSE_KILL", "true").lower() not in ("0", "false", "no", "")
+WRF_REV_IK_STRETCH   = _wrf_f("WRF_REV_IK_STRETCH", 0.6)   # |to_axis(loc_vwap)| ≥ → 극단 스트레치
+WRF_REV_IK_ALIVE     = _wrf_i("WRF_REV_IK_ALIVE", 2)       # 레그 생존 신호 ≥ n/3 → 아직 임펄스
+
 # ── 최소 RR 품질필터: prior 발사는 RR 이 이 값 미만이면 제외(저RR 잡신호 컷). ──
 # 보정셀(calibrated)은 학습된 승률을 존중해 이 필터를 우회한다.
 WRF_MIN_RR = _wrf_f("WRF_MIN_RR", 1.5)

@@ -82,7 +82,42 @@ def _flow_align(raw: dict, pcts: dict, direction: str) -> float:
 #   C = "거스를 추세가 신선한 거시레그가 아닌가"(레인지 톱/바텀이면 통과,
 #        신선한 동방향 거시레그면 차단=나이프캐칭 방지 유지)
 #   F = 모멘텀 *소진* + 군중 역포지션(과열RSI·펀딩극단·테이커소진·스마트머니 반대)
-def _ctx_exhaustion(ctx: dict, raw: dict, direction: str) -> float:
+def _leg_alive_n(raw: dict, direction: str) -> int:
+    """페이드 대상(진입 반대편) 레그의 단기 생존 신호 수(0~3) — 심볼 자기구조.
+
+    롱 페이드 = 하락레그가 대상: 1h EMA 역배열 · MACD 히스토그램 음수 · BOS/CHoCH 하향.
+    숏은 부호 반전(대칭). 결측은 비생존으로 셈(킬 규칙이 발동하지 않는 쪽 = 보수)."""
+    sgn = -1 if direction == "long" else 1
+    ema_alive = raw.get("ema") == sgn
+    macd = raw.get("macd")
+    macd_alive = (macd is not None) and ((macd < 0) if direction == "long" else (macd > 0))
+    struct_alive = raw.get("bos") == sgn or raw.get("choch") == sgn
+    return int(ema_alive) + int(macd_alive) + int(struct_alive)
+
+
+def _impulse_kill(C: float, raw: dict, pcts: dict, direction: str) -> float:
+    """[Phase C-v4] 임펄스-페이드 킬(양방향 대칭): 페이드 대상 레그가 극단 스트레치
+    (자기분포 loc_vwap 백분위)이면서 자기 단기구조상 아직 '살아있으면'(≥2/3 정렬)
+    C를 −0.5로 강제 — 신선한 임펄스에 대한 페이드 금지.
+
+    근거(2026-06~07 반사실, analysis/audit/verify_rev_ctx_reform.py — 사전등록):
+    macro 태그가 전환을 후행하는 동안 발사되던 랠리-페이드 숏 결판 5건 전패를 제거,
+    발사집합 승률 47.6→53.8%·평균R +0.278→+0.333, 새 발사 0(게이트를 열지 않고 닫기만).
+    반대 실험(게이트 열기: stretch·decel 복합 등 3종)은 승률 33~36%로 전부 기각 —
+    킬 규칙이 유일하게 데이터가 지지한 C축 개혁이다. 토글 OFF면 무변경(구동작)."""
+    if not getattr(config, "WRF_REV_IMPULSE_KILL", True):
+        return C
+    loc = pcts.get("loc_vwap")
+    if loc is None:
+        return C
+    stretch = (0.5 - loc) * 2.0 if direction == "long" else (loc - 0.5) * 2.0
+    if (stretch >= getattr(config, "WRF_REV_IK_STRETCH", 0.6)
+            and _leg_alive_n(raw, direction) >= getattr(config, "WRF_REV_IK_ALIVE", 2)):
+        return min(C, -0.5)   # 구설계 최저 envelope와 동일한 하드 차단 수위
+    return C
+
+
+def _ctx_exhaustion(ctx: dict, raw: dict, pcts: dict, direction: str) -> float:
     """C(반전) — 페이드 대상 추세의 신선도 기반. CHOP은 완만 통과, 신선한 역행레그는 차단.
 
     [Phase C] v2(WRF_REV_CTX_V2, 기본 OFF): 구버전은 btc_macro echo만 써서 DOWNLEG×숏이
@@ -100,11 +135,13 @@ def _ctx_exhaustion(ctx: dict, raw: dict, direction: str) -> float:
     if getattr(config, "WRF_REV_CTX_V2", False):
         align = _ctx_struct_align(ctx, raw)
         align = align if direction == "long" else -align   # 진입방향 정합(양수=안전 페이드)
-        return _clip(base + (1.0 - base) * align)           # envelope [2·base−1, 1] = 구설계와 동일
+        C = _clip(base + (1.0 - base) * align)              # envelope [2·base−1, 1] = 구설계와 동일
+        return _impulse_kill(C, raw, pcts, direction)
     # 구동작: btc_macro echo만(롱반전=하락페이드는 거시 DOWN 신선이면 위험 → fade=m; 숏=-m)
     m = {"UPLEG": 1.0, "DOWNLEG": -1.0, "CHOP": 0.0}.get(ctx.get("btc_macro", "CHOP"), 0.0)
     fade_align = m if direction == "long" else -m
-    return _clip(base + 0.75 * fade_align)
+    C = _clip(base + 0.75 * fade_align)
+    return _impulse_kill(C, raw, pcts, direction)
 
 
 def _flow_exhaustion(raw: dict, pcts: dict, direction: str) -> float:
@@ -261,7 +298,7 @@ def _detect_mr(feat: dict, measures: dict):
         # [A5] 반전캔들 거래량 확증
         if not _rev_vol_ok(raw):
             continue
-        C = _ctx_exhaustion(ctx, raw, direction)
+        C = _ctx_exhaustion(ctx, raw, pcts, direction)
         # MR은 평균회귀 — 극단일수록 L 강함(방향 정렬: 롱이면 저극단 = +)
         depth = (0.15 - rsi_p) / 0.15 if long else (rsi_p - 0.85) / 0.15
         L = _clip(0.5 + max(0.0, depth))
@@ -343,7 +380,7 @@ def _detect_rv(feat: dict, measures: dict):
         # [A5] 반전캔들 거래량 확증
         if not _rev_vol_ok(raw):
             continue
-        C = _ctx_exhaustion(ctx, raw, direction)
+        C = _ctx_exhaustion(ctx, raw, pcts, direction)
         L = _clip(0.4 + 0.1 * confirms)
         if soft:
             # 강확증 시퀀스 부재 → L 감쇠(소진은 됐으나 구조확정 약함). floor가 최종 품질필터.
@@ -422,7 +459,7 @@ def _detect_band_reversal(feat: dict, measures: dict):
             stretch = max(0.0, (bb_lo - ext) / max(1e-6, bb_lo))
         if not armed:
             continue
-        C = _ctx_exhaustion(ctx, raw, direction)
+        C = _ctx_exhaustion(ctx, raw, pcts, direction)
         L = _clip(0.5 + 0.5 * min(1.0, stretch))
         L = _confluence_bonus(L, raw, direction)
         F = _flow_exhaustion(raw, pcts, direction)
