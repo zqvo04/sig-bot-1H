@@ -956,6 +956,19 @@ WRF_SIZE_MAX  = _wrf_f("WRF_SIZE_MAX", 2.0)     # 사이즈 상한 단위
 WRF_CALIB_TABLE = os.getenv("WRF_CALIB_TABLE", "data/calibration_table.json")
 WRF_SCHEMA_VERSION = 3
 
+# ── [테제B 검증 인프라] 진입직전 캔들 윈도 저장 (precond 재실행 백테스트 가능화) ──
+# 기존 오프라인 하니스는 '저장된 후보(candidates)'만 리플레이 → C/L/F·임계 재채점은
+# 가능하나 precond(무장조건) 변경은 검증 불가(스냅샷에 진입시점 캔들이 없음). 이 블록은
+# 백워드 1H 캔들 윈도(+ 그 시점 pct 백분위)를 스냅샷에 박아 오프라인 디텍터 재실행을
+# 가능케 한다. ohlc는 p0(마지막 종가) 상대비, v는 윈도 평균 상대비(비율연산 불변·컴팩트,
+# path가 빠뜨린 거래량을 보존 → 거래량 게이트까지 재현). schema_version은 불변(필드 추가·
+# 하위호환). 기본 ON·env 되돌리기.
+WRF_RESEARCH_BARS   = os.getenv("WRF_RESEARCH_BARS", "true").lower() not in ("0", "false", "no", "")
+# 60봉이면 현재봉 지표 warmup(ATR/EMA/RSI/MACD)·box(20~26)·bb_prev(22)·rev_vol(5)를 모두
+# 덮는다. 장윈도 비율(vol baseline 120)·백분위(200)는 raw·pct에 이미 저장 → 굳이 봉으로
+# 복원할 필요 없음. 커밋되는 데이터라 기본은 컴팩트하게, 필요 시 env로 확장(예: 200).
+WRF_RESEARCH_BARS_N = _wrf_i("WRF_RESEARCH_BARS_N", 60)   # 백워드 1H 봉 수
+
 # 단일 버전 식별자 — 수집·측정·스냅샷 로그 배너의 유일한 출처(레거시 v3.0/v3.6 표기 폐기).
 # 아키텍처는 WRF-4(Win-Rate-First, 4-Setup), 적재 스키마는 v{WRF_SCHEMA_VERSION}.
 BOT_VERSION = "WRF-4"
