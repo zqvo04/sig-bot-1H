@@ -1,8 +1,7 @@
 # WRF-4 신호 워크플로우 — 매시 :05 (페이퍼 전용)
 #
-# 1H 캔들 마감(:00) → :05 실행 → 수집·측정·엔진(L0~L4)·발사(페이퍼)·스냅샷 적재.
-# 학습기간엔 ALERT_ENABLED=false(기록만). 심볼별 병렬, JSONL은 심볼별 파일이라
-# 충돌 없음(push 경합은 fetch+rebase 백오프 재시도).
+# 1H 캔들 마감(:00) → :05 실행 → 수집·측정·엔진(L0~L4)·발사(페이퍼)·스냅샷 적재·알림.
+# 심볼별 병렬, JSONL은 심볼별 파일이라 충돌 없음(push 경합은 fetch+rebase 백오프 재시도).
 name: WRF Signal
 
 on:
@@ -37,8 +36,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           SINGLE_SYMBOL:      ${{ matrix.symbol }}
-          # 학습기간 알림 OFF·기록만 (커버리지 충족 후 Variable로 true)
-          ALERT_ENABLED:      ${{ vars.ALERT_ENABLED }}
+          # 발사 시 텔레그램 알림 ON(기본 true). 저장소 Settings→Actions→Variables에
+          # ALERT_ENABLED=false 를 두면 코드 변경 없이 즉시 다시 OFF(기록만) 가능.
+          ALERT_ENABLED:      ${{ vars.ALERT_ENABLED || 'true' }}
           NOTION_TOKEN:           ${{ secrets.NOTION_TOKEN }}
           NOTION_PARENT_PAGE_ID:  ${{ secrets.NOTION_PARENT_PAGE_ID }}
           NOTION_SIGNALS_DB_ID:   ${{ secrets.NOTION_SIGNALS_DB_ID }}
