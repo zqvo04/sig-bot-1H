@@ -56,6 +56,27 @@ def _ema_code(s: str) -> int:
     return {"bullish": 1, "bearish": -1}.get(s, 0)
 
 
+def _bars_since_sign_flip(ser) -> int | None:
+    """[V5-0 계측] 시계열 끝값의 부호가 마지막으로 바뀐 뒤 경과 봉 수(0=이번 봉 플립).
+
+    매 실행 캔들에서 재구성되는 시계열(dist_vwap/dist_ema20)에서 즉시 계산 — 무상태(5-E).
+    끝값이 0/NaN이거나 플립 전에 NaN 경계를 만나면 None(신선도 불명 = 보수적 비신선)."""
+    try:
+        a = ser.to_numpy(dtype=float)
+        cur = a[-1]
+        if not np.isfinite(cur) or cur == 0.0:
+            return None
+        for i in range(2, len(a) + 1):
+            x = a[-i]
+            if not np.isfinite(x):
+                return None
+            if x * cur <= 0.0:
+                return i - 2
+        return None
+    except Exception:
+        return None
+
+
 # 레짐 → 허용 셋업 라우팅 (C 맥락의 1차 산출물)
 REGIME_SETUPS = {
     "TRENDING":  ["TF", "RV"],
@@ -199,6 +220,10 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
         "bb_pctb": cur_bbpos,
         "dist_vwap_atr": cur_dist_vwap,
         "dist_ema20_atr": cur_dist_ema20,
+        # [V5-0 계측] 신선도 — VWAP/EMA20 부호플립 후 경과 봉 수(리클레임 부스트 입력 +
+        # 오프라인 검증용 박제. 부스트 OFF여도 기록돼 표본이 쌓인다)
+        "bars_since_vwap_flip": _bars_since_sign_flip(dist_vwap),
+        "bars_since_ema20_flip": _bars_since_sign_flip(dist_ema20),
         "atr_pct": _f(atr.get("pct")),
         "adx": _f(adx.get("adx")),
         "adx_slope": _f(adx.get("adx_slope")),

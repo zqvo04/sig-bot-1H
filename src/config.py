@@ -900,6 +900,13 @@ WRF_REV_RECLAIM_MIN  = _wrf_i("WRF_REV_RECLAIM_MIN", 2)   # 리클레임 확증 
 #   ema/VWAP)로 일부 이관 → 반전점에서 추종 C가 후행 거시에 덜 눌림(가중합=1 보존·대칭).
 WRF_CTX_FAST_STRUCT = os.getenv("WRF_CTX_FAST_STRUCT", "true").lower() not in ("0", "false", "no", "")
 WRF_CTX_FAST_W      = _wrf_f("WRF_CTX_FAST_W", 0.20)   # fast 가중(macro 가중에서 이관). 0.45 상한.
+# [V5-B] 리클레임 부스트 — P0 킬의 쌍대(추종형 TF/BO 전용, docs/CAXIS_V5_DESIGN.md §5).
+#   진입방향 다중확증 리클레임 완결(≥WRF_REV_RECLAIM_MIN, P0 임계 재사용) ∧ VWAP/EMA20
+#   부호플립 신선(≤K봉) ∧ 느린 구조(거시·4H·1D) 아직 반대(지각 중)이면 추종 C를 고정
+#   수위(reclaim 2→+0.25 / 3→+0.50)로 max-클램프. 개방형(신규 발사 생성 가능)이라 기본
+#   OFF — verify_caxis_v5.py 사전등록 게이트(방향분리·BTC초과수익) 통과 후 점등(5-I).
+WRF_CTX_RECLAIM_BOOST = os.getenv("WRF_CTX_RECLAIM_BOOST", "false").lower() not in ("0", "false", "no", "")
+WRF_RECLAIM_FRESH_K   = _wrf_i("WRF_RECLAIM_FRESH_K", 6)   # 신선도: 부호플립 ≤ K봉(1H)
 # P2 — [FN] TF 추세 태우기(무상태 트레일링 익절): 고정 2.5R TP가 스윙 몸통을 자름. TF에 한해
 #   HWM−k·ATR 샹들리에 트레일 + 보유상한 확장. 무상태(신호시점 주석 = trail_dist)로 발행,
 #   오프라인 라벨러가 동일 규칙으로 채점(라이브 포지션 상태 불필요 → 5-E 준수).

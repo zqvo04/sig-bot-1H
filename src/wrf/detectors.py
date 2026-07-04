@@ -60,6 +60,26 @@ def _fast_struct(raw: dict) -> float:
     return _clip(0.35 * struct + 0.25 * fbk + 0.20 * ema + 0.20 * vw)
 
 
+def _struct_evidence(ctx: dict, raw: dict) -> dict:
+    """[V5-0] 공유 증거 커널 — 방향-부호 구조 증거(+1=강세)를 한 곳에서 계산한다.
+
+    C축 소비자(추종 블렌드 `_ctx_struct_align` · 리클레임 부스트 `_reclaim_boost`)가
+    같은 프리미티브를 여기서 얻는다 — P1이 반전형에 전파되지 않던 류의 단절 재발 방지.
+    순수 측정 조합(무상태·부작용 없음). 설계: docs/CAXIS_V5_DESIGN.md §5 V5-0."""
+    return {
+        "m": {"UPLEG": 1.0, "DOWNLEG": -1.0, "CHOP": 0.0}.get(ctx.get("btc_macro", "CHOP"), 0.0),
+        "b": {"BULL": 1.0, "BEAR": -1.0, "NEUTRAL": 0.0}.get(ctx.get("bias_1d", "NEUTRAL"), 0.0),
+        "h4": float(raw.get("ema_4h") or 0),        # 4H 추세 방향(±1)
+        "ds": float(raw.get("ema_1d_struct") or 0),  # 일봉 EMA20/50 구조(±1)
+        "fast": _fast_struct(raw),                   # 자기 1H 빠른구조 [-1,1]
+    }
+
+
+def _slow_align(ev: dict) -> float:
+    """느린 구조 강(거시·바이어스·4H·1D)의 고정 합성 — P1/부스트와 무관한 순수 slow."""
+    return 0.45 * ev["m"] + 0.25 * ev["b"] + 0.20 * ev["h4"] + 0.10 * ev["ds"]
+
+
 def _ctx_struct_align(ctx: dict, raw: dict) -> float:
     """구조 맥락 부호합(양수=강세). 거시·일봉바이어스·4H추세·일봉EMA20/50, [-1,1].
 
@@ -70,21 +90,53 @@ def _ctx_struct_align(ctx: dict, raw: dict) -> float:
     [P1] WRF_CTX_FAST_STRUCT: 후행 macro 가중을 자기 1H 빠른구조(_fast_struct)로 일부
     이관해 반전점에서 추종 C가 지연 거시에 덜 눌리게 한다. 가중 합=1.0 자동보존
     (mw=0.45−fw). OFF면 구가중(무변경)."""
-    m = {"UPLEG": 1.0, "DOWNLEG": -1.0, "CHOP": 0.0}.get(ctx.get("btc_macro", "CHOP"), 0.0)
-    b = {"BULL": 1.0, "BEAR": -1.0, "NEUTRAL": 0.0}.get(ctx.get("bias_1d", "NEUTRAL"), 0.0)
-    h4 = float(raw.get("ema_4h") or 0)        # 4H 추세 방향(±1)
-    ds = float(raw.get("ema_1d_struct") or 0)  # 일봉 EMA20/50 구조(±1)
+    ev = _struct_evidence(ctx, raw)
     if getattr(config, "WRF_CTX_FAST_STRUCT", False):
         fw = min(0.45, getattr(config, "WRF_CTX_FAST_W", 0.20))
         mw = 0.45 - fw
-        return mw * m + 0.25 * b + 0.20 * h4 + 0.10 * ds + fw * _fast_struct(raw)
-    return 0.45 * m + 0.25 * b + 0.20 * h4 + 0.10 * ds
+        return (mw * ev["m"] + 0.25 * ev["b"] + 0.20 * ev["h4"] + 0.10 * ev["ds"]
+                + fw * ev["fast"])
+    return _slow_align(ev)
+
+
+def _reclaim_boost(C: float, ctx: dict, raw: dict, direction: str) -> float:
+    """[V5-B] 리클레임 부스트 — P0 킬(`_reclaim_kill`)의 쌍대, 추종형(TF/BO) 전용.
+
+    P0가 "리클레임 완결 = 반전 진입은 지각"으로 소비하는 바로 그 증거(`_reclaim_n`)를
+    "추종 진입은 유효해졌다"로도 소비한다(증거의 반쪽 재활용). 발동 3조건(AND):
+      ① 진입방향 다중확증 리클레임 완결(reclaim_n ≥ WRF_REV_RECLAIM_MIN — P0와 동일 임계)
+      ② 신선: VWAP/EMA20 부호플립이 진입방향으로 ≤ K봉 전(계측 raw 필드, 무상태 5-E)
+      ③ 느린 구조(거시·4H·1D)는 아직 반대 = 후행 태그가 지각 중인 구간(부스트존)
+    이면 C를 고정 맵(reclaim 2→+0.25, 3→+0.50)으로 max-클램프한다 — 가산 아님(5-J),
+    v4/P0 min-클램프의 거울. 예측이 아니라 완결된 구조 사건의 인식이다.
+
+    ★개방형(신규 발사 생성 가능) — v4/P0의 '닫기 전용이라 안전' 논리가 적용되지 않아
+    기본 OFF. 점등은 verify_caxis_v5.py 사전등록 게이트(방향분리·BTC초과수익) 통과 후
+    (5-I). 근거·자기반박: docs/CAXIS_V5_DESIGN.md §3, §5 V5-B."""
+    if not getattr(config, "WRF_CTX_RECLAIM_BOOST", False):
+        return C
+    n = _reclaim_n(raw, direction)
+    if n < getattr(config, "WRF_REV_RECLAIM_MIN", 2):
+        return C
+    sgn = 1 if direction == "long" else -1
+    k = getattr(config, "WRF_RECLAIM_FRESH_K", 6)
+    fv, dv = raw.get("bars_since_vwap_flip"), raw.get("dist_vwap_atr")
+    fe, de = raw.get("bars_since_ema20_flip"), raw.get("dist_ema20_atr")
+    fresh = ((fv is not None and fv <= k and (dv or 0) * sgn > 0)
+             or (fe is not None and fe <= k and (de or 0) * sgn > 0))
+    if not fresh:
+        return C
+    slow = _slow_align(_struct_evidence(ctx, raw))
+    if not ((slow < 0) if direction == "long" else (slow > 0)):
+        return C
+    return max(C, 0.50 if n >= 3 else 0.25)   # 고정 맵 — 튜닝 파라미터 아님
 
 
 def _ctx_align(ctx: dict, raw: dict, direction: str) -> float:
     """C(연속) — 거시·일봉바이어스·4H추세·일봉EMA20/50 정합 (추종 셋업용)."""
     base = _ctx_struct_align(ctx, raw)
-    return _clip(base if direction == "long" else -base)
+    C = _clip(base if direction == "long" else -base)
+    return _reclaim_boost(C, ctx, raw, direction)
 
 
 def _flow_align(raw: dict, pcts: dict, direction: str) -> float:
