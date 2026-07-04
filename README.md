@@ -290,6 +290,24 @@ python analysis/backtest.py --ab              # prior vs 보정 P̂ Brier·캘�
   BO숏을 동결하던 것을 검증 후 완화) — Pillar3 |
   `WRF_PCT_MIDRANK`·`WRF_TF_MACD_SYM`·`WRF_RV_SIDED_SIGNALS` — Pillar4. 기존 grind-fix
   `WRF_REGIME_ER_TREND`·`WRF_BO_SL_NEAR`·`WRF_REGIME_ROUTING`도 기본 ON으로 승격.
+- **[P0/P1/P2] 반전랠리 병목 3처방 토글**(전부 기본 **OFF**·구동작 보존·롱숏 대칭·되돌리기 가능):
+  - `WRF_REV_RECLAIM_KILL`(+`WRF_REV_RECLAIM_MIN`=2) — **P0 [FP]** 페이드 대상 레그가 자기
+    1H 구조로 신선하게 리클레임(구조플립+VWAP재탈환+EMA ≥N)하면 역추세 반전(MR/RV/BR) C를
+    하드차단. `_impulse_kill`(스트레치·성숙 요구 → 지각)의 조기-구조 거울짝. 상승랠리 숏·
+    하락임펄스 롱(칼받기) 대칭 차단.
+  - `WRF_CTX_FAST_STRUCT`(+`WRF_CTX_FAST_W`=0.20) — **P1 [FN]** 추종 C(`_ctx_struct_align`)의
+    후행 macro 가중(0.45)을 자기 1H 빠른구조(bos/choch/failed_break/ema/VWAP)로 이관(가중합=1
+    자동보존). 반전점에서 추종 롱이 지연 거시에 덜 눌림.
+  - `WRF_TF_TRAIL`(+`WRF_TF_TRAIL_ATR`=3.0·`WRF_TF_TRAIL_TMAX`=72) — **P2 [FN]** TF에 한해
+    고정 2.5R TP 대신 HWM∓k·ATR 무상태 트레일링 익절(신호시점 `trail_dist` 주석 발행 →
+    오프라인 라벨러 `labels.triple_barrier(trail_frac=…)`가 동일규칙 채점 → 라이브 포지션
+    상태 불필요, 5-E 준수).
+  - **백테스트(`analysis/audit/verify_p012.py`, 단일변수·1195스냅샷·UPLEG 0건) 판정**: P0는
+    현행 라이브(BR 섀도)에선 무변경(리클레임-확증 역행페이드는 이미 BR-섀도가 선차단) — BR-섀도
+    해제 반사실에서만 손절 1건 제거(승률 41.7→43.5%·PF 1.35→1.46·익절희생 0). P1은 무변경
+    (0-UPLEG 하락장에서 추종 롱이 floor 미달·발사 불변). P2는 표본 극소(TF 발사 2건·초기SL
+    선청산)로 무결론. **셋 다 검증 데이터가 "점등"을 지지하지 않아 기본 OFF 유지**(5-I). **Gate-In**:
+    P0 = 유니버스 확장으로 非-BR 반전 후보 출현 시 / P1·P2 = UPLEG 관측 + 섀도 실현승률 ≥ floor.
 
 ### 전략 정합 개선 (2026-06, win-rate-first 골격 유지)
 

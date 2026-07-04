@@ -127,14 +127,65 @@ def split_band_reversal(rows: list) -> list:
     return rows
 
 
+def _trailing_barrier(path: dict, direction: str, sl_frac: float, trail_frac: float,
+                      t_max: int) -> dict:
+    """[P2] 무상태 트레일링 익절 재생 — 고정 TP 대신 HWM∓trail_frac 샹들리에 스톱.
+
+    초기 스톱=진입∓sl_frac, 이후 유리방향 HWM에서 trail_frac 거리로 단조 상향(롱)/하향(숏).
+    청산 R = (청산가−진입)/sl_frac(리스크 1단위). outcome: WIN(양수잠금)/LOSS(초기스톱 이하)/
+    TIMEOUT(t_max 실현). levels.py WRF_TF_TRAIL과 동일 규칙 → 라이브(주석)·오프라인(채점) 정합."""
+    h = path.get("h") or []
+    l = path.get("l") or []
+    c = path.get("c") or []
+    if not c or sl_frac <= 0 or trail_frac <= 0:
+        return None
+    base = 1.0 + _entry_ref(path)
+    long = direction.lower() == "long"
+    n = min(len(c), int(t_max))
+    init_stop = base * (1 - sl_frac) if long else base * (1 + sl_frac)
+    stop = init_stop
+    hwm = base                       # 유리방향 극값(롱=고점/숏=저점)
+    for i in range(n):
+        hi = 1.0 + (h[i] if i < len(h) else c[i])
+        lo = 1.0 + (l[i] if i < len(l) else c[i])
+        if long:
+            hwm = max(hwm, hi)
+            stop = max(stop, hwm - trail_frac * base)   # 단조 상향(래칫)
+            if lo <= stop:
+                r = (stop / base - 1.0) / sl_frac
+                return {"outcome": "WIN" if r > 0 else "LOSS", "exit_h": i + 1,
+                        "r_multiple": r, "tb_win": 1 if r > 0 else 0}
+        else:
+            hwm = min(hwm, lo)
+            stop = min(stop, hwm + trail_frac * base)    # 단조 하향(래칫)
+            if hi >= stop:
+                r = (1.0 - stop / base) / sl_frac
+                return {"outcome": "WIN" if r > 0 else "LOSS", "exit_h": i + 1,
+                        "r_multiple": r, "tb_win": 1 if r > 0 else 0}
+    if len(c) < n:
+        return None
+    if not path.get("complete") and len(c) < int(t_max):
+        return None
+    exit_rel = c[n - 1]
+    realized = (1.0 + exit_rel) / base - 1.0
+    if not long:
+        realized = -realized
+    return {"outcome": "TIMEOUT", "exit_h": n,
+            "r_multiple": realized / sl_frac if sl_frac > 0 else 0.0, "tb_win": None}
+
+
 def triple_barrier(path: dict, direction: str, sl_frac: float, tp_frac: float,
-                   t_max: int, sl_priority: bool = True) -> dict:
+                   t_max: int, sl_priority: bool = True,
+                   trail_frac: float = None) -> dict:
     """배리어 재생: TP/SL/타임스톱. 반환 {outcome, exit_h, r_multiple, tb_win}.
 
     outcome ∈ {WIN, LOSS, TIMEOUT}. tb_win = 1(WIN)/0(LOSS)/None(TIMEOUT=스크래치).
     sl_frac·tp_frac = 진입가 대비 양수 거리(비율). t_max = 최대 보유 캔들 수.
     경로 미성숙(t_max 이전에 미터치 & 경로 미완성)이면 None 반환.
+    [P2] trail_frac(>0) 지정 시 고정 TP 대신 트레일링(_trailing_barrier)으로 채점.
     """
+    if trail_frac is not None and trail_frac > 0:
+        return _trailing_barrier(path, direction, sl_frac, trail_frac, t_max)
     o = path.get("o") or []
     h = path.get("h") or []
     l = path.get("l") or []
@@ -237,8 +288,11 @@ def candidate_dataset(rows: list, sl_priority: bool = True):
             long = c.get("dir") == "long"
             sl_frac = abs(entry - sl) / entry
             tp_frac = abs(tp - entry) / entry
+            # [P2] 후보에 trail_dist가 실리면(WRF_TF_TRAIL) 트레일링으로 채점(고정 TP 무시)
+            td = c.get("trail_dist")
+            trail_frac = (abs(float(td)) / entry) if td else None
             tb = triple_barrier(path, c["dir"], sl_frac, tp_frac,
-                                c.get("t_max", 48), sl_priority)
+                                c.get("t_max", 48), sl_priority, trail_frac=trail_frac)
             mfe, mae = mfe_mae(path, k=c.get("t_max", 48))
             recs.append({
                 "snapshot_id": r.get("snapshot_id"), "ts": ts, "symbol": r.get("symbol"),

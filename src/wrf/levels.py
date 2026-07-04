@@ -107,6 +107,13 @@ def compute_levels(candidate: dict, feat: dict) -> dict:
         tp_dist = sl_dist * rr
 
     sl_dist = min(sl_dist, max_sl)
+    # [P2] TF 추세 태우기(무상태 트레일링): 고정 TP가 스윙 몸통을 자르는 FN을 완화. TF에 한해
+    # HWM−k·ATR 샹들리에 트레일 거리를 주석(trail_dist)으로 발행하고 보유상한을 확장한다.
+    # 라이브는 포지션 상태를 들지 않고 규칙만 전달 → 오프라인 라벨러가 동일 규칙으로 채점(5-E).
+    trail_dist = None
+    if setup == "TF" and getattr(config, "WRF_TF_TRAIL", False):
+        trail_dist = atr * getattr(config, "WRF_TF_TRAIL_ATR", 3.0)
+        t_max = getattr(config, "WRF_TF_TRAIL_TMAX", 72)
     if long:
         sl = price - sl_dist
         tp = price + tp_dist
@@ -115,7 +122,7 @@ def compute_levels(candidate: dict, feat: dict) -> dict:
         tp = price - tp_dist
     rr_final = (abs(tp - price) / sl_dist) if sl_dist > 0 else rr
 
-    return {
+    out = {
         "entry": round(price, 8),
         "tp": round(tp, 8),
         "sl": round(sl, 8),
@@ -123,3 +130,6 @@ def compute_levels(candidate: dict, feat: dict) -> dict:
         "rr": round(rr_final, 3),
         "t_max": int(t_max),
     }
+    if trail_dist is not None and trail_dist > 0:
+        out["trail_dist"] = round(trail_dist, 8)
+    return out
