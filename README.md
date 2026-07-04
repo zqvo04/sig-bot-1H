@@ -15,6 +15,46 @@ OKX 무기한 선물(USDT-Swap) **1시간봉 스윙** 신호 봇. **페이퍼 �
 
 ---
 
+<a id="status"></a>
+## 현재 상태 한눈에
+
+```
+수집(OKX,ccxt 읽기전용) → 측정(L1 raw/pct/ctx) → 4셋업 디텍터(L2, C/L/F)
+   → 보정(L3, 그림자) → 발사판정(L4, P̂≥floor∧¬VETO) → JSONL+Notion 기록
+   → (오프라인, 매주) 부분풀링 학습 → calibration_table.json → 다음 주 라이브가 δ_eff만 읽음
+```
+
+| 항목 | 상태 |
+|---|---|
+| 실주문 | **없음** — 전량 페이퍼(advisory) |
+| 알림(텔레그램) | `ALERT_ENABLED=false` — Notion 기록만, 학습기간 중 |
+| 보정(L3) | `WRF_CALIB_DISABLED=true` — 발사는 **prior**, 보정 P̂은 그림자 기록만 |
+| BR(밴드반전) 발사권 | `WRF_SHADOW_SETUPS={"BR"}` — 후보생성·기록은 하되 라이브 발사는 안 함 |
+| **P0/P1/P2 실험** | **2026-07-04부로 기본 ON**(사용자 지시 라이브 실험) — [토글 레퍼런스](#toggles) · [실험 로그](#changelog) 참조 |
+| 데이터 커버리지 | 거시레짐 UPLEG 관측 **0건**(DOWNLEG/CHOP만) — 롱측 검증은 여전히 보류 상태 |
+
+---
+
+<a id="toc"></a>
+## 목차
+
+- [핵심 철학](#philosophy)
+- [WRF-4 엔진 로직 구조 (5레이어)](#engine)
+- [신호 로직 상세](#signal-logic)
+- [학습데이터 스키마](#schema)
+- [오프라인 보정 학습](#calibration)
+- [운영 / 워크플로우](#ops)
+- [토글 레퍼런스 (ON/OFF 전체 일람)](#toggles)
+- [심볼 / 시크릿](#symbols)
+- [Notion](#notion)
+- [프로젝트 구조](#structure)
+- [실험 로그 (히스토리)](#changelog)
+- [슈퍼업그레이드 로드맵](#roadmap)
+- [면책 조항](#disclaimer)
+
+---
+
+<a id="philosophy"></a>
 ## 핵심 철학
 
 - **보정이 승률을 보장**한다. 라이브 봇은 **절대 학습하지 않는다** — 오프라인 주간 잡이
@@ -33,6 +73,7 @@ OKX 무기한 선물(USDT-Swap) **1시간봉 스윙** 신호 봇. **페이퍼 �
 
 ---
 
+<a id="engine"></a>
 ## WRF-4 엔진 (5레이어)
 
 ```
@@ -49,13 +90,15 @@ L2 셋업 디텍터 ×4 — 직교 3축(C/L/F ∈[-1,1])은 여기서 산출(셋
    ── 디텍터(레짐이 허용집합 결정) ──
    TF: HH/HL + [얕은눌림(1H EMA밴드) ∪ 깊은눌림(4H 피보 50~61.8%)] + 모멘텀/구조 +
        반전봉거래량 (성숙late 추세 확신감쇠) | TP=측정이동 SL=직전스윙∓ATR×1.5 T=48h
+       (WRF_TF_TRAIL ON 시 TP 대신 HWM∓ATR 트레일링·T=72h — 토글 레퍼런스 참조)
    BO: 경계돌파 + 거래량스파이크 + [리테스트 유지★필수] + 펀딩컨트래리언 가점
        (RANGING/SQUEEZE/EXPLOSIVE 도달) | TP=박스높이 SL=돌파경계 near∓ATR(RR정상화) T=36h
    MR(RANGING): BB극단 + RSI극단백분위 + 반전마이크로 + 반전봉거래량 |
        TP=박스중심선/반대편경계 SL=박스경계∓ATR T=24h
    RV: 다이버전스 + 반전캔들 + [확인≥2] + 반전봉거래량 (CHoCH·리테스트는 소프트=L감쇠) |
        TP=직전레벨 SL=극단너머 T=48h
-   밴드반전(RV·원트랙): BB 밴드복귀(상단→복귀=숏/하단→복귀=롱) 라이브 발사 (구 D-shadow 일원화)
+   밴드반전(RV·원트랙): BB 밴드복귀(상단→복귀=숏/하단→복귀=롱) — 후보 생성은 라이브,
+       발사권은 섀도 강등(setup=BR, WRF_SHADOW_SETUPS)
 L3 보정 승률 P̂: isotonic(로지스틱(C,L,F)) · 셀=(setup×regime_1h×btc_macro)
    └ 신뢰게이트 미충족 → 보수적 고정 prior (콜드스타트)
    └ ★셀 키는 거친 채로 둔다(콜드스타트·과적합 보호). 누락 맥락(4H추세·일봉EMA20/50)은
@@ -78,7 +121,7 @@ BO·RV는 base-rate가 낮아 **강확증된 소수만** 통과한다(P̂ 내림
 | `detectors.py` | L2 | 4셋업 디텍터(롱숏 대칭, precond 구조게이트) |
 | `calibration.py` | L3 | 보정테이블 로더 + 부분풀링 δ_eff 소비 + prior(그림자 A/B) |
 | `veto.py` | L0 | 하드베토 4종 |
-| `levels.py` | L4 | 셋업별 구조기반 TP/SL/타임스톱 |
+| `levels.py` | L4 | 셋업별 구조기반 TP/SL/타임스톱(+ TF 트레일링 주석) |
 | `engine.py` | L0~L4 | 오케스트레이션, 발사판정, 전량 후보 기록 |
 | `schema.py` | — | schema v3 행 빌더 |
 | `logger.py` | — | schema v3 멱등 적재 + 경로 캡처 |
@@ -90,6 +133,7 @@ BO·RV는 base-rate가 낮아 **강확증된 소수만** 통과한다(P̂ 내림
 
 ---
 
+<a id="signal-logic"></a>
 ## 신호 로직 상세 (국면분류 · 셋업 · 발사기준)
 
 > "어떤 기준으로 신호를 보내는가"의 완전한 설명. 현재 Phase 0 = 전 셀 prior, 페이퍼,
@@ -122,21 +166,27 @@ precond는 구조 필터(BO 리테스트는 필수★; RV는 소프트화 — �
 
 | 셋업 | 발동 precond (전부 충족) | C / L / F | TP / SL (`levels.py`) |
 |------|--------------------------|-----------|------------------------|
-| **TF** 추세추종 | 4H EMA정렬 + [얕은눌림(1H EMA밴드) ∪ 깊은눌림(4H피보 50~61.8%)] + (모멘텀 재정렬 ∨ BOS) + 반전봉 거래량 | C=`_ctx_align`(정합) · L=눌림품질(깊을수록↑, 성숙late 감쇠)+컨플루언스 · F=`_flow_align`(모멘텀 동조) | TP=측정이동(R배수 2.5) · SL=직전스윙∓ATR×1.5 · T=48h |
+| **TF** 추세추종 | 4H EMA정렬 + [얕은눌림(1H EMA밴드) ∪ 깊은눌림(4H피보 50~61.8%)] + (모멘텀 재정렬 ∨ BOS) + 반전봉 거래량 | C=`_ctx_align`(정합, fast-struct 옵션) · L=눌림품질(깊을수록↑, 성숙late 감쇠)+컨플루언스 · F=`_flow_align`(모멘텀 동조) | TP=측정이동(R배수 2.5) · SL=직전스윙∓ATR×1.5 · T=48h (트레일링 ON 시 HWM∓ATR·T=72h) |
 | **BO** 돌파 | 박스경계 돌파(종가) + 거래량스파이크(≥1.5×) + 리테스트 후 유지(2봉)★ + 펀딩 컨트래리언 가점 | C=정합 · L=박스폭+펀딩+컨플루언스 · F=정합 | TP=박스높이 · SL=**돌파경계 near∓ATR**(RR≈박스/ATR) · 타이트시 P̂보정 · T=36h |
-| **MR** 평균회귀 | BB %b 극단(≤0.1/≥0.9) + RSI 백분위 극단(`WRF_PCT_EXTREME`=0.15/0.85, 이제 배선) + 반전캔들 + 반전봉 거래량 | C=`_ctx_exhaustion`(소진) · L=극단깊이+컨플루언스 · F=`_flow_exhaustion`(컨트래리언) | TP=박스중심선/반대편 · SL=박스경계∓ATR · T=24h |
-| **RV** 전환 | 소진≥1 + 반전캔들★ + 총확인≥2 **(CHoCH·리테스트는 소프트 — 하드 아님, 부재 시 L 감쇠)** + 반전봉 거래량 | C=소진 · L=확인수−(CHoCH/리테스트 부재 감쇠)+컨플루언스 · F=컨트래리언 | TP=직전레벨(R배수 2.0) · SL=극단너머 · T=48h |
+| **MR** 평균회귀 | BB %b 극단(≤0.1/≥0.9) + RSI 백분위 극단(`WRF_PCT_EXTREME`=0.15/0.85) + 반전캔들 + 반전봉 거래량 | C=`_ctx_exhaustion`(소진) · L=극단깊이+컨플루언스 · F=`_flow_exhaustion`(컨트래리언) | TP=박스중심선/반대편 · SL=박스경계∓ATR · T=24h |
+| **RV** 전환 | 소진≥1 + 반전캔들★ + 총확인≥2 **(CHoCH·리테스트는 소프트 — 하드 아님, 부재 시 L 감쇠)** + 반전봉 거래량 | C=소진(리클레임-킬 옵션) · L=확인수−(CHoCH/리테스트 부재 감쇠)+컨플루언스 · F=컨트래리언 | TP=직전레벨(R배수 2.0) · SL=극단너머 · T=48h |
 
 ### C. 직교 3축 산출식 (`detectors.py`, ∈[-1,1])
 
 ```
 추종형(TF/BO)
   C=_ctx_align    : 0.45·거시 + 0.25·바이어스 + 0.20·4H추세 + 0.10·일봉EMA20/50  (롱+/숏−)
+    · [P1] WRF_CTX_FAST_STRUCT(기본 ON): 거시 가중(0.45)의 일부(기본 0.20)를 자기 1H
+      빠른구조(_fast_struct: bos/choch·failed_break·ema·VWAP)로 이관, 가중합=1 보존.
   F=_flow_align   : 0.45·MACD백분위 + 0.25·테이커 + 0.20·스마트머니 + 0.10·OI사분면
 반전형(MR/RV/BR)
   C=_ctx_exhaustion: 0.25 + 0.75·(페이드 대상 거시레그 신선도)   ← CHOP 완만통과, 신선역행 차단
     · [Phase C] v2(WRF_REV_CTX_V2, 기본 OFF): 0.25 + 0.75·(심볼-로컬 구조정합 _ctx_struct_align)
       = macro echo 포화(고유값 3개) 해소 · envelope[-0.5,1.0]·극단 불변, 중간 해상도만 추가
+    · [Phase C-v4] 임펄스킬(WRF_REV_IMPULSE_KILL, 기본 ON): 페이드 대상이 극단 스트레치 +
+      단기구조 생존이면 C=−0.5 강제(신선 임펄스 페이드 금지).
+    · [P0] 리클레임킬(WRF_REV_RECLAIM_KILL, 기본 ON): 페이드 대상이 자기 1H 구조로 이미
+      리클레임(구조플립+VWAP+EMA ≥2)했으면 C를 −1.0으로 하드차단(임펄스킬보다 조기 발동).
   F=_flow_exhaustion: 0.40·RSI소진 + 0.25·펀딩역포지션 + 0.20·테이커소진 + 0.15·스마트머니반대
 L(위치, 셋업별): TF 눌림품질 / BO 박스폭 / MR 극단깊이 / RV 확인수
   + 공통 컨플루언스 가점(FVG·OB·피보·주간 중첩수 0~3 × 0.05)
@@ -164,6 +214,7 @@ P̂_prior = min( 0.65,  sigmoid( b0[셋업] + 1.1·C + 1.3·L + 1.2·F − min-a
 
 ---
 
+<a id="schema"></a>
 ## 학습데이터 스키마 (`schema_version: 3`)
 
 월별 JSONL: `data/research/{SYM}/{YYYY-MM}.jsonl`. **한 시간 = 1행**. 라벨은 박제하지
@@ -178,7 +229,7 @@ P̂_prior = min( 0.65,  sigmoid( b0[셋업] + 1.1·C + 1.3·L + 1.2·F − min-a
             liq_signal, liq_spike, vol_ratio, rev_vol_ratio, retrace_long/short_zone,
             maturity, maturity_net, hour_utc, dow },
   "ctx":  { regime_1h, regime_4h, bias_1d, btc_macro, fp_key, allowed_setups },
-  "candidates": [ { setup, dir, precond, entry, tp, sl, r_dist, rr, t_max,
+  "candidates": [ { setup, dir, precond, entry, tp, sl, r_dist, rr, t_max, trail_dist?,
                     p_hat, p_source, C, L, F, confluence_n, veto[], size, fire } ],
   "meta": { ... legacy 대조용(학습 입력 아님) ... },
   "path": { n, o[], c[], h[], l[], complete, captured_at }   // 4h부터 증분, 72h 완성
@@ -186,12 +237,13 @@ P̂_prior = min( 0.65,  sigmoid( b0[셋업] + 1.1·C + 1.3·L + 1.2·F − min-a
 ```
 
 **오프라인 파생 라벨**(`analysis/labels.py`):
-`tb_win[setup]`(배리어 재생=승률 정답) · `ret_Hh`/`exret_Hh`(BTC초과) · `mfe`/`mae` ·
-`path_eff` · `class`(exret·데드존 기준 UP/FLAT/DOWN). **triple-barrier·exret이 1차 라벨**
-(베타둔감), 원시수익은 보조.
+`tb_win[setup]`(배리어 재생=승률 정답, `trail_dist` 실린 후보는 고정TP 대신 트레일링으로
+재생) · `ret_Hh`/`exret_Hh`(BTC초과) · `mfe`/`mae` · `path_eff` · `class`(exret·데드존
+기준 UP/FLAT/DOWN). **triple-barrier·exret이 1차 라벨**(베타둔감), 원시수익은 보조.
 
 ---
 
+<a id="calibration"></a>
 ## 오프라인 보정 학습 — **부분풀링 (Phase 2, 그림자 운영)**
 
 구(舊) 자격 게이트(탈중첩 독립표본 N≥100 × 거시 ≥2종)는 비현실적으로 높아 어떤 셀도
@@ -214,6 +266,7 @@ python analysis/situation_report.py --wrf             # 셀별 n·독립n·거�
 
 ---
 
+<a id="ops"></a>
 ## 운영 / 워크플로우
 
 | 워크플로우 | 스케줄 | 역할 |
@@ -251,162 +304,276 @@ python analysis/situation_report.py --perf --perf-by cell   # 동일 하니스 �
 python analysis/calibrate.py                  # JSONL→셀별 δ_eff 학습→calibration_table.json
 python analysis/calibrate.py --dry-run        # 파일 쓰지 않고 셀별 수축·δ 요약만
 python analysis/backtest.py --ab              # prior vs 보정 P̂ Brier·캘리브레이션 비교
+
+# [P0/P1/P2] 반전랠리 병목 3처방 단일변수 A/B (2026-07)
+python analysis/audit/verify_p012.py          # BR섀도 포함/반사실 · fast-struct · 트레일링 vs 고정TP
 ```
 
 ---
 
-## 심볼 / 시크릿 / 파라미터
+<a id="toggles"></a>
+## 토글 레퍼런스 (ON/OFF 전체 일람)
+
+모든 `WRF_*` 토글은 되돌리기 가능(env override)하고, 기본값은 `src/config.py`가 유일한
+출처다. 여기 표는 그 스냅샷 — 값이 바뀌면 코드가 먼저고 이 표는 뒤따른다.
+**근거** 열은 [실험 로그](#changelog)의 해당 항목으로 연결된다(같은 태그로 검색).
+
+### 기본 ON (라이브 반영 중)
+
+| 그룹 | 토글 | 효과 | 근거 |
+|---|---|---|---|
+| 레짐/라우팅 | `WRF_REGIME_ROUTING` | 강확정 추세에서 역추세 반전 억제 + TF 라우팅 복원(ADX 지연 보강) | Pillar1 |
+| 레짐/라우팅 | `WRF_ROUTING_SELF_STRUCT` | 라우팅을 BTC매크로 종속 대신 심볼 자체 EMA구조로(알트 FN↓) | Pillar1 |
+| 레짐/라우팅 | `WRF_REGIME_ER_TREND` | 효율비(ER)로 ADX가 놓친 방향성 추세 TRENDING 승격 | grind-fix |
+| 레짐/라우팅 | `WRF_REGIME_ER_PCTL` | ER 승격을 절대임계 대신 코인 자기분포 백분위로 | Pillar1 |
+| 레짐/라우팅 | `WRF_REGIME_SLOPE_PERSIST` | 느린 단일방향 grind를 방향지속(기울기+드리프트)으로 승격 | Pillar1 |
+| 레짐/라우팅 | `WRF_BO_IN_RANGING` | RANGING에서도 박스돌파(BO) 허용(강게이트로 통제) | 연결결함#1 |
+| 레짐/라우팅 | `WRF_RV_MACRO_EXEMPT` | RV(전환)만 거시정면충돌 하드베토 면제(구조붕괴 증거로 대체) | 연결결함#2 |
+| 반전 C축 | `WRF_REV_IMPULSE_KILL` | 신선 임펄스(극단스트레치+단기구조 생존) 페이드 금지 | Phase C-v4 |
+| 반전 C축 | `WRF_REV_RECLAIM_KILL` (+`WRF_REV_RECLAIM_MIN`=2) | 신선 리클레임(구조플립+VWAP+EMA ≥2) 페이드 금지 — impulse_kill보다 조기 발동 | **P0** |
+| 반전 C축 | `WRF_D_SHADOW` | BR(밴드반전) 디텍터 가동(후보생성) — 발사권은 별도(`WRF_SHADOW_SETUPS`) | 밴드반전 일원화 |
+| 반전 C축 | `WRF_D_REQUIRE_REENTRY` | BR 무장을 밴드터치가 아닌 '밴드복귀(재진입)'로 요구(밴드라이딩 오탐 방지) | 밴드반전 일원화 |
+| 추종 C축 | `WRF_CTX_FAST_STRUCT` (+`WRF_CTX_FAST_W`=0.20) | 추종 C의 후행 macro 가중 일부를 자기 1H 빠른구조로 이관 | **P1** |
+| 추종 C축 | `WRF_TF_FIB_PULLBACK` | TF 눌림 판정에 4H 피보 깊은눌림(50~61.8%) 경로 추가 | A1 |
+| precond 완화 | `WRF_RV_SOFT_PRECOND` | RV 5중 AND를 소프트 스코어로(안전최소치만 게이트, 나머지는 L 감쇠) | Pillar2 |
+| precond 완화 | `WRF_RV_REQUIRE_CHOCH` / `WRF_RV_REQUIRE_RETEST` | RV 하드모드 요구조건(soft=true면 사실상 L감쇠로 대체) | A4/G6 |
+| 축 대칭성 | `WRF_PCT_MIDRANK` | 백분위 동점처리 완전 대칭(+1/(2n) 편향 제거) | Pillar4 |
+| 축 대칭성 | `WRF_TF_MACD_SYM` | TF 모멘텀 재정렬을 롱/숏 대칭 요구(숏도 명시적 약세) | Pillar4 |
+| 축 대칭성 | `WRF_RV_SIDED_SIGNALS` | RV 청산/키레벨거부를 진입방향에 맞는 쪽만 카운트 | Pillar4 |
+| min-axis/EV | `WRF_PRIOR_MIN_AXIS_SOFT` | min-axis 하드절벽을 연속 페널티로(근거리 회복, 역행축은 강차단) | Pillar3 |
+| min-axis/EV | `WRF_EV_GATE` (+`WRF_EV_RR_FLOOR`=0.85) | 고정 RR 대신 기대값(EV=P̂·RR−(1−P̂)≥0.15) 결합 게이트 | Pillar3 |
+| SL/레벨 | `WRF_BO_SL_NEAR` | BO SL을 박스반대편 대신 돌파경계 근처로(RR 정상화) | grind-fix |
+| SL/레벨 | `WRF_TF_TRAIL` (+`WRF_TF_TRAIL_ATR`=3.0·`WRF_TF_TRAIL_TMAX`=72) | TF 고정TP 대신 HWM∓ATR 무상태 트레일링 | **P2** |
+| 계측 | `WRF_SHADOW_BAND` | 플로어 근접 미발사 후보(near-miss)를 기록만(표본기근 클래스 계측) | Phase 1 |
+| 계측 | `WRF_RESEARCH_BARS` | 스냅샷에 백워드 1H 봉 N개 동봉 기록(오프라인 재현용) | — |
+
+### 기본 OFF (섀도/미검증 — 데이터 근거로 명시적 강등)
+
+| 토글 | 효과 | 근거 / OFF 사유 |
+|---|---|---|
+| `WRF_REV_CTX_V2` | 반전 C축을 macro-echo 대신 심볼-로컬 구조정합으로 | IC는 개선(0.283→0.346)했으나 단일레짐 표본에서 발사분 실현성능 악화(win% 54.5→45.5) — UPLEG 포함 다레짐 재검증 전 OFF ([Phase C](#changelog)) |
+| `WRF_REGIME_ADX_SOLE` | ADX 단독으로 TRENDING 승격(구동작 복귀 스위치) | 후행 ADX 스파이크는 소진/반전 직전 신호라 추종 라우팅에 음(−)스킬 확인(AUC 0.45) — 강등 유지 (Pillar1) |
+
+### 거버넌스 스위치 (그림자 운영 · 발사권)
+
+일반 기능 토글과 달리 **하위 시스템 전체를 여닫는** 스위치. true/false의 의미가 토글마다 달라 별도 표기.
+
+| 스위치 | 기본값 | 의미 | 되돌리기 |
+|---|---|---|---|
+| `WRF_CALIB_DISABLED` | `true` | **true = 보정 비활성** — 발사는 prior 사용, 보정 P̂은 그림자 기록만 | `false` = OOS Brier 우위 입증 후 보정 P̂으로 발사 전환 |
+| `WRF_SHADOW_SETUPS` | `{"BR"}` | 목록의 셋업은 후보생성·기록만, 라이브 발사는 안 함 | `""`(빈 문자열) = 전부 라이브 |
+| `WRF_FIRE_RIGHTS_ENABLED` | `true` | 셀별 사후검정 강등(`quarantine=FIRE_RIGHTS`) 게이트 작동 | `false` = 게이트 없이 구동작(전 셀 발사권 유지) |
+
+### 레벨/구조 파라미터 (되돌리기 값 존재)
+
+단순 ON/OFF가 아니라 수치 하나로 "무효과 값"이 정의된 파라미터.
+
+| 파라미터 | 기본값 | 효과 | 되돌리기(무효과) 값 |
+|---|---|---|---|
+| `WRF_SL_ATR_CUSHION` | 1.5 | TF/RV 구조SL ATR쿠션 배수 | 0 |
+| `WRF_REV_VOL_MULT` | 1.0 | 반전봉 거래량 게이트 배수 | 0 |
+| `WRF_BO_FUND_BONUS` | 0.15 | BO 펀딩 컨트래리언 L 가점 | 0 |
+| `WRF_TF_LATE_MATURITY_MULT` | 0.85 | 성숙추세 TF L 감쇠 | 1.0 |
+| `WRF_CONFLUENCE_L_BONUS` | 0.05 | 컨플루언스 중첩 L 가점 | 0 |
+| `WRF_MR_TP_TARGET` | `"mid"` | MR TP 목표(중심선) | `"opposite"`(반대편 경계) |
+
+### 실질 튜닝 파라미터 (3~5개 원칙, 단일변수·워크포워드만)
+
+- `WRF_PCT_WINDOW`(백분위 윈도) · `WRF_PCT_EXTREME_HI/LO`(극단컷, MR RSI 극단 구동) ·
+  `WRF_WIN_FLOOR`(승률 플로어) · `WRF_CELL_N_MIN`(신뢰게이트).
+- 위 외 모든 수치 상수(VETO 임계·계층수축 k값·사이징 배수 등)는 엔진 상수이지 튜닝
+  대상이 아니다 — 바꾸려면 워크포워드 검증부터.
+
+---
+
+<a id="symbols"></a>
+## 심볼 / 시크릿
 
 - **심볼**: `BTC/USDT ETH/USDT HYPE/USDT` (확장: SOL/SUI/XRP)
 - **Secrets**: `OKX_API_KEY/SECRET/PASSPHRASE`, `TELEGRAM_BOT_TOKEN/CHAT_ID`,
   `NOTION_TOKEN`, `NOTION_SIGNALS_DB_ID` / `NOTION_SNAPSHOTS_DB_ID`(또는
   `NOTION_PARENT_PAGE_ID`로 자동 생성)
-- **Variable**: `ALERT_ENABLED`, `WRF_*` 파라미터 오버라이드
-- **실질 튜닝(3~5개)**: `WRF_PCT_WINDOW`(백분위 윈도), `WRF_PCT_EXTREME_HI/LO`(극단컷 —
-  이제 MR RSI 극단을 실제 구동, 구버전은 死파라미터였음), `WRF_WIN_FLOOR`(승률 플로어),
-  `WRF_CELL_N_MIN`(신뢰게이트). 단일변수·워크포워드.
-- **전략 정합 토글**(전부 되돌리기 가능): `WRF_SL_ATR_CUSHION`(구조SL ATR쿠션, 0=구동작),
-  `WRF_MR_TP_TARGET`(mid|opposite), `WRF_MR_BOX_WINDOW`, `WRF_RV_REQUIRE_CHOCH/RETEST`(전환
-  시퀀스 강제), `WRF_TF_FIB_PULLBACK`(피보 깊은눌림 경로), `WRF_REV_VOL_MULT`(반전봉 거래량
-  게이트, 0=OFF), `WRF_BO_FUND_BONUS`(돌파 펀딩 컨트래리언 가점).
-- **레이어 연결 토글**: `WRF_BO_IN_RANGING`(RANGING 박스돌파 허용), `WRF_RV_MACRO_EXEMPT`
-  (RV 거시베토 면제), `WRF_TF_LATE_MATURITY_MULT`(성숙추세 TF 감쇠, 1.0=없음),
-  `WRF_CONFLUENCE_L_BONUS`(컨플루언스→L 가점, 0=OFF).
-- **[Phase C] 반전형 C축 토글**: `WRF_REV_CTX_V2`(심볼-로컬 구조정합 주입, 기본 **OFF** —
-  macro-echo 포화 해소, UPLEG 관측 후 점등 게이트. true=v2 점등, 즉시 되돌리기).
-- **[Phase A] 발사권 게이트 토글**: `WRF_SHADOW_SETUPS`(섀도 셋업 목록, 기본 `BR` —
-  빈 문자열=전부 라이브), `WRF_FIRE_RIGHTS_ENABLED`(강등 셀 격리, 기본 true),
-  `WRF_FR_PRIOR_N`(사후검정 중립 prior 의사관측수 10), `WRF_FR_DEMOTE_P`(강등선 0.15),
-  `WRF_FR_PROMOTE_P`(복권선 0.50), `WRF_FR_MIN_DECIDED`(강등 최소 발사결판 8) —
-  거버넌스 상수(튜닝 파라미터 아님·워크포워드 대상 제외).
-- **감사 처방 토글**(기본 **ON** — 감사 4 pillar 구현, 전부 되돌리기 가능): `WRF_REGIME_ER_PCTL`
-  (ER 백분위화)·`WRF_REGIME_SLOPE_PERSIST`(방향지속 승격)·`WRF_ROUTING_SELF_STRUCT`(라우팅 BTC
-  종속성 분리)·`WRF_REGIME_ADX_SOLE`(ADX 단독 TRENDING 트리거 — 기본 **강등**(false)·true=구동작.
-  후행 ADX 스파이크는 소진/반전 직전이라 추종 라우팅이 음(−)스킬[추종 15% vs 기준 37%]이므로
-  검증 후 강등; 확인된 추세(slope_sig·er_sig)는 불변) — Pillar1 |
-  `WRF_RV_SOFT_PRECOND`(RV 하드AND→소프트) — Pillar2 |
-  `WRF_PRIOR_MIN_AXIS_SOFT`(min-axis 연속화)·`WRF_EV_GATE`(EV-결합 RR게이트)·`WRF_EV_RR_FLOOR`
-  (RR 하한, 기본 **0.85**=완화·1.0=구동작 — RR<1.0 잔존플로어가 EV-게이트 취지와 모순해 고확신
-  BO숏을 동결하던 것을 검증 후 완화) — Pillar3 |
-  `WRF_PCT_MIDRANK`·`WRF_TF_MACD_SYM`·`WRF_RV_SIDED_SIGNALS` — Pillar4. 기존 grind-fix
-  `WRF_REGIME_ER_TREND`·`WRF_BO_SL_NEAR`·`WRF_REGIME_ROUTING`도 기본 ON으로 승격.
-- **[P0/P1/P2] 반전랠리 병목 3처방 토글**(전부 기본 **OFF**·구동작 보존·롱숏 대칭·되돌리기 가능):
-  - `WRF_REV_RECLAIM_KILL`(+`WRF_REV_RECLAIM_MIN`=2) — **P0 [FP]** 페이드 대상 레그가 자기
-    1H 구조로 신선하게 리클레임(구조플립+VWAP재탈환+EMA ≥N)하면 역추세 반전(MR/RV/BR) C를
-    하드차단. `_impulse_kill`(스트레치·성숙 요구 → 지각)의 조기-구조 거울짝. 상승랠리 숏·
-    하락임펄스 롱(칼받기) 대칭 차단.
-  - `WRF_CTX_FAST_STRUCT`(+`WRF_CTX_FAST_W`=0.20) — **P1 [FN]** 추종 C(`_ctx_struct_align`)의
-    후행 macro 가중(0.45)을 자기 1H 빠른구조(bos/choch/failed_break/ema/VWAP)로 이관(가중합=1
-    자동보존). 반전점에서 추종 롱이 지연 거시에 덜 눌림.
-  - `WRF_TF_TRAIL`(+`WRF_TF_TRAIL_ATR`=3.0·`WRF_TF_TRAIL_TMAX`=72) — **P2 [FN]** TF에 한해
-    고정 2.5R TP 대신 HWM∓k·ATR 무상태 트레일링 익절(신호시점 `trail_dist` 주석 발행 →
-    오프라인 라벨러 `labels.triple_barrier(trail_frac=…)`가 동일규칙 채점 → 라이브 포지션
-    상태 불필요, 5-E 준수).
-  - **백테스트(`analysis/audit/verify_p012.py`, 단일변수·1195스냅샷·UPLEG 0건) 판정**: P0는
-    현행 라이브(BR 섀도)에선 무변경(리클레임-확증 역행페이드는 이미 BR-섀도가 선차단) — BR-섀도
-    해제 반사실에서만 손절 1건 제거(승률 41.7→43.5%·PF 1.35→1.46·익절희생 0). P1은 무변경
-    (0-UPLEG 하락장에서 추종 롱이 floor 미달·발사 불변). P2는 표본 극소(TF 발사 2건·초기SL
-    선청산)로 무결론. **셋 다 검증 데이터가 "점등"을 지지하지 않아 기본 OFF 유지**(5-I). **Gate-In**:
-    P0 = 유니버스 확장으로 非-BR 반전 후보 출현 시 / P1·P2 = UPLEG 관측 + 섀도 실현승률 ≥ floor.
+- **Variable**: `ALERT_ENABLED`, `WRF_*` 파라미터 오버라이드 — 전체 목록은
+  [토글 레퍼런스](#toggles) 참조.
 
-### 전략 정합 개선 (2026-06, win-rate-first 골격 유지)
+---
 
-스윙 전략 문서 대조 후 측정-발사 정합을 끌어올린 변경. **새 셋업·새 보정셀 없이**
-기존 4셋업의 진입·레벨 정밀도만 보강(콜드스타트 불변, 과적합 경계).
+<a id="notion"></a>
+## Notion (2-DB, 기존 DB 재사용)
 
-- **TF 피보 배선(A1)**: 눌림 판정을 `loc_ema20` 프록시 → `loc 밴드(얕은) ∪ 4H 피보
-  optimal/deep(깊은)`. 깊은 눌림은 1H EMA가 추세 반대로 튀므로 **4H 정렬을 게이트**로 포착
-  (TF가 못 잡던 50~61.8% 되돌림 진입을 같은 셀로 흡수).
-- **구조 SL + ATR 쿠션(G3)**: TF/RV SL을 `직전 스윙 ∓ ATR×1.5`로(노이즈 윅 방지). max 초과
-  시 폐기→클램프.
-- **MR 박스 기하학(G4)**: TP=박스 중심선/반대편, SL=박스 경계∓ATR(저RR EMA20 회귀 폐기).
-- **RV 전환 시퀀스 강제(A4/G6)**: CHoCH 필수 + 리테스트(스윕/키레벨거부) 필수 + 반전봉 필수
-  → 첫 반전봉 나이프캐칭 차단.
-- **반전봉 거래량 게이트(A5/G7)**: TF/MR/RV 반전봉 거래량 > 직전 5봉 평균. (BO는 돌파봉
-  스파이크 유지 + 펀딩 컨트래리언 L 가점.)
+기존 DB **`1H Signal Log`** / **`1H Research Snapshots`** 를 WRF 양식으로 **개조해 재사용**한다
+(이름·기존 데이터 보존, 새 WRF 컬럼 추가, `Exit Reason`에 TIMEOUT 추가, Result→Status·
+Take Profit→TP·RSI 1H→RSI 등 일회성 리네임 적용). 토큰 미설정 시 자동 비활성(no-op).
 
-### 레이어 연결 완성도 보강 (2026-06, 과적합 경계)
+```bash
+python scripts/migrate_notion_wrf.py            # 누락 WRF 컬럼만 멱등 추가(스키마 동기화)
+python scripts/migrate_notion_wrf.py --purge    # 추가 + 기존 행 전부 아카이브(선택)
+```
 
-레이어 간 논리 연결 점검에서 드러난 6개 결함 해결. **셀 키 차원은 늘리지 않음**(콜드스타트·
-과적합 보호).
+기본 DB ID는 기존 DB로 설정돼 있다(env로 오버라이드 가능):
+`NOTION_SIGNALS_DB_ID`(=레거시 `NOTION_DATABASE_ID`) / `NOTION_SNAPSHOTS_DB_ID`(=`NOTION_RESEARCH_DB_ID`).
 
-- **#1 BO 도달성**: 박스 돌파는 RANGING에서 출발 → `allowed_setups`가 RANGING에도 BO 허용
-  (BO precond 강게이트로 노이즈 통제).
-- **#2 RV 거시베토 면제**: `MACRO_HEADON`을 RV에서 제외(RV는 CHoCH+리테스트+소진 강제 =
-  구조붕괴 증거). 전환 셋업이 거시추세 전환을 칠 수 있게 — 역추세 위험은 C축·min-axis 소프트로.
-- **#3 레이어 라벨 정정**: C/L/F 축은 L1이 아니라 **L2(디텍터)** 산출, 라우팅은 **레짐만** 사용
-  (거시·바이어스는 C축/veto/셀키 경로) — README 위 엔진도 정정.
-- **#4 셀 맥락 혼합**: 셀 키 확장(과적합) 대신, 누락 맥락(4H추세 `ema_4h`·일봉 EMA20/50
-  `ema_1d_struct`)을 **C축에 연속 피처로 주입** → 거친 셀 안에서 분리 학습.
-- **#5 죽은 연결 복구**: `maturity`(성숙추세 TF 감쇠)·일봉 `ema_structure`(C축) 배선.
-- **#6 3중 중복 제거**: 하드 베토(추종/레인지) ↔ 소프트 게이트(전환) 역할 분담으로 정리.
-- **완결성#1 컨플루언스 배선**: 측정·기록만 되고 발사엔 미반영이던 `confluence`(FVG/OB/
-  피보/주간 중첩수)를 전 셋업 L에 소폭 가점(`min(중첩,3)×0.05`) → 다중 SMC 중첩 진입을
-  prior에 반영. 셀·차원 불변(콜드스타트 영향 0).
+- **`1H Signal Log`**(발사된 페이퍼 트레이드): Status(OPEN/WIN/LOSS/TIMEOUT)·Setup·
+  Direction·Symbol·Regime 1H/4H·BTC Macro·Entry/TP/SL·R Dist·RR·T_max·P_hat·P Source·
+  Win Floor·Size·C/L/F·MFE R·MAE R·Bars To Exit·Exit Reason·Signaled/Resolved At·Reason·Signal ID
+  (레거시 Grade·Score·Threshold 등은 참고용으로 잔존)
+- **`1H Research Snapshots`**(매시간 학습 미러): TS·Symbol·Snapshot ID·Outcome·Regime/Bias·
+  RSI/Vol Zone·BTC Macro·핵심 L1 수치(RSI·BB %b·Dist VWAP/EMA20 ATR·ADX·MACD·Funding·OI·
+  Vol Ratio·**Rev Vol Ratio**·**EMA 1D Struct**·**Retrace L/S**·**Maturity(Net)**·
+  Confluence L/S 등) + 파생라벨(Ret 4~72h·exRet·MFE/MAE·Class 24/72h·Path Eff·TT) + 후보요약
+  (Candidates/Fired). (원시 72h 경로 전체는 git JSONL이 보관; Notion은 필터·그룹용 핵심만.)
+  → 새 컬럼은 `python scripts/migrate_notion_wrf.py`로 멱등 추가(누락분만 동기화).
 
-### 느린 추세 숏 부재 진단 + grind-fix (2026-06, 토글 OFF·과적합 경계)
+---
 
-**관찰**: BTC/ETH/HYPE가 KST 23시경 반전 후 −4.6~8.7% 하락하는 내내 숏 신호가 한 건도
-나오지 않음(전체 데이터셋 누적: **롱 7발사 / 숏 0발사**). JSONL 실측 진단:
+<a id="structure"></a>
+## 프로젝트 구조
 
-- **레짐 오분류(루트원인)**: ADX는 지연 지표라 느린 grind-down이 내내 ADX<25에 머묾 →
-  1H `RANGING`+4H `SQUEEZE` 고착. 라우팅상 **추세추종 TF가 원천 배제**(TF는 4H가
-  TRENDING/EXPLOSIVE일 때만 보강). RSI 67→24·MACD +153→−217·BB%b 1.0→0.0 의 명백한
-  단조하락을 ADX가 못 잡음. 분류기는 효율비(ER)를 계산하나 RANGING 판정에만 쓰고 있었음.
-- **셋업별 사인**: MR=반전(역추세) 도구라 고점엔 반전캔들 부재·하락 중엔 오히려 롱 지향 |
-  RV=CHoCH 필수인데 점진적 롤오버라 choch 미발생 | BO=막판에야 후보 형성, 그나마
-  **SL이 박스 반대편(far)이라 손절=박스높이 → RR≈1**(BTC 0.99/ETH 0.91)로 발사컷.
-- **veto·플로어는 무죄**: 숏은 DOWNLEG 정합이라 거시베토 없음, BO p̂=0.65>플로어. 순수 RR.
+```
+sig-bot-1H/
+├── .github/workflows/{signal_1h,scoring,calibrate}.yml  # calibrate=Phase2 부분풀링(그림자)
+├── src/
+│   ├── main.py                  # WRF-4 진입점 (signal/score 모드, 본체 격리)
+│   ├── config.py                # 전역 설정 + WRF_* 파라미터
+│   ├── data_pipeline.py         # OKX 수집 (계승)
+│   ├── analysis_engine.py       # 측정함수 (계승, run_full_analysis=측정 오케스트레이터)
+│   ├── microstructure_analyzer.py  # 마이크로구조 측정 (계승)
+│   ├── research_logger.py       # 경로 캡처 머신 (스키마 무관·재사용)
+│   ├── notion_logger.py         # Notion REST 헬퍼 (notion_wrf가 재사용)
+│   └── wrf/                     # ★ WRF-4 엔진 (L0~L4)
+│       ├── percentile.py  btc_macro.py  features.py  detectors.py
+│       ├── calibration.py  veto.py  levels.py  engine.py  schema.py
+│       ├── logger.py  notion_wrf.py
+├── analysis/
+│   ├── build_dataset.py         # JSONL 로더 + 경로 라벨 헬퍼
+│   ├── labels.py                # triple-barrier(+트레일링)·exret·class·candidate_dataset
+│   ├── calibrate.py             # ★[Phase 2] 부분풀링 보정 잡(계층 수축→셀별 δ_eff)
+│   ├── backtest.py              # ★[Phase 1] 백테스트/리플레이 하니스(성능+퍼널)
+│   ├── situation_report.py      # 상황·WRF 셀 진단(+ --perf 하니스 위임)
+│   ├── routing_scorecard.py     # 레짐 라우팅-유틸리티 스코어카드(추종vs반전 실현R·오프라인 측정)
+│   └── audit/verify_p012.py     # [P0/P1/P2] 단일변수 A/B(BR섀도 반사실 포함)
+├── scripts/migrate_notion_wrf.py
+├── data/
+│   ├── research/{SYM}/{YYYY-MM}.jsonl
+│   └── calibration_table.json   # 라이브가 읽는 유일한 보정 산출물
+└── docs/LEARNING_DATA_DESIGN.md
+```
 
-### 감사 처방 구현 (2026-06, 4 pillar · win-rate-first 골격 유지 · 기본 ON)
+> 원칙 재확인: **승률은 보정이 보장, 빈도는 유니버스·4셋업·양방향, 비정상성은
+> 거시방향 층화·신뢰게이트가 차단.** 현재 데이터(단일 불런)의 교훈상 처음엔 보정
+> 보류·보수적 prior로 출발하고, 다레짐 데이터가 쌓이며 발사권을 셀별로 획득한다.
 
-위 grind-fix(ER 절대 0.50 승격 + BO near-SL)는 **fast trend·RR 산술**만 고쳐 정작 **slow
-grind**는 놓쳤다(ER 0.50은 느린 grind의 ER 0.15~0.35를 영영 못 만남). 정량 감사 결과
-"하드 AND 게이트 다단 직렬 + 추세정의 절대임계 + P̂/RR 분리"가 FN의 3중 구조원인으로 확정
-(실측: precond 통과 50건 중 **38건(76%)이 floor=min-axis 하드절벽에서 사망**, BO는 RR에서 4/7
-전사). 처방은 **하드 게이트를 점수로 강등하고 판정을 floor에 위임**하는 한 원리로 수렴한다.
+---
 
-- **Pillar1 — 레짐/라우팅 지연**: ① ER을 코인 자기분포 **백분위**로(`WRF_REGIME_ER_PCTL`,
-  절대 0.50 폐기·철학 정합) ② **방향지속**(MA20 기울기 일관성 + **순드리프트 magnitude**) 승격을
-  `is_ranging` 앞에 배치(`WRF_REGIME_SLOPE_PERSIST`) ③ 라우팅을 BTC매크로 종속에서 **심볼
-  자체구조**로 분리(`WRF_ROUTING_SELF_STRUCT`). **★실데이터 튜닝(323스냅샷)**: 기울기 일관성만으론
-  하락 grind(sp=0.74)와 chop(sp=0.79)이 분리 안 됨(slow grind는 backward 통계가 chop과 닮음) →
-  드리프트 AND 게이트(≥0.02) + 임계 상향(0.85)으로 chop 오승격을 42%→**8%**로 통제. 회수율은
-  보수적(하락추세 21%) — 초저속 grind는 FP 통제 비용으로 일부 미승격(숏 FN의 주 해결은 Pillar2).
-- **Pillar2 — precond 경직성**: RV 5중 동시 AND를 **소프트 스코어**로(`WRF_RV_SOFT_PRECOND`) —
-  안전 최소치(소진≥1∧반전캔들∧확인≥2)만 게이트, CHoCH·리테스트는 L 감쇠로 흡수(부분정렬
-  반전도 후보화하되 약하면 floor가 탈락). BO near-SL은 **타이트니스 P̂ 보정**(`WRF_BO_SL_TIGHT_PEN`)
-  으로 SL을 당긴 만큼 실제 승률↓를 prior에 반영.
-- **Pillar3 — min-axis/RR 병목**: ① min-axis 하드절벽(0.55 고정=위장 하드베토)을 **연속 페널티**
-  로(`WRF_PRIOR_MIN_AXIS_SOFT`) — 0.10 근방 매끄럽게(near-miss 회복)·음수축은 강차단, prior·보정
-  일관 적용(불연속 제거) ② 고정 RR≥1.5를 **EV-결합 게이트**로(`WRF_EV_GATE`, EV=P̂·RR−(1−P̂)≥0.15)
-  → 고확률·중RR 셋업 회생, win-rate-first(MR TP=mid)와 정합.
-- **Pillar4 — 숨은 L/S 비대칭**: `pct_rank` **midrank**(동점 +1/(2n) 편향 제거·완전대칭),
-  TF 모멘텀 **대칭화**(숏도 명시적 약세 요구), `WRF_RV_SIDED_SIGNALS` 기본 ON(청산을 진입방향
-  적합한 쪽만), 死파라미터 `WRF_PCT_EXTREME_*` 배선.
+<a id="changelog"></a>
+## 실험 로그 (히스토리)
 
-**검증(`analysis/audit/` 재현 가능)**: ① **실데이터 레짐 재현**(323스냅샷, p0=실종가·
-raw.adx=실ADX) — 하락추세 회수 21%(전부 숏 적격)·chop 오승격 8%·승격 정밀도 62%·TRENDING률
-3.1%→18%(타당). ② 게이트 재채점(실데이터 50후보) — 연속 min-axis가 floor에서 죽던 후보 부활,
-집계 성능은 실제 라이브 이력과 정합(PF 3.16). ③ 합성 컴포넌트 9/9 — grind 상/하 대칭 승격·chop
-미승격 / 알트 grind는 BTC=CHOP에도 route=down / RV 부분정렬 숏 0→1 생성 / min-axis 단조연속
-(음수축 강차단) / EV게이트 0.65×1.0 회생 / midrank 완전대칭 / BO RR 0.99→3.33.
-④ **핵심 진단**: 숏 발사 수는 게이트 재채점만으로 불변 + 레짐신호가 하락 grind를 chop과 분리
-못함 → 숏 FN의 주 해결은 **Pillar2(RANGING 내 RV 생성)**, Pillar1은 FP-안전 보조. (표본 ≈5일·
-단일레짐 → 모든 수치는 인프라/논리 검증용, OOS 재검증 전제.)
+날짜순 변경 이력. 각 항목은 진단→처방→백테스트 검증까지의 전체 기록이며,
+기본 접힘 상태다(가장 최근·진행 중인 실험만 펼쳐져 있다). [토글 레퍼런스](#toggles)의
+**근거** 열이 여기 제목과 매칭된다.
 
-### 밴드반전 원트랙 일원화 (구 D-shadow 투트랙 폐지)
+<details open>
+<summary><b>[P0/P1/P2] 반전랠리 병목 3처방 — 라이브 실험 (2026-07-04, 기본 ON)</b></summary>
 
-구 **D-shadow**는 BB 밴드복귀 반전을 잡되 **섀도 전용**(라이브 발사 무영향, Notion '(shadow)'
-별도 트랙)이었다. floor의 연속 min-axis·라우팅 역추세 억제가 충분한 품질 통제를 제공하므로
-**원트랙으로 승격** — `_detect_band_reversal`(구 `_detect_d_shadow`)이 `setup=RV` 후보를 다른
-디텍터와 **동일하게 라이브 발사**한다. 엔진이 `(setup,dir)` 중복은 더 높은 P̂만 남긴다. Notion은
-'(shadow)' 표식 없이 일반 신호로 기록. 제거된 군더더기: `fired_shadow`·`shadow_fire`·
-`shadow_logged`·`_shadow_cooldown_filter`·`recent_shadow_dirs`·`WRF_D_SHADOW_COOLDOWN_H`·
-`analysis/shadow_report.py`. (near-miss `shadow_band`은 별개 — 유지.)
-**→ [Phase A]에서 setup=BR로 분리 + 섀도 강등 — 아래 참조.**
+**진단**(6/30~7/2 반전랠리, JSONL 실측): 후행 `btc_macro`(DOWNLEG)가 RV 숏 C축을 +1.0으로
+포화시켜 상승랠리에 확신 숏이 발사(역행 스톱아웃=FP)되는 한편, 같은 후행 맥락이 돌파 롱
+(L=+0.8로 위치는 최상)의 C를 −0.6까지 눌러 자가 억제(FN)했다. `analysis/audit/tune_regime.py`
+실측: 1H 효율비/기울기 계열 판별자는 DIR−CHOP 분리력이 거의 0(추세시작을 사전예측 불가)
+→ "예측 개선"이 아니라 "지각에 강건"한 처방으로 설계.
 
-### [Phase A] BR 셋업 분리 + 발사권(fire-rights) 게이트 (2026-07)
+- **P0** `WRF_REV_RECLAIM_KILL`(+`WRF_REV_RECLAIM_MIN`=2): 페이드 대상 레그가 자기 1H
+  구조로 신선하게 리클레임(구조플립+VWAP재탈환+EMA ≥N)하면 역추세 반전(MR/RV/BR) C 하드차단.
+  `_impulse_kill`(스트레치·성숙 요구 → 지각)의 조기-구조 거울짝. 예측이 아니라 거부라서
+  신호분리력이 불필요. 상승랠리 숏·하락임펄스 롱(칼받기) 대칭 차단.
+- **P1** `WRF_CTX_FAST_STRUCT`(+`WRF_CTX_FAST_W`=0.20): 추종 C의 후행 macro 가중(0.45)을
+  자기 1H 빠른구조(bos/choch/failed_break/ema/VWAP)로 일부 이관(가중합=1 보존·대칭).
+- **P2** `WRF_TF_TRAIL`(+`WRF_TF_TRAIL_ATR`=3.0·`WRF_TF_TRAIL_TMAX`=72): TF에 한해 고정
+  2.5R TP 대신 HWM∓k·ATR 무상태 트레일링. 신호시점 `trail_dist` 주석 발행 →
+  `labels.triple_barrier(trail_frac=…)`가 동일 규칙으로 오프라인 채점(라이브 포지션 상태
+  불필요, 5-E 준수).
+
+**백테스트(`analysis/audit/verify_p012.py`, 단일변수·1195스냅샷·UPLEG 0건) 결과 — 솔직한
+요약**: **셋 다 "확증"에 이르지 못했다.**
+- P0: 현행 라이브(BR 섀도강등)에선 발사 **무변화(13→13)**. 이유가 결정적 — 문제의 랠리
+  역추세 숏 4발은 이미 `split_band_reversal`로 `setup=BR` 재분류 → 섀도 강등돼 라이브
+  발사집합 밖에 있었다(=BR 섀도가 이미 이 FP를 선차단 중, P0는 그 위에서 중복). BR 섀도를
+  반사실로 해제하면 P0가 손절 1건만 순제거(승률 41.7→43.5%·PF 1.35→1.46·익절희생 0,
+  단 n=1로 과신 금지).
+- P1: **완전 무변화**(신규 발사 0). 0-UPLEG 하락장에선 fast-struct를 얹어도 추종 롱 C가
+  floor 미달 — 이 데이터로는 검증 자체가 불가능하다.
+- P2: TF 발사가 **2건**뿐이라 무결론(둘 다 트레일 발동 전 초기 SL에서 선청산).
+
+**그럼에도 라이브 점등한 이유**: 표준 절차(5-I, 검증→점등)라면 위 결과로는 OFF 유지가
+맞다. 그러나 이번엔 사용자가 "실험 중이니 켜서 실측 표본을 쌓자"고 명시적으로 지시했고,
+백테스트가 **악화를 보여준 것도 아니다**(P0/P1은 순수 무변화, P2는 표본부족일 뿐 음성
+신호 없음) — 그래서 사전 오프라인 게이트를 실거래 관찰로 대체하는 조건부 라이브 실험으로
+전환했다. **모니터링**: `analysis/backtest.py --ab` · `analysis/audit/verify_p012.py`를
+정기 재실행해 실제 발사분의 실현 승률·PF를 계속 추적하고, 악화가 관측되면 즉시
+`false`로 원복한다(전부 되돌리기 가능한 `WRF_*` 토글).
+
+</details>
+
+<details>
+<summary><b>[Phase C-v4] 임펄스-페이드 킬 — C축 개혁의 데이터 생존안 (기본 ON · 게이트 닫기 전용)</b></summary>
+
+'7/3 BTC 롱 부재' 진단에서 출발한 반전형 C축 개혁 실험 4종의 결론
+(`analysis/audit/verify_rev_ctx_reform.py`, 2026-06~07 후보 79건 반사실·사전등록):
+
+| 변형 | 아이디어 | 발사 n | 실현 승률 | 평균R | 판정 |
+|---|---|---|---|---|---|
+| cur (v1 echo) | 현행 | 29 | 47.6% | +0.278 | 기준 |
+| stretch | 바닥 롱 개방(과확장 백분위) | 51 | 46.5% (신규 롱 36%) | +0.315 | ❌ 기각 |
+| v3 복합 | river+stretch+**decel(전환확인)** | 26 | 33.3% | −0.125 | ❌ 기각 |
+| **v4 임펄스킬** | **신선 임펄스 페이드 금지** | 18 | **53.8%** | **+0.333** | ✅ 채택 |
+
+- **게이트 열기는 전부 실패**: 1h 상태피처로는 캐피출레이션 내부의 바닥 타이밍이 분해
+  불가(06-24 실측: 같은 loc 0.00에서 1시간 간격 WIN/LOSS 교차). decel류 전환확인은
+  구조적으로 **후행** — 진짜 바닥은 차단하고 반등 후 추격만 산다(신규 롱 0/4 전패).
+  또한 라이브가 미발사 후보 전량을 기록하고 오프라인이 반사실 채점하므로, **라이브 출혈로
+  살 수 있는 정보가 없다**(원장이 공짜로 준다) — '출혈=수업료' 논리가 성립하지 않는 구조.
+- **실측 출혈원은 반대쪽**: macro 태그가 전환을 수일 후행하는 동안 '이미 돌아선 시장'에
+  대한 페이드(07-01~02 랠리 숏 결판 5건 전패)가 C=+0.25~+1.0 확신으로 발사되고 있었다.
+- **v4 규칙**(양방향 대칭, `_impulse_kill`): 페이드 대상 레그가 자기분포 극단 스트레치
+  (`loc_vwap` 백분위, |axis| ≥ `WRF_REV_IK_STRETCH`=0.6)이면서 심볼 자기 단기구조
+  (1h EMA·MACD부호·BOS/CHoCH 중 ≥ `WRF_REV_IK_ALIVE`=2)상 살아있으면 **C=−0.5 강제**.
+  새 발사 0(닫기 전용 — 출혈 없음). v1/v2 어느 베이스와도 합성 가능.
+- **한계·감시**: 결판 표본 소수(제거집합 8건 중 승자 3건 동반 제거 — 사전등록 규칙을
+  사후 미세조정하지 않은 대가). fire-rights 주간 사후검정이 계속 감시하며,
+  `WRF_REV_IMPULSE_KILL=false`로 즉시 되돌리기 가능.
+
+</details>
+
+<details>
+<summary><b>[Phase C] 반전형 C축 v2 — macro-echo 포화 해소 (기본 OFF · 과적합 경계)</b></summary>
+
+앞선 진단의 근본원인 ②(반전형 C축이 재는 게 '소진'이 아니라 'BTC 매크로 태그 재확인')
+교정. `_ctx_exhaustion`은 `btc_macro` 한 축만 써서 **DOWNLEG×숏이면 코인 자기상태와
+무관하게 C=1.0으로 포화**(실측 고유값 3개: −0.5/0.25/1.0) → floor·사이징이 변별력을 잃고,
+매크로 태그의 알트 예측력도 약함(ETH/HYPE는 DOWNLEG 태그 시 24h 낙폭이 CHOP보다 되레 작음).
+
+- **v2 설계**: `_ctx_align`(추종형)과 공유하는 `_ctx_struct_align`(0.45·거시 + 0.25·바이어스 +
+  0.20·4H추세 + 0.10·일봉EMA20/50)을 주입 — **macro 유효가중을 0.75→0.34로 낮추고 나머지를
+  심볼 자체 구조로** 채운다. `C = base + (1−base)·정합`이라 **출력 envelope[−0.5,1.0]과
+  극단(깨끗한정렬=+1·신선칼받기=−0.5)은 구설계와 비트 동일 — 중간 해상도만 추가**(구설계가
+  맞았던 극단은 불변). 롱/숏은 부호 반전 대칭(5-D). 셀 키 불변(C축 연속피처, 5-H).
+- **과적합 규율**: 가중치를 표본에 튜닝하지 않고 검증된 `_ctx_align` 값을 차용. 검증은
+  독립 재구현으로 **방향만** — 고유값 3→10(포화 해소), IC old +0.13→v2 +0.20(시간분할
+  전·후반 양 구간 일관), 의미론 비반전(HYPE류 'BTC-down·심볼-up' 숏이 +1.0→+0.175로 교정).
+- **기본 OFF 이유**: 누적 데이터가 **DOWNLEG/CHOP 단일레짐**이라 fade '방향'의 통계 확증은
+  UPLEG 관측 후에만 가능(5-I 검증→점등). IC·의미론은 방향 확인됐으나 점등은 사용자 판단
+  또는 UPLEG 데이터 게이트. **점등**: `WRF_REV_CTX_V2=true`(즉시 되돌리기 가능).
+- **백테스트 검증(`analysis/audit/verify_br_caxis.py`)**: v1 vs v2 A/B(반전 발사집합 재생).
+  **v2가 IC(순위판별)는 개선**(0.283→0.346, 시간분할 양구간 일관)했으나 **발사분 실현
+  성능은 악화**(win% 54.5→45.5·exp_R 0.592→0.357·Brier 소폭↑). 원인은 **단일레짐 교란** —
+  v2가 낮춘 'BTC-down·심볼-up 숏'이 일방 하락장에선 시장베타로 이겨서, 옳은 de-prioritize가
+  이 표본에선 손해로 보인다(양방향 시장이라야 판가름). 사전등록 4기준 중 2개(Brier·exp_R
+  비열등) 미통과 → **OFF 유지 확정**. 점등 게이트 = UPLEG 포함 다레짐 재검증(과적합 회피상
+  기준 완화 안 함).
+
+</details>
+
+<details>
+<summary><b>[Phase A] BR 셋업 분리 + 발사권(fire-rights) 게이트 (2026-07)</b></summary>
 
 2주 라이브 페이퍼(결판 23)·오프라인 리플레이(결판 55)·순수 가격데이터(1,001 스냅샷)의
 **삼중 교차진단** 결과를 반영한 구조 교정. 예측 파라미터 추가 0개(과적합 무관 — 분류
@@ -461,125 +628,123 @@ raw.adx=실ADX) — 하락추세 회수 21%(전부 숏 적격)·chop 오승격 8
   빈도의 근본 회복은 튜닝이 아니라 신규 방향신호(Phase 4·다레짐 검증)의 몫 — 밴드반전
   승격이 메운 공백은 실재했으며 파라미터로 대체 불가임이 정량 확인됨.
 
-### [Phase C] 반전형 C축 v2 — macro-echo 포화 해소 (기본 OFF · 과적합 경계)
+</details>
 
-앞선 진단의 근본원인 ②(반전형 C축이 재는 게 '소진'이 아니라 'BTC 매크로 태그 재확인')
-교정. `_ctx_exhaustion`은 `btc_macro` 한 축만 써서 **DOWNLEG×숏이면 코인 자기상태와
-무관하게 C=1.0으로 포화**(실측 고유값 3개: −0.5/0.25/1.0) → floor·사이징이 변별력을 잃고,
-매크로 태그의 알트 예측력도 약함(ETH/HYPE는 DOWNLEG 태그 시 24h 낙폭이 CHOP보다 되레 작음).
+<details>
+<summary><b>밴드반전 원트랙 일원화 (구 D-shadow 투트랙 폐지)</b></summary>
 
-- **v2 설계**: `_ctx_align`(추종형)과 공유하는 `_ctx_struct_align`(0.45·거시 + 0.25·바이어스 +
-  0.20·4H추세 + 0.10·일봉EMA20/50)을 주입 — **macro 유효가중을 0.75→0.34로 낮추고 나머지를
-  심볼 자체 구조로** 채운다. `C = base + (1−base)·정합`이라 **출력 envelope[−0.5,1.0]과
-  극단(깨끗한정렬=+1·신선칼받기=−0.5)은 구설계와 비트 동일 — 중간 해상도만 추가**(구설계가
-  맞았던 극단은 불변). 롱/숏은 부호 반전 대칭(5-D). 셀 키 불변(C축 연속피처, 5-H).
-- **과적합 규율**: 가중치를 표본에 튜닝하지 않고 검증된 `_ctx_align` 값을 차용. 검증은
-  독립 재구현으로 **방향만** — 고유값 3→10(포화 해소), IC old +0.13→v2 +0.20(시간분할
-  전·후반 양 구간 일관), 의미론 비반전(HYPE류 'BTC-down·심볼-up' 숏이 +1.0→+0.175로 교정).
-- **기본 OFF 이유**: 누적 데이터가 **DOWNLEG/CHOP 단일레짐**이라 fade '방향'의 통계 확증은
-  UPLEG 관측 후에만 가능(5-I 검증→점등). IC·의미론은 방향 확인됐으나 점등은 사용자 판단
-  또는 UPLEG 데이터 게이트. **점등**: `WRF_REV_CTX_V2=true`(즉시 되돌리기 가능).
-- **백테스트 검증(`analysis/audit/verify_br_caxis.py`)**: v1 vs v2 A/B(반전 발사집합 재생).
-  **v2가 IC(순위판별)는 개선**(0.283→0.346, 시간분할 양구간 일관)했으나 **발사분 실현
-  성능은 악화**(win% 54.5→45.5·exp_R 0.592→0.357·Brier 소폭↑). 원인은 **단일레짐 교란** —
-  v2가 낮춘 'BTC-down·심볼-up 숏'이 일방 하락장에선 시장베타로 이겨서, 옳은 de-prioritize가
-  이 표본에선 손해로 보인다(양방향 시장이라야 판가름). 사전등록 4기준 중 2개(Brier·exp_R
-  비열등) 미통과 → **OFF 유지 확정**. 점등 게이트 = UPLEG 포함 다레짐 재검증(과적합 회피상
-  기준 완화 안 함).
+구 **D-shadow**는 BB 밴드복귀 반전을 잡되 **섀도 전용**(라이브 발사 무영향, Notion '(shadow)'
+별도 트랙)이었다. floor의 연속 min-axis·라우팅 역추세 억제가 충분한 품질 통제를 제공하므로
+**원트랙으로 승격** — `_detect_band_reversal`(구 `_detect_d_shadow`)이 `setup=RV` 후보를 다른
+디텍터와 **동일하게 라이브 발사**한다. 엔진이 `(setup,dir)` 중복은 더 높은 P̂만 남긴다. Notion은
+'(shadow)' 표식 없이 일반 신호로 기록. 제거된 군더더기: `fired_shadow`·`shadow_fire`·
+`shadow_logged`·`_shadow_cooldown_filter`·`recent_shadow_dirs`·`WRF_D_SHADOW_COOLDOWN_H`·
+`analysis/shadow_report.py`. (near-miss `shadow_band`은 별개 — 유지.)
+**→ [Phase A]에서 setup=BR로 분리 + 섀도 강등 — 위 항목 참조.**
 
-### [Phase C-v4] 임펄스-페이드 킬 — C축 개혁의 데이터 생존안 (기본 ON · 게이트 닫기 전용)
+</details>
 
-'7/3 BTC 롱 부재' 진단에서 출발한 반전형 C축 개혁 실험 4종의 결론
-(`analysis/audit/verify_rev_ctx_reform.py`, 2026-06~07 후보 79건 반사실·사전등록):
+<details>
+<summary><b>감사 처방 구현 (2026-06, 4 pillar · win-rate-first 골격 유지 · 기본 ON)</b></summary>
 
-| 변형 | 아이디어 | 발사 n | 실현 승률 | 평균R | 판정 |
-|---|---|---|---|---|---|
-| cur (v1 echo) | 현행 | 29 | 47.6% | +0.278 | 기준 |
-| stretch | 바닥 롱 개방(과확장 백분위) | 51 | 46.5% (신규 롱 36%) | +0.315 | ❌ 기각 |
-| v3 복합 | river+stretch+**decel(전환확인)** | 26 | 33.3% | −0.125 | ❌ 기각 |
-| **v4 임펄스킬** | **신선 임펄스 페이드 금지** | 18 | **53.8%** | **+0.333** | ✅ 채택 |
+위 grind-fix(ER 절대 0.50 승격 + BO near-SL)는 **fast trend·RR 산술**만 고쳐 정작 **slow
+grind**는 놓쳤다(ER 0.50은 느린 grind의 ER 0.15~0.35를 영영 못 만남). 정량 감사 결과
+"하드 AND 게이트 다단 직렬 + 추세정의 절대임계 + P̂/RR 분리"가 FN의 3중 구조원인으로 확정
+(실측: precond 통과 50건 중 **38건(76%)이 floor=min-axis 하드절벽에서 사망**, BO는 RR에서 4/7
+전사). 처방은 **하드 게이트를 점수로 강등하고 판정을 floor에 위임**하는 한 원리로 수렴한다.
 
-- **게이트 열기는 전부 실패**: 1h 상태피처로는 캐피출레이션 내부의 바닥 타이밍이 분해
-  불가(06-24 실측: 같은 loc 0.00에서 1시간 간격 WIN/LOSS 교차). decel류 전환확인은
-  구조적으로 **후행** — 진짜 바닥은 차단하고 반등 후 추격만 산다(신규 롱 0/4 전패).
-  또한 라이브가 미발사 후보 전량을 기록하고 오프라인이 반사실 채점하므로, **라이브 출혈로
-  살 수 있는 정보가 없다**(원장이 공짜로 준다) — '출혈=수업료' 논리가 성립하지 않는 구조.
-- **실측 출혈원은 반대쪽**: macro 태그가 전환을 수일 후행하는 동안 '이미 돌아선 시장'에
-  대한 페이드(07-01~02 랠리 숏 결판 5건 전패)가 C=+0.25~+1.0 확신으로 발사되고 있었다.
-- **v4 규칙**(양방향 대칭, `_impulse_kill`): 페이드 대상 레그가 자기분포 극단 스트레치
-  (`loc_vwap` 백분위, |axis| ≥ `WRF_REV_IK_STRETCH`=0.6)이면서 심볼 자기 단기구조
-  (1h EMA·MACD부호·BOS/CHoCH 중 ≥ `WRF_REV_IK_ALIVE`=2)상 살아있으면 **C=−0.5 강제**.
-  새 발사 0(닫기 전용 — 출혈 없음). v1/v2 어느 베이스와도 합성 가능.
-- **한계·감시**: 결판 표본 소수(제거집합 8건 중 승자 3건 동반 제거 — 사전등록 규칙을
-  사후 미세조정하지 않은 대가). fire-rights 주간 사후검정이 계속 감시하며,
-  `WRF_REV_IMPULSE_KILL=false`로 즉시 되돌리기 가능.
+- **Pillar1 — 레짐/라우팅 지연**: ① ER을 코인 자기분포 **백분위**로(`WRF_REGIME_ER_PCTL`,
+  절대 0.50 폐기·철학 정합) ② **방향지속**(MA20 기울기 일관성 + **순드리프트 magnitude**) 승격을
+  `is_ranging` 앞에 배치(`WRF_REGIME_SLOPE_PERSIST`) ③ 라우팅을 BTC매크로 종속에서 **심볼
+  자체구조**로 분리(`WRF_ROUTING_SELF_STRUCT`). **★실데이터 튜닝(323스냅샷)**: 기울기 일관성만으론
+  하락 grind(sp=0.74)와 chop(sp=0.79)이 분리 안 됨(slow grind는 backward 통계가 chop과 닮음) →
+  드리프트 AND 게이트(≥0.02) + 임계 상향(0.85)으로 chop 오승격을 42%→**8%**로 통제. 회수율은
+  보수적(하락추세 21%) — 초저속 grind는 FP 통제 비용으로 일부 미승격(숏 FN의 주 해결은 Pillar2).
+- **Pillar2 — precond 경직성**: RV 5중 동시 AND를 **소프트 스코어**로(`WRF_RV_SOFT_PRECOND`) —
+  안전 최소치(소진≥1∧반전캔들∧확인≥2)만 게이트, CHoCH·리테스트는 L 감쇠로 흡수(부분정렬
+  반전도 후보화하되 약하면 floor가 탈락). BO near-SL은 **타이트니스 P̂ 보정**(`WRF_BO_SL_TIGHT_PEN`)
+  으로 SL을 당긴 만큼 실제 승률↓를 prior에 반영.
+- **Pillar3 — min-axis/RR 병목**: ① min-axis 하드절벽(0.55 고정=위장 하드베토)을 **연속 페널티**
+  로(`WRF_PRIOR_MIN_AXIS_SOFT`) — 0.10 근방 매끄럽게(near-miss 회복)·음수축은 강차단, prior·보정
+  일관 적용(불연속 제거) ② 고정 RR≥1.5를 **EV-결합 게이트**로(`WRF_EV_GATE`, EV=P̂·RR−(1−P̂)≥0.15)
+  → 고확률·중RR 셋업 회생, win-rate-first(MR TP=mid)와 정합.
+- **Pillar4 — 숨은 L/S 비대칭**: `pct_rank` **midrank**(동점 +1/(2n) 편향 제거·완전대칭),
+  TF 모멘텀 **대칭화**(숏도 명시적 약세 요구), `WRF_RV_SIDED_SIGNALS` 기본 ON(청산을 진입방향
+  적합한 쪽만), 死파라미터 `WRF_PCT_EXTREME_*` 배선.
 
----
+**검증(`analysis/audit/` 재현 가능)**: ① **실데이터 레짐 재현**(323스냅샷, p0=실종가·
+raw.adx=실ADX) — 하락추세 회수 21%(전부 숏 적격)·chop 오승격 8%·승격 정밀도 62%·TRENDING률
+3.1%→18%(타당). ② 게이트 재채점(실데이터 50후보) — 연속 min-axis가 floor에서 죽던 후보 부활,
+집계 성능은 실제 라이브 이력과 정합(PF 3.16). ③ 합성 컴포넌트 9/9 — grind 상/하 대칭 승격·chop
+미승격 / 알트 grind는 BTC=CHOP에도 route=down / RV 부분정렬 숏 0→1 생성 / min-axis 단조연속
+(음수축 강차단) / EV게이트 0.65×1.0 회생 / midrank 완전대칭 / BO RR 0.99→3.33.
+④ **핵심 진단**: 숏 발사 수는 게이트 재채점만으로 불변 + 레짐신호가 하락 grind를 chop과 분리
+못함 → 숏 FN의 주 해결은 **Pillar2(RANGING 내 RV 생성)**, Pillar1은 FP-안전 보조. (표본 ≈5일·
+단일레짐 → 모든 수치는 인프라/논리 검증용, OOS 재검증 전제.)
 
-## Notion (2-DB, 기존 DB 재사용)
+</details>
 
-기존 DB **`1H Signal Log`** / **`1H Research Snapshots`** 를 WRF 양식으로 **개조해 재사용**한다
-(이름·기존 데이터 보존, 새 WRF 컬럼 추가, `Exit Reason`에 TIMEOUT 추가, Result→Status·
-Take Profit→TP·RSI 1H→RSI 등 일회성 리네임 적용). 토큰 미설정 시 자동 비활성(no-op).
+<details>
+<summary><b>느린 추세 숏 부재 진단 + grind-fix (2026-06, 과적합 경계)</b></summary>
 
-```bash
-python scripts/migrate_notion_wrf.py            # 누락 WRF 컬럼만 멱등 추가(스키마 동기화)
-python scripts/migrate_notion_wrf.py --purge    # 추가 + 기존 행 전부 아카이브(선택)
-```
+**관찰**: BTC/ETH/HYPE가 KST 23시경 반전 후 −4.6~8.7% 하락하는 내내 숏 신호가 한 건도
+나오지 않음(전체 데이터셋 누적: **롱 7발사 / 숏 0발사**). JSONL 실측 진단:
 
-기본 DB ID는 기존 DB로 설정돼 있다(env로 오버라이드 가능):
-`NOTION_SIGNALS_DB_ID`(=레거시 `NOTION_DATABASE_ID`) / `NOTION_SNAPSHOTS_DB_ID`(=`NOTION_RESEARCH_DB_ID`).
+- **레짐 오분류(루트원인)**: ADX는 지연 지표라 느린 grind-down이 내내 ADX<25에 머묾 →
+  1H `RANGING`+4H `SQUEEZE` 고착. 라우팅상 **추세추종 TF가 원천 배제**(TF는 4H가
+  TRENDING/EXPLOSIVE일 때만 보강). RSI 67→24·MACD +153→−217·BB%b 1.0→0.0 의 명백한
+  단조하락을 ADX가 못 잡음. 분류기는 효율비(ER)를 계산하나 RANGING 판정에만 쓰고 있었음.
+- **셋업별 사인**: MR=반전(역추세) 도구라 고점엔 반전캔들 부재·하락 중엔 오히려 롱 지향 |
+  RV=CHoCH 필수인데 점진적 롤오버라 choch 미발생 | BO=막판에야 후보 형성, 그나마
+  **SL이 박스 반대편(far)이라 손절=박스높이 → RR≈1**(BTC 0.99/ETH 0.91)로 발사컷.
+- **veto·플로어는 무죄**: 숏은 DOWNLEG 정합이라 거시베토 없음, BO p̂=0.65>플로어. 순수 RR.
 
-- **`1H Signal Log`**(발사된 페이퍼 트레이드): Status(OPEN/WIN/LOSS/TIMEOUT)·Setup·
-  Direction·Symbol·Regime 1H/4H·BTC Macro·Entry/TP/SL·R Dist·RR·T_max·P_hat·P Source·
-  Win Floor·Size·C/L/F·MFE R·MAE R·Bars To Exit·Exit Reason·Signaled/Resolved At·Reason·Signal ID
-  (레거시 Grade·Score·Threshold 등은 참고용으로 잔존)
-- **`1H Research Snapshots`**(매시간 학습 미러): TS·Symbol·Snapshot ID·Outcome·Regime/Bias·
-  RSI/Vol Zone·BTC Macro·핵심 L1 수치(RSI·BB %b·Dist VWAP/EMA20 ATR·ADX·MACD·Funding·OI·
-  Vol Ratio·**Rev Vol Ratio**·**EMA 1D Struct**·**Retrace L/S**·**Maturity(Net)**·
-  Confluence L/S 등) + 파생라벨(Ret 4~72h·exRet·MFE/MAE·Class 24/72h·Path Eff·TT) + 후보요약
-  (Candidates/Fired). (원시 72h 경로 전체는 git JSONL이 보관; Notion은 필터·그룹용 핵심만.)
-  → 새 컬럼은 `python scripts/migrate_notion_wrf.py`로 멱등 추가(누락분만 동기화).
+</details>
 
----
+<details>
+<summary><b>레이어 연결 완성도 보강 (2026-06, 과적합 경계)</b></summary>
 
-## 프로젝트 구조
+레이어 간 논리 연결 점검에서 드러난 6개 결함 해결. **셀 키 차원은 늘리지 않음**(콜드스타트·
+과적합 보호).
 
-```
-sig-bot-1H/
-├── .github/workflows/{signal_1h,scoring,calibrate}.yml  # calibrate=Phase2 부분풀링(그림자)
-├── src/
-│   ├── main.py                  # WRF-4 진입점 (signal/score 모드, 본체 격리)
-│   ├── config.py                # 전역 설정 + WRF_* 파라미터
-│   ├── data_pipeline.py         # OKX 수집 (계승)
-│   ├── analysis_engine.py       # 측정함수 (계승, run_full_analysis=측정 오케스트레이터)
-│   ├── microstructure_analyzer.py  # 마이크로구조 측정 (계승)
-│   ├── research_logger.py       # 경로 캡처 머신 (스키마 무관·재사용)
-│   ├── notion_logger.py         # Notion REST 헬퍼 (notion_wrf가 재사용)
-│   └── wrf/                     # ★ WRF-4 엔진 (L0~L4)
-│       ├── percentile.py  btc_macro.py  features.py  detectors.py
-│       ├── calibration.py  veto.py  levels.py  engine.py  schema.py
-│       ├── logger.py  notion_wrf.py
-├── analysis/
-│   ├── build_dataset.py         # JSONL 로더 + 경로 라벨 헬퍼
-│   ├── labels.py                # triple-barrier·exret·class·candidate_dataset
-│   ├── calibrate.py             # ★[Phase 2] 부분풀링 보정 잡(계층 수축→셀별 δ_eff)
-│   ├── backtest.py              # ★[Phase 1] 백테스트/리플레이 하니스(성능+퍼널)
-│   ├── situation_report.py      # 상황·WRF 셀 진단(+ --perf 하니스 위임)
-│   └── routing_scorecard.py     # 레짐 라우팅-유틸리티 스코어카드(추종vs반전 실현R·오프라인 측정)
-├── scripts/migrate_notion_wrf.py
-├── data/
-│   ├── research/{SYM}/{YYYY-MM}.jsonl
-│   └── calibration_table.json   # 라이브가 읽는 유일한 보정 산출물
-└── docs/LEARNING_DATA_DESIGN.md
-```
+- **#1 BO 도달성**: 박스 돌파는 RANGING에서 출발 → `allowed_setups`가 RANGING에도 BO 허용
+  (BO precond 강게이트로 노이즈 통제).
+- **#2 RV 거시베토 면제**: `MACRO_HEADON`을 RV에서 제외(RV는 CHoCH+리테스트+소진 강제 =
+  구조붕괴 증거). 전환 셋업이 거시추세 전환을 칠 수 있게 — 역추세 위험은 C축·min-axis 소프트로.
+- **#3 레이어 라벨 정정**: C/L/F 축은 L1이 아니라 **L2(디텍터)** 산출, 라우팅은 **레짐만** 사용
+  (거시·바이어스는 C축/veto/셀키 경로) — README 위 엔진도 정정.
+- **#4 셀 맥락 혼합**: 셀 키 확장(과적합) 대신, 누락 맥락(4H추세 `ema_4h`·일봉 EMA20/50
+  `ema_1d_struct`)을 **C축에 연속 피처로 주입** → 거친 셀 안에서 분리 학습.
+- **#5 죽은 연결 복구**: `maturity`(성숙추세 TF 감쇠)·일봉 `ema_structure`(C축) 배선.
+- **#6 3중 중복 제거**: 하드 베토(추종/레인지) ↔ 소프트 게이트(전환) 역할 분담으로 정리.
+- **완결성#1 컨플루언스 배선**: 측정·기록만 되고 발사엔 미반영이던 `confluence`(FVG/OB/
+  피보/주간 중첩수)를 전 셋업 L에 소폭 가점(`min(중첩,3)×0.05`) → 다중 SMC 중첩 진입을
+  prior에 반영. 셀·차원 불변(콜드스타트 영향 0).
 
-> 원칙 재확인: **승률은 보정이 보장, 빈도는 유니버스·4셋업·양방향, 비정상성은
-> 거시방향 층화·신뢰게이트가 차단.** 현재 데이터(단일 불런)의 교훈상 처음엔 보정
-> 보류·보수적 prior로 출발하고, 다레짐 데이터가 쌓이며 발사권을 셀별로 획득한다.
+</details>
+
+<details>
+<summary><b>전략 정합 개선 (2026-06, win-rate-first 골격 유지)</b></summary>
+
+스윙 전략 문서 대조 후 측정-발사 정합을 끌어올린 변경. **새 셋업·새 보정셀 없이**
+기존 4셋업의 진입·레벨 정밀도만 보강(콜드스타트 불변, 과적합 경계).
+
+- **TF 피보 배선(A1)**: 눌림 판정을 `loc_ema20` 프록시 → `loc 밴드(얕은) ∪ 4H 피보
+  optimal/deep(깊은)`. 깊은 눌림은 1H EMA가 추세 반대로 튀므로 **4H 정렬을 게이트**로 포착
+  (TF가 못 잡던 50~61.8% 되돌림 진입을 같은 셀로 흡수).
+- **구조 SL + ATR 쿠션(G3)**: TF/RV SL을 `직전 스윙 ∓ ATR×1.5`로(노이즈 윅 방지). max 초과
+  시 폐기→클램프.
+- **MR 박스 기하학(G4)**: TP=박스 중심선/반대편, SL=박스 경계∓ATR(저RR EMA20 회귀 폐기).
+- **RV 전환 시퀀스 강제(A4/G6)**: CHoCH 필수 + 리테스트(스윕/키레벨거부) 필수 + 반전봉 필수
+  → 첫 반전봉 나이프캐칭 차단.
+- **반전봉 거래량 게이트(A5/G7)**: TF/MR/RV 반전봉 거래량 > 직전 5봉 평균. (BO는 돌파봉
+  스파이크 유지 + 펀딩 컨트래리언 L 가점.)
+
+</details>
 
 ---
 
+<a id="roadmap"></a>
 ## 슈퍼업그레이드 로드맵 (Super-Upgrade Roadmap)
 
 > 본 로드맵은 2026-06 전면 로직 점검(L0~L4 + 누적데이터 진단) 결과를 반영한
@@ -660,6 +825,8 @@ sig-bot-1H/
 
 - **부분익절 / 트레일링 / 본전스톱**: 현 단일 TP/SL/타임아웃 → 1차 부분익절 후
   ATR 트레일링 + 본전이동(런너 확보). 스윙 추세의 비대칭 페이오프 포착.
+  (TF 트레일링은 P2로 선행 착수 — [실험 로그](#changelog) 참조. 나머지 셋업·부분익절·
+  본전스톱은 여전히 이 단계 몫.)
 - **분수 켈리 사이징**: 현 `size ∝ P̂`(선형) → **frac-Kelly × P̂** (상한·바닥 클램프).
   검증된 셀 승률·RR로 베팅비율을 이론적으로 산출.
 - **레짐 적응형 플로어**: 고정 `W_floor=0.58` → 거시/변동성별 동적 플로어(DOWNLEG에서
@@ -705,6 +872,9 @@ sig-bot-1H/
 > **로드맵 불변식**: 어느 단계든 **승률(보정)·빈도(유니버스/셋업/양방향)·비정상성
 > (거시층화) 3원칙**을 깨지 않는다. 모든 발사권 확대는 "검증 → 점등" 순서를 지킨다.
 
+---
+
+<a id="disclaimer"></a>
 ## 면책 조항
 
 본 소프트웨어는 교육·연구 목적의 시그널 도구이며 투자 자문이 아닙니다. 암호화폐

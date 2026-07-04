@@ -879,27 +879,31 @@ WRF_REGIME_ROUTING    = os.getenv("WRF_REGIME_ROUTING", "true").lower() not in (
 # 알트가 TF 라우팅을 받는다(FN↓). btc_macro는 OR-가산(여전히 도움)·veto는 별도 유지.
 WRF_ROUTING_SELF_STRUCT = os.getenv("WRF_ROUTING_SELF_STRUCT", "true").lower() not in ("0", "false", "no", "")
 
-# ══ [P0/P1/P2 2026-07] 반전랠리 병목 3처방 (전부 기본 OFF·구동작 보존·롱숏 대칭) ══
+# ══ [P0/P1/P2 2026-07] 반전랠리 병목 3처방 (2026-07-04 실전실험 점등 — 기본 ON) ══
 # 진단(6/30~7/2 반전랠리, JSONL 실측): 후행 btc_macro(DOWNLEG)가 RV 숏 C축을 +1.0으로
 # 포화 → 상승랠리에 확신 숏 4발(전부 역행 +2~4%=스톱아웃 FP), 동시에 돌파 롱(L=+0.8)의
 # C를 −0.6으로 눌러 자가 억제(FN). tune_regime 실측: 1H 효율/기울기로 추세시작 사전분리
-# 불가(DIR−CHOP≈0) → "예측을 개선"이 아니라 "지각에 강건"으로 처방. UPLEG 표본 0건이므로
-# 롱측은 검증 불가 → 기본 OFF·섀도 기록, UPLEG 관측+섀도승률≥floor 후에만 점등(5-I).
+# 불가(DIR−CHOP≈0) → "예측을 개선"이 아니라 "지각에 강건"으로 처방.
+# [Gate-in 상태] 백테스트(analysis/audit/verify_p012.py, UPLEG 0건 표본)에선 P0=BR섀도와
+# 중복(반사실에서만 손절1건 순제거)·P1=발사 0변화(0-UPLEG라 무발동)·P2=TF표본 2건(무결론)
+# — 데이터가 "확증"하진 않았으나 "악화"도 없어 사용자 승인으로 라이브 점등해 실전 표본을
+# 축적하는 단계(5-I의 사전 오프라인 게이트 대신 실거래 섀도-라이트로 대체). 전량 기록되므로
+# 실전 성과는 backtest.py --ab / verify_p012.py로 계속 재검증한다. false로 즉시 원복 가능.
 #
 # P0 — [FP] 신선 리클레임 페이드 금지(비대칭 킬, 조기 트리거). _impulse_kill(스트레치+성숙
 #   요구 → 지각)의 거울짝을 '구조 리클레임' 시점으로 앞당김. 페이드 대상 레그가 자기 1H
 #   구조로 신선하게 리클레임(구조플립+VWAP재탈환+EMA)하면 역추세 반전(MR/RV/BR) C 하드차단.
 #   예측이 아니라 거부 → 신호분리력 불요. 상승랠리 숏·하락임펄스 롱(칼받기) 동시 차단(대칭).
-WRF_REV_RECLAIM_KILL = os.getenv("WRF_REV_RECLAIM_KILL", "false").lower() not in ("0", "false", "no", "")
+WRF_REV_RECLAIM_KILL = os.getenv("WRF_REV_RECLAIM_KILL", "true").lower() not in ("0", "false", "no", "")
 WRF_REV_RECLAIM_MIN  = _wrf_i("WRF_REV_RECLAIM_MIN", 2)   # 리클레임 확증 수(구조/VWAP/EMA 중 ≥N) → 킬
 # P1 — [FN] C축 fast-struct 주입: 후행 macro 가중(0.45)을 자기 1H 빠른구조(bos/choch/failed_break/
 #   ema/VWAP)로 일부 이관 → 반전점에서 추종 C가 후행 거시에 덜 눌림(가중합=1 보존·대칭).
-WRF_CTX_FAST_STRUCT = os.getenv("WRF_CTX_FAST_STRUCT", "false").lower() not in ("0", "false", "no", "")
+WRF_CTX_FAST_STRUCT = os.getenv("WRF_CTX_FAST_STRUCT", "true").lower() not in ("0", "false", "no", "")
 WRF_CTX_FAST_W      = _wrf_f("WRF_CTX_FAST_W", 0.20)   # fast 가중(macro 가중에서 이관). 0.45 상한.
 # P2 — [FN] TF 추세 태우기(무상태 트레일링 익절): 고정 2.5R TP가 스윙 몸통을 자름. TF에 한해
 #   HWM−k·ATR 샹들리에 트레일 + 보유상한 확장. 무상태(신호시점 주석 = trail_dist)로 발행,
 #   오프라인 라벨러가 동일 규칙으로 채점(라이브 포지션 상태 불필요 → 5-E 준수).
-WRF_TF_TRAIL      = os.getenv("WRF_TF_TRAIL", "false").lower() not in ("0", "false", "no", "")
+WRF_TF_TRAIL      = os.getenv("WRF_TF_TRAIL", "true").lower() not in ("0", "false", "no", "")
 WRF_TF_TRAIL_ATR  = _wrf_f("WRF_TF_TRAIL_ATR", 3.0)   # 트레일 거리 = k×ATR(HWM 기준)
 WRF_TF_TRAIL_TMAX = _wrf_i("WRF_TF_TRAIL_TMAX", 72)   # TF 보유상한 확장(48→72h, 추세 태우기)
 
