@@ -27,7 +27,7 @@ OKX 무기한 선물(USDT-Swap) **1시간봉 스윙** 신호 봇. **페이퍼 �
 | 항목 | 상태 |
 |---|---|
 | 실주문 | **없음** — 전량 페이퍼(advisory) |
-| 알림(텔레그램) | `ALERT_ENABLED=false` — Notion 기록만, 학습기간 중 |
+| 알림(텔레그램) | `ALERT_ENABLED=true` — Notion 기록만, 학습기간 중 |
 | 보정(L3) | `WRF_CALIB_DISABLED=true` — 발사는 **prior**, 보정 P̂은 그림자 기록만 |
 | BR(밴드반전) 발사권 | `WRF_SHADOW_SETUPS={"BR"}` — 후보생성·기록은 하되 라이브 발사는 안 함 |
 | **P0/P1/P2 실험** | **2026-07-04부로 기본 ON**(사용자 지시 라이브 실험) — [토글 레퍼런스](#toggles) · [실험 로그](#changelog) 참조 |
