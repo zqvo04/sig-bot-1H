@@ -46,16 +46,38 @@ def _rev_vol_ok(raw: dict) -> bool:
 
 
 # ── 연속형(TF/BO) 축: 추세 정합 ─────────────────────────────────────────
+def _fast_struct(raw: dict) -> float:
+    """[P1] 자기 1H 빠른 구조 부호합[-1,1] — 후행 macro/bias보다 선행하는 반전 선행지표.
+    bos/choch(구조플립)·failed_break(유동성스윕)·1H EMA·VWAP위치. 부호가 방향을 담으므로
+    _ctx_align의 ±base 처리로 롱/숏 대칭이 자동 보존된다."""
+    st = (raw.get("bos") or 0) or (raw.get("choch") or 0)   # 1H 구조플립 부호(둘 중 존재)
+    struct = 1.0 if st > 0 else -1.0 if st < 0 else 0.0
+    fb = raw.get("failed_break") or 0        # +1 실패하락(강세)/-1 실패상승(약세)
+    fbk = 1.0 if fb > 0 else -1.0 if fb < 0 else 0.0
+    ema = float(raw.get("ema") or 0)          # 1H EMA 정렬(±1)
+    dv = raw.get("dist_vwap_atr")
+    vw = 1.0 if (dv or 0) > 0 else -1.0 if (dv or 0) < 0 else 0.0
+    return _clip(0.35 * struct + 0.25 * fbk + 0.20 * ema + 0.20 * vw)
+
+
 def _ctx_struct_align(ctx: dict, raw: dict) -> float:
     """구조 맥락 부호합(양수=강세). 거시·일봉바이어스·4H추세·일봉EMA20/50, [-1,1].
 
     가중치는 측정 부호의 고정 합성(새 임계·튜닝 없음, 합=1.0). _ctx_align(추종)과
     _ctx_exhaustion v2(반전)가 공유 — 심볼-로컬 맥락(4H·일봉구조)을 셀 키를 늘리지
-    않고 C축 연속피처로 주입(콜드스타트·과적합 보호)."""
+    않고 C축 연속피처로 주입(콜드스타트·과적합 보호).
+
+    [P1] WRF_CTX_FAST_STRUCT: 후행 macro 가중을 자기 1H 빠른구조(_fast_struct)로 일부
+    이관해 반전점에서 추종 C가 지연 거시에 덜 눌리게 한다. 가중 합=1.0 자동보존
+    (mw=0.45−fw). OFF면 구가중(무변경)."""
     m = {"UPLEG": 1.0, "DOWNLEG": -1.0, "CHOP": 0.0}.get(ctx.get("btc_macro", "CHOP"), 0.0)
     b = {"BULL": 1.0, "BEAR": -1.0, "NEUTRAL": 0.0}.get(ctx.get("bias_1d", "NEUTRAL"), 0.0)
     h4 = float(raw.get("ema_4h") or 0)        # 4H 추세 방향(±1)
     ds = float(raw.get("ema_1d_struct") or 0)  # 일봉 EMA20/50 구조(±1)
+    if getattr(config, "WRF_CTX_FAST_STRUCT", False):
+        fw = min(0.45, getattr(config, "WRF_CTX_FAST_W", 0.20))
+        mw = 0.45 - fw
+        return mw * m + 0.25 * b + 0.20 * h4 + 0.10 * ds + fw * _fast_struct(raw)
     return 0.45 * m + 0.25 * b + 0.20 * h4 + 0.10 * ds
 
 
@@ -117,6 +139,35 @@ def _impulse_kill(C: float, raw: dict, pcts: dict, direction: str) -> float:
     return C
 
 
+def _reclaim_n(raw: dict, direction: str) -> int:
+    """[P0] 페이드 대상(진입 반대편) 레그의 '신선한 리클레임' 확증 수(0~3) — 자기 1H 구조.
+
+    _impulse_kill(스트레치 백분위·성숙 요구 → 추세 성숙 후 지각발동)과 달리 '구조 리클레임'
+    시점에 발동해 반전점을 앞선다. 롱 반전(하락 페이드 대상): 하락 레그가 살아있나 아니라
+    '반대(상승)로 리클레임됐나' → sgn=+1(강세) 신호를 센다: bos/choch 상향 · 종가>VWAP ·
+    1H EMA 상향. 숏은 부호 반전(대칭). pct 불요(raw만) → 오프라인 재현 가능."""
+    sgn = 1 if direction == "long" else -1   # 리클레임(반전 성공) 부호: 롱반전=상승 리클레임
+    struct = (raw.get("bos") == sgn or raw.get("choch") == sgn
+              or raw.get("bos_4h") == sgn or raw.get("choch_4h") == sgn)
+    dv = raw.get("dist_vwap_atr")
+    vwap = (dv is not None) and ((dv > 0) if sgn > 0 else (dv < 0))
+    ema = raw.get("ema") == sgn
+    return int(bool(struct)) + int(bool(vwap)) + int(bool(ema))
+
+
+def _reclaim_kill(C: float, raw: dict, direction: str) -> float:
+    """[P0] 페이드 대상 레그가 이미 신선하게 리클레임(≥MIN)했으면 역추세 반전 C를 하드차단.
+
+    상승랠리 숏(fade=상승)·하락임펄스 롱(fade=하락, 칼받기)을 대칭으로 조기 금지 —
+    _impulse_kill이 스트레치 성숙을 기다리는 사이 발사되던 역행 FP를 끊는다. 토글 OFF면 무변경."""
+    if not getattr(config, "WRF_REV_RECLAIM_KILL", False):
+        return C
+    need = getattr(config, "WRF_REV_RECLAIM_MIN", 2)
+    if _reclaim_n(raw, direction) >= need:
+        return min(C, -1.0)   # min-axis 소프트게이트가 P̂<floor로 확실히 차단
+    return C
+
+
 def _ctx_exhaustion(ctx: dict, raw: dict, pcts: dict, direction: str) -> float:
     """C(반전) — 페이드 대상 추세의 신선도 기반. CHOP은 완만 통과, 신선한 역행레그는 차단.
 
@@ -136,12 +187,12 @@ def _ctx_exhaustion(ctx: dict, raw: dict, pcts: dict, direction: str) -> float:
         align = _ctx_struct_align(ctx, raw)
         align = align if direction == "long" else -align   # 진입방향 정합(양수=안전 페이드)
         C = _clip(base + (1.0 - base) * align)              # envelope [2·base−1, 1] = 구설계와 동일
-        return _impulse_kill(C, raw, pcts, direction)
+        return _reclaim_kill(_impulse_kill(C, raw, pcts, direction), raw, direction)
     # 구동작: btc_macro echo만(롱반전=하락페이드는 거시 DOWN 신선이면 위험 → fade=m; 숏=-m)
     m = {"UPLEG": 1.0, "DOWNLEG": -1.0, "CHOP": 0.0}.get(ctx.get("btc_macro", "CHOP"), 0.0)
     fade_align = m if direction == "long" else -m
     C = _clip(base + 0.75 * fade_align)
-    return _impulse_kill(C, raw, pcts, direction)
+    return _reclaim_kill(_impulse_kill(C, raw, pcts, direction), raw, direction)
 
 
 def _flow_exhaustion(raw: dict, pcts: dict, direction: str) -> float:
