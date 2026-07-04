@@ -750,6 +750,14 @@ WRF_D_BBPCTB_LO    = _wrf_f("WRF_D_BBPCTB_LO", 0.20)   # 롱: BB %b ≤ (하단 
 # 무장 → 밴드를 타고 오르는 강추세(band-ride=칼받기 FP)와 진짜 소진반전을 분리. 신규
 # 파라미터 0개(기존 bb_hi/lo 재사용). df 부족 시 밴드터치로 graceful 폴백. False=구동작.
 WRF_D_REQUIRE_REENTRY = os.getenv("WRF_D_REQUIRE_REENTRY", "true").lower() not in ("0", "false", "no", "")
+# [BR정합 진단, 2026-07] BR만 유일하게 TF/MR/RV의 반전봉 거래량·반전캔들 게이트가 없다.
+# 저장 BR 후보 31건 전량 rev_vol_ratio<1.0(거래량게이트 100% 탈락) — 무장조건(재진입 1개)이
+# 저확신 드리프트를 잡는다는 증거(analysis/audit/probe_br_precond.py). 기본 OFF인 이유:
+# 과거 표본이 이 게이트로 전량 걸러져 승률 재검증 자체가 안 됨 — ON 후 축적되는 신규
+# 섀도 표본으로만 판정 가능(5-I). BR은 WRF_SHADOW_SETUPS로 라이브 발사가 이미 막혀 있어
+# ON으로 바꿔도 안전(후보생성 감소만 발생, 발사권과 무관).
+WRF_BR_REQUIRE_REV_VOL    = os.getenv("WRF_BR_REQUIRE_REV_VOL", "false").lower() not in ("0", "false", "no", "")
+WRF_BR_REQUIRE_REV_CANDLE = os.getenv("WRF_BR_REQUIRE_REV_CANDLE", "false").lower() not in ("0", "false", "no", "")
 
 # ── 신뢰게이트(보정 자격) — 미충족 셀은 전부 보수적 prior로 동작 ────────
 WRF_CELL_N_MIN        = _wrf_i("WRF_CELL_N_MIN", 100)   # 셀 탈중첩 독립표본 최소치

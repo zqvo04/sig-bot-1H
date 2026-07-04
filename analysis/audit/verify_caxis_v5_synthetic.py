@@ -52,7 +52,7 @@ def check(name, cond, detail=""):
 # ════════════════════════════════════════════════════════════════════
 
 _DIR_INT = ("bos", "choch", "bos_4h", "choch_4h", "ema", "ema_4h",
-            "ema_1d_struct", "failed_break")
+            "ema_1d_struct", "failed_break", "rev_candle")
 _DIR_FLOAT = ("dist_vwap_atr", "dist_ema20_atr", "macd")
 
 
@@ -169,10 +169,9 @@ def part1_mirror_symmetry(n=3000, seed=20260704):
 # Part 2 — 합성 가격경로 시나리오 (상승/하락/횡보/전환)
 # ════════════════════════════════════════════════════════════════════
 
-def gen_ohlcv(returns: np.ndarray, start_price: float = 100.0, seed: int = 0) -> pd.DataFrame:
+def _ohlcv_from_close(close: np.ndarray, start_price: float, seed: int) -> pd.DataFrame:
     rng = np.random.RandomState(seed)
-    n = len(returns)
-    close = start_price * np.cumprod(1.0 + returns)
+    n = len(close)
     openp = np.empty(n)
     openp[0] = start_price
     openp[1:] = close[:-1]
@@ -185,26 +184,37 @@ def gen_ohlcv(returns: np.ndarray, start_price: float = 100.0, seed: int = 0) ->
                          "close": close, "volume": vol}, index=idx)
 
 
+def gen_ohlcv(returns: np.ndarray, start_price: float = 100.0, seed: int = 0) -> pd.DataFrame:
+    close = start_price * np.cumprod(1.0 + returns)
+    return _ohlcv_from_close(close, start_price, seed)
+
+
 def make_scenario(kind: str, n_hours: int = 400, seed: int = 1) -> pd.DataFrame:
+    """상승/하락은 누적수익률(추세), 횡보는 **가격레벨을 직접 유계함수로** 생성한다
+    (수익률 누적 방식은 잡음이 랜덤워크처럼 번져 우연한 다일 추세가 생길 수 있어
+    '진짜 횡보'를 보장 못함 — 레벨 고정이 드리프트를 구조적으로 차단한다)."""
     rng = np.random.RandomState(seed)
-    noise = rng.normal(0, 0.004, n_hours)
     if kind == "bull":
         drift = np.full(n_hours, 0.0025)
-    elif kind == "bear":
+        return gen_ohlcv(drift + rng.normal(0, 0.004, n_hours), seed=seed)
+    if kind == "bear":
         drift = np.full(n_hours, -0.0025)
-    elif kind == "chop":
-        # 짧은 주기(24h)로 진동 — 어느 7일 창을 잡아도 순변화가 작아야 진짜 '횡보'다
-        drift = 0.004 * np.sin(np.linspace(0, 2 * np.pi * (n_hours / 24), n_hours))
-        noise = rng.normal(0, 0.003, n_hours)
-    elif kind == "bear_to_bull":
+        return gen_ohlcv(drift + rng.normal(0, 0.004, n_hours), seed=seed)
+    if kind == "chop":
+        start = 100.0
+        t = np.arange(n_hours)
+        level = start * (1.0 + 0.03 * np.sin(2 * np.pi * t / 24.0))   # 유계 진동(24h 주기)
+        close = level * (1.0 + rng.normal(0, 0.002, n_hours))          # 비누적 승법잡음
+        return _ohlcv_from_close(close, start, seed)
+    if kind == "bear_to_bull":
         h = n_hours // 2
         drift = np.concatenate([np.full(h, -0.003), np.full(n_hours - h, 0.003)])
-    elif kind == "bull_to_bear":
+        return gen_ohlcv(drift + rng.normal(0, 0.004, n_hours), seed=seed)
+    if kind == "bull_to_bear":
         h = n_hours // 2
         drift = np.concatenate([np.full(h, 0.003), np.full(n_hours - h, -0.003)])
-    else:
-        raise ValueError(kind)
-    return gen_ohlcv(drift + noise, seed=seed)
+        return gen_ohlcv(drift + rng.normal(0, 0.004, n_hours), seed=seed)
+    raise ValueError(kind)
 
 
 def _resample(df: pd.DataFrame, rule: str) -> pd.DataFrame:
@@ -236,16 +246,65 @@ def _minimal_measures(df_1h: pd.DataFrame, phase_dir: int) -> dict:
     }
 
 
+def part1b_br_precond_symmetry(seed=99):
+    """[BR정합] _detect_band_reversal의 신규 게이트(WRF_BR_REQUIRE_REV_VOL/CANDLE)가
+    4토글조합에서 롱/숏 완전대칭(5-D)인지 확인. bb_pctb는 부호값이 아니라 [0,1]
+    백분위이므로 미러는 1-p(부호반전 아님) — 이 함수 전용 미러 규칙을 쓴다."""
+    print("\n" + "═" * 72)
+    print("Part 1b — BR precond 신규 게이트(REV_VOL/REV_CANDLE) 미러 대칭")
+    print("═" * 72)
+    rng = random.Random(seed)
+    ctx = {"regime_1h": "RANGING", "regime_4h": "RANGING",
+           "allowed_setups": ["MR", "RV", "BR"], "btc_macro": "CHOP", "bias_1d": "NEUTRAL"}
+    saved = (config.WRF_BR_REQUIRE_REV_VOL, config.WRF_BR_REQUIRE_REV_CANDLE)
+    mismatches = 0
+    total = 0
+    try:
+        for vol in (False, True):
+            for cand in (False, True):
+                config.WRF_BR_REQUIRE_REV_VOL = vol
+                config.WRF_BR_REQUIRE_REV_CANDLE = cand
+                for _ in range(500):
+                    bb = rng.uniform(0.0, 0.25)   # 하단 근접(롱 무장권)
+                    raw_l = {
+                        "bb_pctb": bb, "dist_vwap_atr": rng.uniform(-2, 0),
+                        "dist_ema20_atr": rng.uniform(-2, 0),
+                        "rev_vol_ratio": rng.choice([None, rng.uniform(0.3, 2.0)]),
+                        "rev_candle": rng.choice([-1, 0, 1]),
+                        "bos": 0, "choch": 0, "ema": 0, "ema_4h": 0,
+                        "ema_1d_struct": 0, "failed_break": 0,
+                        "macd": 0.0, "macd_bull": False,
+                    }
+                    raw_s = dict(raw_l, bb_pctb=1 - raw_l["bb_pctb"],
+                                dist_vwap_atr=-raw_l["dist_vwap_atr"],
+                                dist_ema20_atr=-raw_l["dist_ema20_atr"],
+                                rev_candle=-raw_l["rev_candle"])
+                    feat_l = {"raw": raw_l, "pct": {}, "ctx": ctx, "df_1h": None}
+                    feat_s = {"raw": raw_s, "pct": {}, "ctx": ctx, "df_1h": None}
+                    out_l = D._detect_band_reversal(feat_l, {})
+                    out_s = D._detect_band_reversal(feat_s, {})
+                    total += 1
+                    long_armed = any(o["dir"] == "long" for o in out_l)
+                    short_armed_mirror = any(o["dir"] == "short" for o in out_s)
+                    if long_armed != short_armed_mirror:
+                        mismatches += 1
+    finally:
+        config.WRF_BR_REQUIRE_REV_VOL, config.WRF_BR_REQUIRE_REV_CANDLE = saved
+    check("_detect_band_reversal 신규게이트 미러대칭 (4조합×500)", mismatches == 0,
+          f"불일치 {mismatches}/{total}")
+
+
 def part2_scenarios():
     print("\n" + "═" * 72)
     print("Part 2 — 합성 시나리오: 상승·하락·횡보·전환(하락→상승/상승→하락)")
     print("═" * 72)
     scenarios = {"bull": 1, "bear": -1, "chop": 0, "bear_to_bull": 1, "bull_to_bear": -1}
+    seeds = {"bull": 101, "bear": 102, "chop": 103, "bear_to_bull": 104, "bull_to_bear": 105}
     results = {}
     for kind, end_dir in scenarios.items():
-        df1h = make_scenario(kind, seed=hash(kind) % 1000)
+        df1h = make_scenario(kind, seed=seeds[kind])
         df4h = _resample(df1h, "4h")
-        df1d = _resample(df1h, "1d")
+        df1d = _resample(df1h, "1D")
         macro = classify_btc_macro(df1d)
         meas = _minimal_measures(df1h, end_dir)
         # 무크래시
@@ -332,6 +391,7 @@ def part2b_boost_existence(results: dict):
 
 if __name__ == "__main__":
     part1_mirror_symmetry()
+    part1b_br_precond_symmetry()
     results = part2_scenarios()
     part2b_boost_existence(results)
 

@@ -60,7 +60,12 @@ def build(df, meta, version):
         if L is None or F is None or rr is None:
             continue
         vn = int(_nn(r.get("veto_n")) or 0)
-        C = detectors._ctx_exhaustion(ctx, raw, r["dir"])
+        # [버그수정] _ctx_exhaustion은 4번째 위치인자 direction 앞에 pcts(dict)를 요구한다
+        # (detectors.py 원래 시그니처 — 이 스크립트가 그동안 pcts 누락으로 TypeError만
+        # 내고 있었음, 한 번도 실행된 적 없음). pcts 미저장이므로 {}로 폴백 —
+        # _impulse_kill이 loc_vwap 결측 시 이미 안전 통과하도록 설계돼 있어(격리) 결과
+        # 왜곡 없이 v1/v2 base 계산만 재현된다(임펄스킬 부분만 이 backtest에서 미적용).
+        C = detectors._ctx_exhaustion(ctx, raw, {}, r["dir"])
         ph = calibration.prior_p_hat(setup, float(C), float(L), float(F))
         recs.append({"setup": setup, "dir": r["dir"], "ts": r["ts"], "C": C,
                      "phat": ph, "rr": float(rr), "veto_n": vn,

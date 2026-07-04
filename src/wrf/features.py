@@ -134,6 +134,7 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
     ob = a.get("order_blocks", {})
     fib = a.get("fibonacci", {})
     wk = a.get("weekly_levels", {})
+    c1 = a.get("candle_pattern", {})   # [BR정합 계측] MR/RV가 쓰는 반전캔들 판정과 동일 소스
     fund = a.get("funding_rate", {})
     lsr = a.get("ls_ratio", {})
     tak = a.get("taker_volume", {})
@@ -224,6 +225,11 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
         # 오프라인 검증용 박제. 부스트 OFF여도 기록돼 표본이 쌓인다)
         "bars_since_vwap_flip": _bars_since_sign_flip(dist_vwap),
         "bars_since_ema20_flip": _bars_since_sign_flip(dist_ema20),
+        # [BR정합 계측] 반전캔들 부호(+1=강세 pin/engulf, -1=약세) — MR/RV가 precond에
+        # 쓰는 것과 동일 판정을 raw에 영구 박제(schema는 raw 전체를 그대로 저장하므로
+        # 스키마 변경 불요). BR precond는 이 필드를 아직 요구하지 않음(계측만, 5-I).
+        "rev_candle": _sign(bool(c1.get("bullish_pin") or c1.get("bullish_engulf")),
+                            bool(c1.get("bearish_pin") or c1.get("bearish_engulf"))),
         "atr_pct": _f(atr.get("pct")),
         "adx": _f(adx.get("adx")),
         "adx_slope": _f(adx.get("adx_slope")),
