@@ -812,9 +812,13 @@ WRF_REV_CTX_BASE = _wrf_f("WRF_REV_CTX_BASE", 0.25)
 # 주입해 macro 유효가중 0.75→0.34로 낮추고 심볼 자체 구조로 채운다. 출력 envelope
 # [-0.5,1.0]·극단은 구설계와 동일(중간 해상도만 추가), 롱/숏 부호 대칭.
 # 검증(오프라인 47결판·독립재구현): 고유값 3→10, IC +0.13→+0.20(시간분할 양구간 일관),
-# 의미론 비반전. 단 데이터가 DOWNLEG/CHOP 단일레짐 → fade 방향은 UPLEG 관측 후 재검증
-# 전제로 기본 OFF(5-I 검증→점등). 되돌리기·점등: WRF_REV_CTX_V2=true.
-WRF_REV_CTX_V2 = os.getenv("WRF_REV_CTX_V2", "false").lower() not in ("0", "false", "no", "")
+# 의미론 비반전. [2026-07 실전실험 점등] 사전등록 4기준 통과(verify_br_caxis.py:
+# Brier 비열등·IC 비열등·발사 exp_R 비열등·발사빈도≥50% — 재실행 v1 IC 0.082→v2 0.215,
+# win% 33.3→36.4, exp_R 0.147→0.157). 대안 v5lite(반전C에 1H fast만 주입)는 3-way에서
+# IC 0.038 < v1 0.054 < v2 0.095로 열등 확인 → v2 채택. FN 관점: v2는 macro-echo 포화가
+# 막던 바닥 반전(공백 A) 해소 + downleg의 knife-catch 롱 FP 제거(발사 6→2, 승자 숏 +1).
+# 단일레짐 한계는 유효 → 실험기간 다레짐 표본으로 계속 감시. 되돌리기: WRF_REV_CTX_V2=false.
+WRF_REV_CTX_V2 = os.getenv("WRF_REV_CTX_V2", "true").lower() not in ("0", "false", "no", "")
 
 # ── [Phase C-v4] 임펄스-페이드 킬 (반전형 C축 개혁 — FP 누수 봉합·양방향 대칭) ──
 # 진단(2026-06~07 반사실 3종 + 킬 검증, analysis/audit/verify_rev_ctx_reform.py):
@@ -911,9 +915,15 @@ WRF_CTX_FAST_W      = _wrf_f("WRF_CTX_FAST_W", 0.20)   # fast 가중(macro 가�
 # [V5-B] 리클레임 부스트 — P0 킬의 쌍대(추종형 TF/BO 전용, docs/CAXIS_V5_DESIGN.md §5).
 #   진입방향 다중확증 리클레임 완결(≥WRF_REV_RECLAIM_MIN, P0 임계 재사용) ∧ VWAP/EMA20
 #   부호플립 신선(≤K봉) ∧ 느린 구조(거시·4H·1D) 아직 반대(지각 중)이면 추종 C를 고정
-#   수위(reclaim 2→+0.25 / 3→+0.50)로 max-클램프. 개방형(신규 발사 생성 가능)이라 기본
-#   OFF — verify_caxis_v5.py 사전등록 게이트(방향분리·BTC초과수익) 통과 후 점등(5-I).
-WRF_CTX_RECLAIM_BOOST = os.getenv("WRF_CTX_RECLAIM_BOOST", "false").lower() not in ("0", "false", "no", "")
+#   수위(reclaim 2→+0.25 / 3→+0.50)로 max-클램프. 이게 이 시스템의 직접적 FN(놓친 추종
+#   발사) 회복 레버 — 지각 macro에 눌려 죽던 Phase 3 추종 롱/숏을 되살린다(개방형).
+#   [2026-07 실전실험 점등] 반사실: 새 발사 5건(전부 롱·3/3승·expR +1.178, 무악화). 사전등록
+#   B1(결판≥8) 미달이나 사용자 지시로 "실험기간 실측 표본 축적" 목적의 조건부 라이브 전환
+#   (P0/P1/P2 선례와 동일 — 백테스트가 악화를 보인 게 아니라 표본부족일 뿐). 지각조건
+#   정교화: slow-lag(심볼 자체 4H/일봉/macro 블렌드<0) vs macro-only 비교 → macro-only는
+#   새발사 0(과엄격·자기FN)로 기각, slow-lag 채택. K 민감도 무(4~18 동일) → 기본 6 유지
+#   (샘플튜닝 금지). 되돌리기: WRF_CTX_RECLAIM_BOOST=false.
+WRF_CTX_RECLAIM_BOOST = os.getenv("WRF_CTX_RECLAIM_BOOST", "true").lower() not in ("0", "false", "no", "")
 WRF_RECLAIM_FRESH_K   = _wrf_i("WRF_RECLAIM_FRESH_K", 6)   # 신선도: 부호플립 ≤ K봉(1H)
 # P2 — [FN] TF 추세 태우기(무상태 트레일링 익절): 고정 2.5R TP가 스윙 몸통을 자름. TF에 한해
 #   HWM−k·ATR 샹들리에 트레일 + 보유상한 확장. 무상태(신호시점 주석 = trail_dist)로 발행,

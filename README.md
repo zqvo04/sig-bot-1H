@@ -31,6 +31,7 @@ OKX 무기한 선물(USDT-Swap) **1시간봉 스윙** 신호 봇. **페이퍼 �
 | 보정(L3) | `WRF_CALIB_DISABLED=true` — 발사는 **prior**, 보정 P̂은 그림자 기록만 |
 | BR(밴드반전) 발사권 | `WRF_SHADOW_SETUPS={"BR"}` — 후보생성·기록은 하되 라이브 발사는 안 함 |
 | **P0/P1/P2 실험** | **2026-07-04부로 기본 ON**(사용자 지시 라이브 실험) — [토글 레퍼런스](#toggles) · [실험 로그](#changelog) 참조 |
+| **C축 V5 실험** | **2026-07-04부로 기본 ON**(사용자 지시 FN-최소화 라이브 실험) — 반전C=v2(`WRF_REV_CTX_V2`)·추종 리클레임부스트(`WRF_CTX_RECLAIM_BOOST`). [실험 로그](#changelog) 참조 |
 | 데이터 커버리지 | 거시레짐 UPLEG 관측 **0건**(DOWNLEG/CHOP만) — 롱측 검증은 여전히 보류 상태 |
 
 ---
@@ -331,6 +332,8 @@ python analysis/audit/verify_p012.py          # BR섀도 포함/반사실 · fas
 | 레짐/라우팅 | `WRF_RV_MACRO_EXEMPT` | RV(전환)만 거시정면충돌 하드베토 면제(구조붕괴 증거로 대체) | 연결결함#2 |
 | 반전 C축 | `WRF_REV_IMPULSE_KILL` | 신선 임펄스(극단스트레치+단기구조 생존) 페이드 금지 | Phase C-v4 |
 | 반전 C축 | `WRF_REV_RECLAIM_KILL` (+`WRF_REV_RECLAIM_MIN`=2) | 신선 리클레임(구조플립+VWAP+EMA ≥2) 페이드 금지 — impulse_kill보다 조기 발동 | **P0** |
+| 반전 C축 | `WRF_REV_CTX_V2` | 반전 C를 macro-echo 포화 대신 심볼-로컬 구조정합으로(공백 A: 바닥반전 FN 해소) | **C축 V5 실험**(2026-07 라이브) |
+| 추종 C축 | `WRF_CTX_RECLAIM_BOOST` (+`WRF_RECLAIM_FRESH_K`=6) | 추종 C에 리클레임 부스트 max-클램프 — P0 킬의 쌍대(공백 B: Phase3 추종 FN 회복) | **C축 V5 실험**(2026-07 라이브) |
 | 반전 C축 | `WRF_D_SHADOW` | BR(밴드반전) 디텍터 가동(후보생성) — 발사권은 별도(`WRF_SHADOW_SETUPS`) | 밴드반전 일원화 |
 | 반전 C축 | `WRF_D_REQUIRE_REENTRY` | BR 무장을 밴드터치가 아닌 '밴드복귀(재진입)'로 요구(밴드라이딩 오탐 방지) | 밴드반전 일원화 |
 | 추종 C축 | `WRF_CTX_FAST_STRUCT` (+`WRF_CTX_FAST_W`=0.20) | 추종 C의 후행 macro 가중 일부를 자기 1H 빠른구조로 이관 | **P1** |
@@ -351,10 +354,13 @@ python analysis/audit/verify_p012.py          # BR섀도 포함/반사실 · fas
 
 | 토글 | 효과 | 근거 / OFF 사유 |
 |---|---|---|
-| `WRF_REV_CTX_V2` | 반전 C축을 macro-echo 대신 심볼-로컬 구조정합으로 | IC는 개선(0.283→0.346)했으나 단일레짐 표본에서 발사분 실현성능 악화(win% 54.5→45.5) — UPLEG 포함 다레짐 재검증 전 OFF ([Phase C](#changelog)) |
-| `WRF_CTX_RECLAIM_BOOST` (+`WRF_RECLAIM_FRESH_K`=6) | [V5-B] 추종(TF/BO) C에 리클레임 부스트 max-클램프 — P0 킬의 쌍대(리클레임 완결 ∧ 신선 ∧ 느린구조 지각 → C를 +0.25/+0.50으로) | **개방형**(신규 발사 생성)이라 킬과 달리 사전 실증 필수. `verify_caxis_v5.py` 사전등록 게이트(B1 결판≥8) 미충족 — 판정불가·표본 축적 중 ([Phase C-V5](#changelog), docs/CAXIS_V5_DESIGN.md) |
 | `WRF_BR_REQUIRE_REV_VOL` / `WRF_BR_REQUIRE_REV_CANDLE` | BR precond에 TF/MR/RV와 동일한 반전봉 거래량·반전캔들 게이트 재사용 배선 | 과거 BR 후보 31건 전량이 이 게이트로 걸러짐(거래량 100%·반전캔들 필드 자체 부재) — 승률 재검증이 현재로선 불가, ON 후 신규 섀도 표본 축적 필요 ([BR정합](#changelog)) |
 | `WRF_REGIME_ADX_SOLE` | ADX 단독으로 TRENDING 승격(구동작 복귀 스위치) | 후행 ADX 스파이크는 소진/반전 직전 신호라 추종 라우팅에 음(−)스킬 확인(AUC 0.45) — 강등 유지 (Pillar1) |
+
+> **참고**: `WRF_REV_CTX_V2`·`WRF_CTX_RECLAIM_BOOST`는 2026-07-04 C축 V5 실험으로
+> **기본 ON으로 전환**(위 "기본 ON" 표 참조). 사전등록 게이트(UPLEG 다레짐·B1 결판≥8)는
+> 여전히 미충족이나, 백테스트가 악화를 보인 게 아니라 표본부족이라 사용자 지시로
+> 실측 표본 축적을 위한 조건부 라이브 실험으로 전환. 되돌리기: 각 토글 `=false`.
 
 ### 거버넌스 스위치 (그림자 운영 · 발사권)
 
@@ -475,6 +481,43 @@ sig-bot-1H/
 **근거** 열이 여기 제목과 매칭된다.
 
 <details open>
+<summary><b>[C축 V5 실전실험] 반전C=v2 + 추종 리클레임부스트 라이브 점등 — FN 최소화 (2026-07-04, 기본 ON)</b></summary>
+
+C축 V5 설계·골격(아래 [Phase C-V5] 항목)을 이전 테스트 결과로 정교화한 뒤 사용자
+지시로 **실전 라이브 실험 점등**. 목표는 **FN(놓친 발사) 최소화**. 반전 국면 4단계의
+두 FN 공백을 동시에 겨냥한다: **공백 A(Phase 2 바닥반전 FN)** = 반전C `WRF_REV_CTX_V2`,
+**공백 B(Phase 3 추종 FN)** = 추종 리클레임부스트 `WRF_CTX_RECLAIM_BOOST`.
+
+**정교화 — 데이터 기반 선택(새 튜닝노브 0개, 5-J/5-K 준수)**:
+- **반전 C: v5lite 기각 → v2 채택.** 3-way 재생(`verify_caxis_v5.py`)에서 v5lite(반전 C에
+  1H fast만 주입) IC **0.038** < v1 0.054 < v2 **0.095** — fast 단독 주입은 순위판별을
+  오히려 훼손. v2(심볼-로컬 구조 주입)가 우세. `verify_br_caxis.py` 재실행(★기존
+  스크립트가 `_ctx_exhaustion` 인자 누락으로 실행 불가였던 버그 수정 후): 사전등록 4기준
+  전부 통과(IC 0.082→0.215·win% 33.3→36.4·exp_R 0.147→0.157·발사빈도 유지).
+- **부스트 지각조건: macro-only 기각 → slow-lag 유지.** "매크로 태그만 지각" 조건은
+  새 발사 **0건**(과엄격·자기FN) — 승리 발사 5건은 btc_macro는 CHOP이지만 심볼 자체
+  4H/일봉 구조가 여전히 약세인 "심볼-로컬 지각"이라, 전체 slow 블렌드(<0)로 조건화해야
+  잡힌다. K(신선도 윈도) 민감도 무(4~18 동일 5발사) → 기본 6 유지(샘플튜닝 금지).
+
+**백테스트(배포상태, `verify_caxis_v5.py`·`verify_br_caxis.py` 재현 가능)**:
+- **V5-B 부스트**: 새로 열린 추종 발사 5건(전부 롱·grind 표본), 결판 3/3승(exp_R +1.178)
+  — **직접적 FN 회복**. 사전등록 B1(결판≥8)은 미달이나 **악화 신호 0**(무손실 개방).
+- **V2**: downleg 표본에서 반전 발사 6→2로 감소하나 이는 knife-catch 롱 FP 제거이고
+  (v1 롱 5→v2 0, 승자 숏 +1), **FN을 늘리지 않음**(승리 발사 손실 0). 설계 목적인 바닥반전
+  FN 해소는 UPLEG/전환에서 발현 — 실험기간 다레짐 표본으로 감시.
+- **합성 시나리오**(`verify_caxis_v5_synthetic.py`, 상승/하락/횡보/전환): 배포 기본값(둘 다
+  ON)에서 롱/숏 완전대칭(24,000+ 케이스)·무상태·무크래시 전부 PASS.
+
+**왜 게이트 미달인데 점등하나(정직한 기록)**: 표준 5-I라면 B1·G2(UPLEG) 미충족으로 OFF가
+맞다. 그러나 (a)백테스트가 **악화가 아니라 표본부족**만 보였고 (b)둘 다 FN을 직접 회복하며
+(c)사용자가 "실험기간 실측 표본 축적"을 명시 지시 — P0/P1/P2 선례와 동일한 조건부 라이브
+실험이다. **모니터링**: `verify_caxis_v5.py`를 정기 재실행해 실제 발사분 실현 win%·PF를
+추적, 악화 관측 시 즉시 `WRF_REV_CTX_V2=false`/`WRF_CTX_RECLAIM_BOOST=false`로 원복(전부
+되돌리기 가능). 점등 확정 게이트는 불변: G2(UPLEG≥300·결판≥20) ∧ B1(결판≥8) 전부 PASS.
+
+</details>
+
+<details>
 <summary><b>[BR정합] BR precond 구조결함 진단 + 계측·게이트 준비 (2026-07-04, 기본 OFF)</b></summary>
 
 BR(밴드반전) 섀도강등 재확인 요청에서 출발한 근본원인 재진단. 기존 `verify_br_caxis.py`가
