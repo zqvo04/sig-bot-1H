@@ -339,8 +339,18 @@ def _detect_rv(feat: dict, measures: dict):
         rv_f_hi = getattr(config, "WRF_RV_FUND_EXTREME_HI", 0.90)
         funding_extreme = (pcts.get("funding", 0.5) <= rv_f_lo) if long \
             else (pcts.get("funding", 0.5) >= rv_f_hi)
-        oi_flush = raw.get("oi_quadrant") in ("reversal_long", "weak_bounce") if long else \
-            raw.get("oi_quadrant") in ("reversal_short", "weak_bounce")
+        # [5-D 대칭성 수정] analyze_oi_matrix의 4분면 중 "reversal_short"는 존재하지
+        # 않는다(가격↑+OI↓ 분면은 "weak_bounce"로만 명명 — 실측 0/1156 스냅샷). 구동작은
+        # weak_bounce를 롱·숏 양쪽에 걸고 죽은 reversal_short를 숏에 걸어, 롱은 2분면
+        # (reversal_long∪weak_bounce=68건)·숏은 1분면(weak_bounce뿐=49건)으로 비대칭이었다.
+        # weak_bounce(숏커버링 소진)는 의미상 숏 반전 신호이므로 숏 전용, reversal_long
+        # (롱청산 소진)은 롱 전용 — 각 방향이 자신의 실제 대응분면 1개만 본다(대칭 회복).
+        if getattr(config, "WRF_RV_OI_FLUSH_SYM", True):
+            oi_flush = (raw.get("oi_quadrant") == "reversal_long") if long else \
+                (raw.get("oi_quadrant") == "weak_bounce")
+        else:
+            oi_flush = raw.get("oi_quadrant") in ("reversal_long", "weak_bounce") if long else \
+                raw.get("oi_quadrant") in ("reversal_short", "weak_bounce")
         exhaustion = [div, rsi_extreme, liq_flush, funding_extreme, oi_flush]
         # ── 트리거(trigger) 신호: 전환이 시작됐는가 (CHoCH는 선택) ─────────
         rev_candle = (c1.get("bullish_pin") or c1.get("bullish_engulf")) if long \

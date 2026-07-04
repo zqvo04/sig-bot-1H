@@ -496,6 +496,26 @@ raw.adx=실ADX) — 하락추세 회수 21%(전부 숏 적격)·chop 오승격 8
   사후 미세조정하지 않은 대가). fire-rights 주간 사후검정이 계속 감시하며,
   `WRF_REV_IMPULSE_KILL=false`로 즉시 되돌리기 가능.
 
+### [5-D 감사] 롱/숏 완전대칭 전수검증 — RV oi_flush 비대칭 발견·수정
+
+전 레이어(L0 베토·L1 백분위·L2 5디텍터의 C/L/F/precond·L3 보정·L4 레벨계산)를 미러입력
+테스트(모든 방향성 필드를 반대로 뒤집어 넣고 long(원본)=short(미러) 출력 일치 확인)로
+전수검증. L3(`calibration.py`)는 애초에 direction 인자가 없어 구조적으로 대칭 보장.
+
+- **발견**: `_detect_rv`의 `oi_flush`(5대 소진신호 중 하나)가 코드는 대칭으로 작성됐으나
+  (`"reversal_long"/"weak_bounce" if long else "reversal_short"/"weak_bounce"`), 상류
+  `analyze_oi_matrix`(analysis_engine.py)가 4분면 중 `reversal_short`를 **애초에 생성하지
+  않는다**(가격↑+OI↓ 분면은 `weak_bounce`로만 명명). 실측 2026-06~07 1,156스냅샷:
+  `reversal_long` 19건 / `weak_bounce` 49건 / `reversal_short` **0건**.
+  결과: 롱은 2분면(reversal_long∪weak_bounce=68건) 중 하나면 충족, 숏은 1분면
+  (weak_bounce뿐=49건)만 충족 가능 — 롱:숏 = 1.39:1 구조적 편향.
+- **수정**(`WRF_RV_OI_FLUSH_SYM`, 기본 ON): `weak_bounce`(가격↑+OI↓=숏커버링 소진 →
+  의미상 숏 반전 신호)를 숏 전용, `reversal_long`(롱청산 소진)을 롱 전용으로 분리 —
+  각 방향이 자신의 실제 대응분면 1개만 본다. 죽은 `reversal_short` 체크 제거.
+  수정후 실측 재계산: 롱 19건 / 숏 49건(롱:숏 0.39:1 — 이번엔 표본 자체가 희소해
+  반대로 기운 것일 뿐, 최소한 죽은 조건은 사라짐). `false`로 구동작 복귀 가능.
+- 검증 스크립트는 상시 보존물이 아닌 1회성 감사(요청 시 재구성 가능) — 결과만 여기 기록.
+
 ---
 
 ## Notion (2-DB, 기존 DB 재사용)

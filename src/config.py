@@ -868,6 +868,11 @@ WRF_RV_SOFT_MIN_CONFIRMS   = _wrf_i("WRF_RV_SOFT_MIN_CONFIRMS", 2)      # 소프
 # 트리거 제거로 FP만 줄인다(양방향 대칭). [Pillar4-③] 기본 ON으로 승격(방향정합 — 하락장
 # 롱청산이 칼받기 롱을 부추기던 비사이드 기본값 교정).
 WRF_RV_SIDED_SIGNALS  = os.getenv("WRF_RV_SIDED_SIGNALS", "true").lower() not in ("0", "false", "no", "")
+# [5-D 대칭성 감사] RV oi_flush 대칭성 수정 — analyze_oi_matrix가 생성 안 하는
+# "reversal_short"(실측 0/1156)를 숏 조건에서 걸던 죽은 조건을 제거하고, weak_bounce
+# (가격↑+OI↓=숏커버링 소진)를 숏 전용으로 교정(구동작은 롱·숏 양쪽에 걸어 롱이 2분면·
+# 숏이 1분면으로 비대칭). false=구동작(되돌리기).
+WRF_RV_OI_FLUSH_SYM   = os.getenv("WRF_RV_OI_FLUSH_SYM", "true").lower() not in ("0", "false", "no", "")
 # [Path1-①] 레짐 조건부 라우팅(라이브 FP/FN 동시 — 가장 큰 레버·검증 후 ON): ema_4h·
 # bias_1d·btc_macro 3중 정렬 강확정 추세에서만 작동(횡보 93%는 무변경 → idea B 함정 회피).
 #   추세확정 시: ① 역추세 반전(MR/RV 추세반대 방향) 억제(칼받기 FP↓)
