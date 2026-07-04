@@ -562,6 +562,19 @@ def _detect_band_reversal(feat: dict, measures: dict):
             stretch = max(0.0, (bb_lo - ext) / max(1e-6, bb_lo))
         if not armed:
             continue
+        # [BR정합] 진단(analysis/audit/probe_br_precond.py, 2026-07): BR만 유일하게
+        # TF/MR/RV가 쓰는 반전봉 거래량·반전캔들 게이트가 없다. 저장 BR 후보 31건 전량이
+        # rev_vol_ratio<1.0(거래량 게이트 100% 탈락)이자 반전캔들 무요구 — "밴드 재진입
+        # 1개"라는 무장조건이 저확신 드리프트를 잡는다는 구조적 증거. 두 게이트 모두
+        # 기본 OFF(과거 표본이 전부 걸러져 검증 자체가 안 됨 — 게이트 ON 후 축적되는
+        # 신규 섀도 표본으로만 재판정 가능, 5-I). ON이어도 BR은 여전히 WRF_SHADOW_SETUPS
+        # 로 라이브 발사가 막혀 있어 안전(후보생성만 억제/유지, 발사권과 무관).
+        if getattr(config, "WRF_BR_REQUIRE_REV_VOL", False) and not _rev_vol_ok(raw):
+            continue
+        if getattr(config, "WRF_BR_REQUIRE_REV_CANDLE", False):
+            sgn = 1 if direction == "long" else -1
+            if raw.get("rev_candle") != sgn:
+                continue
         C = _ctx_exhaustion(ctx, raw, pcts, direction)
         L = _clip(0.5 + 0.5 * min(1.0, stretch))
         L = _confluence_bonus(L, raw, direction)
