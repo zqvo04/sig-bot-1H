@@ -741,12 +741,17 @@ def analyze_retracement_depth(df_4h, current_price):
 # 8. 캔들 패턴 (TF별)
 # ══════════════════════════════════════════════════════════════════════
 
-def analyze_candle_pattern(df, tf_label="1h"):
+def analyze_candle_pattern(df, tf_label="1h", offset=0):
+    # offset=0: 현재봉(iloc[-1], 형성중일 수 있음) 기준 — 기존 동작(4H/1D 등).
+    # offset=1: 미완성 형성봉을 버리고 마지막 '완성' 봉 기준 — 반전캔들이 거래량비(iloc[-2])와
+    #           같은 봉을 보게 정렬(반전 FN 수리). 절단 후 판정 로직은 완전 동일.
     _empty={"long_score":50,"short_score":50,"patterns":[],"bearish_pin":False,"bullish_pin":False,
             "bearish_engulf":False,"bullish_engulf":False,"consecutive_bear":False,"consecutive_bull":False,
             "recent_bear_count_3": 0}
-    if df is None or len(df)<4: return _empty
+    if df is None or len(df) < 4 + offset: return _empty
     try:
+        if offset > 0:
+            df = df.iloc[:-offset]
         c=df["close"].astype(float).values; o=df["open"].astype(float).values
         h=df["high"].astype(float).values; l=df["low"].astype(float).values
 
@@ -1140,7 +1145,10 @@ def run_full_analysis(symbol, collected_data):
     atr      = get_atr_state(df_1h)
     macd_1h  = calculate_macd(df_1h)
 
-    candle_1h = analyze_candle_pattern(df_1h, "1h")
+    # 1H 반전캔들은 '완성' 봉 기준(offset=1) — 미완성 형성봉(iloc[-1])의 노이즈 핀/인걸핑을
+    # 배제하고, 반전봉 거래량비(rev_vol_ratio, iloc[-2] 기준)와 동일한 봉을 보게 정렬(반전 FN 수리).
+    # 4H/1D는 기존대로(offset=0) — WRF는 1H 캔들만 소비하므로 블라스트 반경을 1H로 한정.
+    candle_1h = analyze_candle_pattern(df_1h, "1h", offset=1)
     ms        = analyze_market_structure(df_1h)
     vpd       = analyze_vol_price_divergence(df_1h)
     fvg       = detect_fvg(df_1h)

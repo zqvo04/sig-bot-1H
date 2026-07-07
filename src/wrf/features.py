@@ -200,16 +200,18 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
 
     liq_spike = bool(liq.get("is_large", False))
 
-    # [A5/G7] 반전봉 거래량비 — 반전캔들(-1) / 직전 N봉 평균. raw["vol_ratio"]는
-    # 돌파봉(-2) 기준(BO용)이라 반전 셋업과 봉이 다름 → 별도 산출(인덱스 정렬).
+    # [A5/G7] 반전봉 거래량비 — 반전캔들(마지막 '완성'봉 -2) / 그 직전 N봉 평균.
+    # iloc[-1]은 미완성 형성봉(잡 실행 시점 몇 분치만 누적)이라 분자로 쓰면 값이 상시
+    # <1.0로 짓눌려 _rev_vol_ok 게이트가 99.6% 상시-거짓 → TF/MR/RV 반전 후보 계통 소멸(FN).
+    # vol_ratio(BO용)·candle(offset=1)과 동일하게 완성봉 -2 기준으로 정렬(사과-대-사과 비교).
     rev_vol_ratio = None
     try:
         vlb = getattr(config, "WRF_REV_VOL_LOOKBACK", 5)
         vol_ser = df_1h["volume"].astype(float)
-        if len(vol_ser) >= vlb + 1:
-            base_v = float(vol_ser.iloc[-(vlb + 1):-1].mean())
+        if len(vol_ser) >= vlb + 2:
+            base_v = float(vol_ser.iloc[-(vlb + 2):-2].mean())
             if base_v > 0:
-                rev_vol_ratio = round(float(vol_ser.iloc[-1]) / base_v, 3)
+                rev_vol_ratio = round(float(vol_ser.iloc[-2]) / base_v, 3)
     except Exception:
         rev_vol_ratio = None
 
