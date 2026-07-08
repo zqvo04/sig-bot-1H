@@ -124,10 +124,19 @@ def run_signal(symbol: str, exchange) -> None:
         notion_wrf.log_snapshot(out)
         notion_wrf.evaluate_open_signals(symbol, ohlcv.get("1h"))
 
-        # 발사(페이퍼): Notion 기록 + (ALERT 시) 알림 — 밴드반전 포함 원트랙
+        # 발사(페이퍼): Notion 기록 + (ALERT 시) 알림 — 밴드반전 포함 원트랙.
+        # [중복 발사 차단] 한 코인이 이미 OPEN이면 같은 방향 추가 신호 금지(반대는 허용).
+        #   ① 지속 OPEN(Notion 원장) ② 이번 실행에서 이미 발사한 방향(동일 시각 다중 셋업)
+        # 둘 다 방향 단위로 격리한다. fired 는 P̂ 내림차순 → 같은 방향은 최고 P̂만 통과.
+        fired_dirs = set()
         for cand in out["fired"]:
+            d = cand["dir"]
+            if d in fired_dirs or notion_wrf.has_open_signal(symbol, d):
+                logger.info(f"[main] {symbol} {d.upper()} 이미 OPEN/발사됨 → 같은 방향 추가 신호 생략")
+                continue
             notion_wrf.log_signal(cand, out)
             _alert(cand, out)
+            fired_dirs.add(d)
     except Exception as e:
         logger.error(f"[main] {symbol} 엔진 실패(격리): {e}\n{traceback.format_exc()}")
 
