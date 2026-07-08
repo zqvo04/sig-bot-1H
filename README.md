@@ -371,8 +371,19 @@ python analysis/audit/verify_p012.py          # BR섀도 포함/반사실 · fas
 | 스위치 | 기본값 | 의미 | 되돌리기 |
 |---|---|---|---|
 | `WRF_CALIB_DISABLED` | `true` | **true = 보정 비활성** — 발사는 prior 사용, 보정 P̂은 그림자 기록만 | `false` = OOS Brier 우위 입증 후 보정 P̂으로 발사 전환 |
-| `WRF_SHADOW_SETUPS` | `{"BR"}` | 목록의 셋업은 후보생성·기록만, 라이브 발사는 안 함 | `""`(빈 문자열) = 전부 라이브 |
+| `WRF_SHADOW_SETUPS` | `{"BR","TC"}` | 목록의 셋업은 후보생성·기록만, 라이브 발사는 안 함 | `""`(빈 문자열) = 전부 라이브 |
 | `WRF_FIRE_RIGHTS_ENABLED` | `true` | 셀별 사후검정 강등(`quarantine=FIRE_RIGHTS`) 게이트 작동 | `false` = 게이트 없이 구동작(전 셀 발사권 유지) |
+
+### 표본처리량·정합 개선 (2026-07 · ②③④⑤)
+
+병목 원인이 로직이 아니라 **표본 처리량**이라는 진단에 따른 4개 토글. 모두 되돌리기 가능.
+
+| 토글 | 기본값 | 효과 | 되돌리기 |
+|---|---|---|---|
+| `WRF_CALIB_CAP_CONF_MIN` | 0.50 | **②캡 비대칭 수리** — 셀 신뢰도 conf<0.5면 보정캡을 prior캡(0.65)로 강등(소표본 과신 차단) | 0 = 항상 0.72 캡 |
+| `WRF_LEDGER_SCRATCH_EXPIRED` | `true` | **③원장-보정 정합** — 만기청산을 원장에서 `SCRATCH`로 분류(보정 tb_win=None과 일치) | `false` = 만기도 손익부호 WIN/LOSS(구동작) |
+| `WRF_TRIG_WINDOW` | 0 | **④트리거 시간창** — 반전캔들을 '최근 N개 완성봉'까지 인정(점사건↔상태 정렬 소멸 완화) | 0 = 현재봉만(구동작) |
+| `WRF_TC_ENABLED` | `true` | **⑤셋업 인큐베이터** — TC(추세지속·채널라이드) 섀도 셋업 후보생성(발사는 `WRF_SHADOW_SETUPS`가 차단) | `false` = TC 후보 미생성 |
 
 ### 레벨/구조 파라미터 (되돌리기 값 존재)
 

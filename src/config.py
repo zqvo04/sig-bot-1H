@@ -730,6 +730,13 @@ WRF_PCT_MIDRANK = os.getenv("WRF_PCT_MIDRANK", "true").lower() not in ("0", "fal
 WRF_TF_MACD_SYM = os.getenv("WRF_TF_MACD_SYM", "true").lower() not in ("0", "false", "no", "")
 WRF_WIN_FLOOR      = _wrf_f("WRF_WIN_FLOOR", 0.58)    # 승률 플로어(발사 임계)
 
+# [③원장-보정 라벨 정합] 오프라인 보정(labels.triple_barrier)은 타임스톱 청산(TP/SL 미터치)을
+# tb_win=None = 스크래치로 '제외'한다. 그런데 원장(Notion Signal Log)은 만기청산을 손익부호로
+# WIN/LOSS로 세어, 사람이 보는 승률과 보정이 학습하는 승률이 갈렸다(BR 원장 37% vs 테이블 14~20%).
+# ON이면 만기청산을 Status=SCRATCH로 분류(부호·R은 Exit Reason/R Multiple에 그대로 보존) →
+# 원장 WIN/LOSS 필터 승률이 보정 결판모집단과 일치. 발사 로직엔 무영향(표시·집계 계층만).
+WRF_LEDGER_SCRATCH_EXPIRED = os.getenv("WRF_LEDGER_SCRATCH_EXPIRED", "true").lower() not in ("0", "false", "no", "")
+
 # ── near-miss 섀도 밴드 (콜드스타트 데이터 수집 · 발사 무영향) ──────────────
 # 플로어 바로 아래 [floor-width, floor) 의 '문턱탈락' 후보(veto·RR은 통과, p_hat만
 # 미달)를 shadow_band=True 로 태깅·기록한다. 발사하지 않으므로 라이브 손익 영향 0.
@@ -776,6 +783,9 @@ WRF_PRIOR_B0 = {
     "RV": _wrf_f("WRF_PRIOR_B0_RV", -0.95),
     # [Phase A] BR(밴드반전) — RV에서 셋업 분리. b0는 RV와 동일(분리=재분류, 피팅 아님).
     "BR": _wrf_f("WRF_PRIOR_B0_BR", -0.95),
+    # [⑤셋업 인큐베이터] TC(추세지속·채널라이드) — 신규 섀도 셋업. 검증 전이라 보수적 base
+    # (TF -0.15와 BO -0.75 사이). 섀도라 라이브 발사엔 무영향(오프라인 p̂ 추정에만 쓰임).
+    "TC": _wrf_f("WRF_PRIOR_B0_TC", -0.35),
 }
 WRF_PRIOR_WC = _wrf_f("WRF_PRIOR_WC", 1.10)   # 맥락(C) 가중
 WRF_PRIOR_WL = _wrf_f("WRF_PRIOR_WL", 1.30)   # 위치(L) 가중
@@ -798,7 +808,7 @@ WRF_VETO_DATA_AGE_MIN = _wrf_f("WRF_VETO_DATA_AGE_MIN", 90)  # 데이터 신선�
 WRF_VETO_LIQ_CASCADE  = _wrf_i("WRF_VETO_LIQ_CASCADE", 5)    # 진입 정면 대량청산 캐스케이드 건수
 
 # ── 셋업별 타임스톱(시간) — §4 사양. BR=RV 동일(분리 이관·동작 보존) ──────
-WRF_TMAX = {"TF": 48, "BO": 36, "MR": 24, "RV": 48, "BR": 48}
+WRF_TMAX = {"TF": 48, "BO": 36, "MR": 24, "RV": 48, "BR": 48, "TC": 48}
 
 # ── BO 리테스트 허용 근접도 (돌파봉 이후 현재봉이 경계로 되돌아온 정도) ────
 WRF_BO_RETEST_TOL = _wrf_f("WRF_BO_RETEST_TOL", 0.002)
@@ -874,6 +884,12 @@ WRF_RV_SOFT_PRECOND   = os.getenv("WRF_RV_SOFT_PRECOND", "true").lower() not in 
 WRF_RV_SOFT_NO_CHOCH_MULT  = _wrf_f("WRF_RV_SOFT_NO_CHOCH_MULT", 0.82)  # CHoCH 부재 시 L 감쇠
 WRF_RV_SOFT_NO_RETEST_MULT = _wrf_f("WRF_RV_SOFT_NO_RETEST_MULT", 0.90) # 리테스트 부재 시 L 감쇠
 WRF_RV_SOFT_MIN_CONFIRMS   = _wrf_i("WRF_RV_SOFT_MIN_CONFIRMS", 2)      # 소프트모드 최소 확인수(완화)
+# [④트리거 시간창] 반전캔들(pin/engulf)은 '점 사건'이라 마지막 완성봉(-2) 딱 한 시점에만
+# 존재해야 후보가 됐다 — 반면 소진·극단·zone은 '지속 상태'(수시간 유지)다. 점 사건이 상태와
+# 정확히 같은 봉에 정렬돼야만 후보가 되니 ∏pᵢ로 소멸(무후보 94%의 한 축). 이 값>0이면
+# '최근 N개 완성봉 내 반전캔들 발생 ∧ 극단상태 현재 유효'도 트리거로 인정 → 증거수준 동일,
+# 포착창만 (N+1)배. 무상태(매 실행 캔들에서 재계산)·롱숏 대칭. 0=구동작(현재봉만). 상한 5.
+WRF_TRIG_WINDOW = _wrf_i("WRF_TRIG_WINDOW", 0)
 # [Path1-②] 방향-사이드 신호(precision/FP): RV 청산·키레벨 거부를 진입방향에 맞는 쪽만
 # 카운트(롱=숏청산·지지선거부 / 숏=롱청산·저항선거부). 감사결과 precond 임계는 이미
 # 대칭이고 숏 FN은 시장(약세-과매도 편중)·엄격 precond 산물 — 본 토글은 '잘못된 쪽'
@@ -937,6 +953,16 @@ WRF_TF_TRAIL_TMAX = _wrf_i("WRF_TF_TRAIL_TMAX", 72)   # TF 보유상한 확장(4
 # 4H 추세 정렬을 게이트로 포착. 1H EMA는 깊은 눌림에서 추세 반대로 튀므로
 # 깊은 눌림 경로는 1H 정렬을 요구하지 않는다(4H 정렬로 대체).
 WRF_TF_FIB_PULLBACK = os.getenv("WRF_TF_FIB_PULLBACK", "true").lower() not in ("0", "false", "no", "")
+
+# ── [⑤셋업 인큐베이터] TC(추세지속·채널라이드) — 신규 섀도 셋업 ─────────────────
+# 문제: 확정 추세인데 TF의 얕은눌림 밴드(loc_ema20 롱[0.15,0.55])에도, 깊은 피보 zone에도
+# 안 걸리는 '얕은 플래그 연속추세'(7/3~7/7 하락 침묵구간)를 4셋업 분류학이 못 잡는다.
+# TC는 TF가 요구하는 '눌림'과 정반대로 '추세와 함께 타는'(loc_ema20 라이드밴드) 지속을 포착 —
+# loc 밴드로 TF와 상호배타(중복 발화 방지). 롱/숏 완전 대칭. BR과 동일하게 WRF_SHADOW_SETUPS
+# 로 섀도 강등: 후보 생성·기록·오프라인 채점만, 라이브 발사는 안 함(5-G 신규셋업=검증 후 점등).
+WRF_TC_ENABLED  = os.getenv("WRF_TC_ENABLED", "true").lower() not in ("0", "false", "no", "")
+WRF_TC_RIDE_MIN = _wrf_f("WRF_TC_RIDE_MIN", 0.55)  # 롱: loc_ema20 ≥ (추세와 함께 라이드, 눌림 아님)
+WRF_TC_RIDE_MAX = _wrf_f("WRF_TC_RIDE_MAX", 0.90)  # 롱: loc_ema20 ≤ (블로우오프 상투 배제). 숏=대칭 반전
 
 # ── [A5/G7] 반전캔들 거래량 게이트: 반전봉 거래량 > 직전 N봉 평균 × mult ──
 # TF(눌림종료)·MR/RV(반전캔들)에 적용. 0.0 으로 두면 게이트 OFF(되돌리기 토글).
@@ -1065,6 +1091,10 @@ WRF_CALIB_K_CONF      = _wrf_f("WRF_CALIB_K_CONF", 20.0)   # δ 신뢰도 가중
 WRF_CALIB_MIN_DECIDED = _wrf_i("WRF_CALIB_MIN_DECIDED", 3) # 보정셀 생성 최소 결판수
 WRF_CALIB_DELTA_CAP   = _wrf_f("WRF_CALIB_DELTA_CAP", 1.2) # |δ_eff| 로그오즈 하드캡
 WRF_CALIB_CAP         = _wrf_f("WRF_CALIB_CAP", 0.72)      # 보정 P̂ 상한(근거기반, prior 0.65↑)
+# [②캡 비대칭 수리] 보정 캡(0.72)은 셀이 '충분히 관측됐을 때만' 허용한다. 소표본 셀은
+# δ_eff가 conf-감쇠로 미미(-0.1~-0.2)한데 캡만 0.72로 오르면, z가 높은 후보의 P̂이 오히려
+# prior(0.65)보다 상승하는 역설(나쁜 셀 과신)이 생긴다. conf < 이 값이면 prior 캡으로 강등.
+WRF_CALIB_CAP_CONF_MIN = _wrf_f("WRF_CALIB_CAP_CONF_MIN", 0.50)  # 보정 캡 허용 최소 신뢰도(conf)
 
 # ══════════════════════════════════════════════════════════════════════
 # [Phase A] 발사권(fire-rights) 게이트 + 섀도 셋업 — ex-post 플로어 폐루프
@@ -1089,7 +1119,7 @@ WRF_FR_MIN_DECIDED = _wrf_i("WRF_FR_MIN_DECIDED", 8)    # 강등 최소 결판�
 # [Phase A] BR(밴드반전)은 검증 없는 점등(5-I 위반)으로 라이브에 승격됐다가 실측 승률
 # 미달(결판 15건 승률 40% < floor 0.58)로 섀도 원상복귀. 재점등은 발사권 게이트 통과 +
 # 사람 심사 후 이 목록에서 제거(env WRF_SHADOW_SETUPS=""=전부 라이브 → 구동작 복귀).
-WRF_SHADOW_SETUPS = {s.strip() for s in os.getenv("WRF_SHADOW_SETUPS", "BR").split(",") if s.strip()}
+WRF_SHADOW_SETUPS = {s.strip() for s in os.getenv("WRF_SHADOW_SETUPS", "BR,TC").split(",") if s.strip()}
 
 # ── 보정 발사 스위치(그림자 운영) ────────────────────────────────────────
 # true(기본): 라이브는 prior로 '발사', 보정 P̂은 계산·기록만(A/B 그림자).

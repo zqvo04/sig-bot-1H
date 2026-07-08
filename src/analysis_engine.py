@@ -1149,6 +1149,20 @@ def run_full_analysis(symbol, collected_data):
     # 배제하고, 반전봉 거래량비(rev_vol_ratio, iloc[-2] 기준)와 동일한 봉을 보게 정렬(반전 FN 수리).
     # 4H/1D는 기존대로(offset=0) — WRF는 1H 캔들만 소비하므로 블라스트 반경을 1H로 한정.
     candle_1h = analyze_candle_pattern(df_1h, "1h", offset=1)
+    # [④트리거 시간창 계측] 최근 완성봉들에서 반전캔들이 '몇 봉 전'에 났는지(0=마지막 완성봉).
+    # 같은 offset 규약(offset=1=마지막 완성봉)으로 offset 1..MAX+1 을 훑어 canonical 판정 재사용
+    # (재구현 없음 → 발산 방지). 무상태·부작용 없음. 디텍터가 WRF_TRIG_WINDOW로 소비(0=현재봉만).
+    _tw_max = 5
+    rev_bull_since = rev_bear_since = None
+    for _k in range(_tw_max + 1):
+        cp = candle_1h if _k == 0 else analyze_candle_pattern(df_1h, "1h", offset=1 + _k)
+        if rev_bull_since is None and (cp.get("bullish_pin") or cp.get("bullish_engulf")):
+            rev_bull_since = _k
+        if rev_bear_since is None and (cp.get("bearish_pin") or cp.get("bearish_engulf")):
+            rev_bear_since = _k
+        if rev_bull_since is not None and rev_bear_since is not None:
+            break
+    rev_candle_window = {"bull_bars_since": rev_bull_since, "bear_bars_since": rev_bear_since}
     ms        = analyze_market_structure(df_1h)
     vpd       = analyze_vol_price_divergence(df_1h)
     fvg       = detect_fvg(df_1h)
@@ -1215,6 +1229,7 @@ def run_full_analysis(symbol, collected_data):
         "bos_choch":        bos_1h,
         "bos_choch_4h":     bos_4h,
         "candle_pattern":   candle_1h,
+        "rev_candle_window": rev_candle_window,
         "candle_pattern_4h":candle_4h,
         "candle_pattern_1d":candle_1d,
         "market_structure": ms,

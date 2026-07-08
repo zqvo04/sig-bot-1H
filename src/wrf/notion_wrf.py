@@ -61,7 +61,7 @@ _SYNCED = set()   # 스키마 동기화 완료한 db_id (프로세스당 1회만
 
 _REGIME_OPTS = [{"name": n} for n in ("TRENDING", "EXPLOSIVE", "RANGING", "SQUEEZE", "UNKNOWN")]
 _MACRO_OPTS = [{"name": n} for n in ("UPLEG", "DOWNLEG", "CHOP")]
-_SETUP_OPTS = [{"name": n} for n in ("TF", "BO", "MR", "RV", "BR")]
+_SETUP_OPTS = [{"name": n} for n in ("TF", "BO", "MR", "RV", "BR", "TC")]
 
 
 def enabled() -> bool:
@@ -73,7 +73,7 @@ SIGNALS_PROPS = {
     "Name": {"title": {}},
     "Status": {"select": {"options": [{"name": "OPEN", "color": "gray"},
         {"name": "WIN", "color": "green"}, {"name": "LOSS", "color": "red"},
-        {"name": "TIMEOUT", "color": "yellow"}]}},
+        {"name": "TIMEOUT", "color": "yellow"}, {"name": "SCRATCH", "color": "default"}]}},
     "Setup": {"select": {"options": _SETUP_OPTS}},
     "Direction": {"select": {"options": [{"name": "LONG", "color": "green"}, {"name": "SHORT", "color": "red"}]}},
     "Symbol": {"select": {"options": [{"name": n} for n in ("BTC/USDT", "ETH/USDT", "HYPE/USDT", "SOL/USDT", "SUI/USDT", "XRP/USDT")]}},
@@ -303,14 +303,18 @@ def _eval_signal(direction, entry, tp, sl, t_max, candles, signaled_dt, now):
         if tp_hit:
             return {"status": "WIN", "reason": "TP_HIT", "mfe": mfe, "mae": mae,
                     "bars": i + 1, "rdt": rdt, "exit_price": tp, "r_mult": rr}
-    # 타임스톱 도달 → TIMEOUT으로 두지 않고 진입가 대비 손익부호로 WIN/LOSS 판별.
-    # (TP/SL 미터치라도 t_max 경과 시 시장가 청산 가정. 청산 사유는 EXPIRED_*.)
+    # 타임스톱 도달 → t_max 경과 시 시장가 청산 가정. 청산 사유는 EXPIRED_*(손익부호 보존).
+    # [③정합] 만기청산은 보정(triple_barrier)에서 스크래치(tb_win=None)로 제외되는데 원장이
+    # 이를 WIN/LOSS로 세면 사람이 보는 승률이 보정과 갈린다. WRF_LEDGER_SCRATCH_EXPIRED 이면
+    # Status=SCRATCH로 분류 → 원장 WIN/LOSS 승률이 보정 결판모집단과 일치(부호·R은 그대로 기록).
     if len(fut) >= int(t_max):
         last = fut.iloc[int(t_max) - 1]
         px = float(last["close"])
         realized = (px - entry) if long else (entry - px)
         win = realized >= 0
-        return {"status": "WIN" if win else "LOSS",
+        status = ("SCRATCH" if getattr(config, "WRF_LEDGER_SCRATCH_EXPIRED", True)
+                  else ("WIN" if win else "LOSS"))
+        return {"status": status,
                 "reason": "EXPIRED_WIN" if win else "EXPIRED_LOSS",
                 "mfe": mfe, "mae": mae, "bars": int(t_max),
                 "rdt": last.name.isoformat(), "exit_price": round(px, 8),
