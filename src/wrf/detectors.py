@@ -33,6 +33,22 @@ def _confluence_bonus(L: float, raw: dict, direction: str) -> float:
     return _clip(L + bonus * min(conf, 3))
 
 
+def _rev_candle_ok(feat: dict, direction: str, now_flag: bool) -> bool:
+    """[④트리거 시간창] 반전캔들 트리거 판정 — 현재봉(now_flag)이면 즉시 True(구동작 보존).
+
+    현재봉에 없어도 WRF_TRIG_WINDOW>0 이면 '최근 N개 완성봉 내 반전캔들'도 인정한다
+    (bars_since ∈ (0, N]). now_flag 는 호출부가 canonical c1(offset=1)로 계산해 넘기므로
+    창=0(기본)이거나 계측 필드 부재 시 정확히 기존 동작. 롱/숏 대칭(방향별 필드)."""
+    if now_flag:
+        return True
+    w = getattr(config, "WRF_TRIG_WINDOW", 0)
+    if w <= 0:
+        return False
+    key = "bars_since_rev_bull" if direction == "long" else "bars_since_rev_bear"
+    bars = feat["raw"].get(key)
+    return bars is not None and 0 < bars <= w
+
+
 def _rev_vol_ok(raw: dict) -> bool:
     """[A5/G7] 반전캔들 거래량 게이트 — 반전봉 거래량 > 직전 N봉 평균 × mult.
     데이터 부재(None) 시 통과(격리·안전). mult=0 이면 게이트 OFF."""
@@ -318,6 +334,56 @@ def _detect_tf(feat: dict, measures: dict):
     return out
 
 
+def _detect_tc(feat: dict, measures: dict):
+    """[⑤] TC(추세지속·채널라이드) — 확정 추세에서 '눌림 없이 함께 타는' 지속 진입(섀도).
+
+    TF는 '눌림'(loc_ema20 얕은밴드 또는 깊은 피보)을 요구해, 얕은 플래그로 흘러가는 채널추세를
+    놓친다. TC는 정반대로 loc_ema20 라이드밴드(추세방향으로 EMA 위/아래 타는 구간)를 포착 —
+    loc 밴드가 TF의 눌림밴드와 겹치지 않아 상호배타(중복 발화 없음). 롱/숏 완전 대칭.
+    C/L/F는 추종 축(_ctx_align/_flow_align) 재사용. 섀도(WRF_SHADOW_SETUPS)라 발사엔 무영향."""
+    raw, pcts, ctx = feat["raw"], feat["pct"], feat["ctx"]
+    out = []
+    if not getattr(config, "WRF_TC_ENABLED", True) or "TC" not in ctx["allowed_setups"]:
+        return out
+    c1 = measures.get("candle_pattern", {})
+    ride_min = getattr(config, "WRF_TC_RIDE_MIN", 0.55)
+    ride_max = getattr(config, "WRF_TC_RIDE_MAX", 0.90)
+    for direction in ("long", "short"):
+        long = direction == "long"
+        sgn = 1 if long else -1
+        # 확정 추세: 1H·4H EMA 동시 정렬(TF보다 엄격 — 채널추세 확증)
+        if not (raw.get("ema") == sgn and raw.get("ema_4h") == sgn):
+            continue
+        # 라이드밴드: 추세방향으로 EMA를 타는 위치(눌림 아님). 숏은 대칭 반전(1-loc).
+        loc = pcts.get("loc_ema20", 0.5)
+        loc_dir = loc if long else (1.0 - loc)
+        if not (ride_min <= loc_dir <= ride_max):
+            continue
+        # 지속 트리거: 모멘텀 추세방향 ∧ (구조 BOS 추세방향 또는 연속추세봉)
+        mom = raw.get("macd_bull") if long else (raw.get("macd") is not None and raw.get("macd") < 0)
+        struct = raw.get("bos") == sgn or raw.get("bos_4h") == sgn
+        cons = c1.get("consecutive_bull") if long else c1.get("consecutive_bear")
+        if not (mom and (struct or cons)):
+            continue
+        C = _ctx_align(ctx, raw, direction)
+        # L: 라이드밴드 중앙이 이상(가장 견조한 라이드). 구조확증 시 소폭 가점.
+        ideal = (ride_min + ride_max) / 2.0
+        half = max(1e-6, (ride_max - ride_min) / 2.0)
+        L = _clip((1.0 - abs(loc_dir - ideal) / half) * (0.8 + 0.2 * (1 if struct else 0)))
+        # [연결결함#5] 성숙(late) 추세 감쇠 — TF와 동일 규칙(대칭)
+        mat = raw.get("maturity")
+        mnet = raw.get("maturity_net", 0) or 0
+        if mat == "late" and ((mnet > 0) if long else (mnet < 0)):
+            L = _clip(L * getattr(config, "WRF_TF_LATE_MATURITY_MULT", 0.85))
+        L = _confluence_bonus(L, raw, direction)
+        F = _flow_align(raw, pcts, direction)
+        out.append({"setup": "TC", "dir": direction, "precond": True,
+                    "C": round(C, 4), "L": round(L, 4), "F": round(F, 4),
+                    "confluence_n": raw.get(f"confluence_{direction}", 0),
+                    "reason": "추세지속(채널라이드+모멘텀/구조)"})
+    return out
+
+
 def _detect_bo(feat: dict, measures: dict):
     raw, pcts, ctx = feat["raw"], feat["pct"], feat["ctx"]
     out = []
@@ -393,8 +459,9 @@ def _detect_mr(feat: dict, measures: dict):
         rsi_lo = getattr(config, "WRF_PCT_EXTREME_LO", 0.15)
         rsi_hi = getattr(config, "WRF_PCT_EXTREME_HI", 0.85)
         rsi_extreme = (rsi_p <= rsi_lo) if long else (rsi_p >= rsi_hi)
-        micro = (c1.get("bullish_pin") or c1.get("bullish_engulf")) if long \
+        micro_now = (c1.get("bullish_pin") or c1.get("bullish_engulf")) if long \
             else (c1.get("bearish_pin") or c1.get("bearish_engulf"))
+        micro = _rev_candle_ok(feat, direction, bool(micro_now))  # [④] 현재봉 OR 최근 N봉
         precond = bool(bb_extreme and rsi_extreme and micro)
         if not precond:
             continue
@@ -446,8 +513,9 @@ def _detect_rv(feat: dict, measures: dict):
             raw.get("oi_quadrant") in ("reversal_short", "weak_bounce")
         exhaustion = [div, rsi_extreme, liq_flush, funding_extreme, oi_flush]
         # ── 트리거(trigger) 신호: 전환이 시작됐는가 (CHoCH는 선택) ─────────
-        rev_candle = (c1.get("bullish_pin") or c1.get("bullish_engulf")) if long \
+        rev_candle_now = (c1.get("bullish_pin") or c1.get("bullish_engulf")) if long \
             else (c1.get("bearish_pin") or c1.get("bearish_engulf"))
+        rev_candle = _rev_candle_ok(feat, direction, bool(rev_candle_now))  # [④] 현재봉 OR 최근 N봉
         key_reject = bool(wk.get("near_level") and (
             (((not wk.get("is_resistance")) if long else wk.get("is_resistance"))) if sided else True))
         # 실패한 돌파/유동성 스윕: failed_break +1=하향이탈실패(롱) / -1=상향이탈실패(숏)
@@ -592,12 +660,12 @@ def _detect_band_reversal(feat: dict, measures: dict):
 
 
 def detect_all(feat: dict) -> list:
-    """5디텍터 실행 → 후보 리스트(발사 무관 전량). 디텍터별 try/except 격리.
-    _detect_band_reversal 은 BB 밴드복귀 반전(setup=BR) — [Phase A] RV에서 분리,
-    WRF_SHADOW_SETUPS 기본값에 포함돼 기록만 되고 라이브 발사는 안 된다."""
+    """6디텍터 실행 → 후보 리스트(발사 무관 전량). 디텍터별 try/except 격리.
+    _detect_band_reversal(setup=BR)·_detect_tc(setup=TC)는 WRF_SHADOW_SETUPS 기본값에
+    포함돼 기록·오프라인 채점만 되고 라이브 발사는 안 된다(검증→점등, 5-I)."""
     measures = feat.get("measures", {})
     cands = []
-    for fn in (_detect_tf, _detect_bo, _detect_mr, _detect_rv, _detect_band_reversal):
+    for fn in (_detect_tf, _detect_tc, _detect_bo, _detect_mr, _detect_rv, _detect_band_reversal):
         try:
             cands.extend(fn(feat, measures))
         except Exception as e:  # pragma: no cover

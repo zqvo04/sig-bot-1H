@@ -137,7 +137,12 @@ def calibrated_p_hat(setup: str, C: float, L: float, F: float,
     delta = cell_delta(cell)
     if delta == 0.0:
         return prior_p_hat(setup, C, L, F), "prior", floor
+    # [②캡 비대칭 수리] 보정 캡은 셀 신뢰도(conf=n_indep/(n_indep+k_conf))가 충분할 때만.
+    # 소표본 셀(conf<min)은 δ가 미미해 캡만 오르면 과신 → prior 캡(0.65)으로 강등.
     cap = getattr(config, "WRF_CALIB_CAP", 0.72)
+    conf = float(cell.get("confidence", 0.0) or 0.0)
+    if conf < getattr(config, "WRF_CALIB_CAP_CONF_MIN", 0.50):
+        cap = min(cap, getattr(config, "WRF_PRIOR_CAP", 0.65))
     z = _prior_logodds(setup, C, L, F) + delta
     # [Pillar3-②] min-axis 페널티를 보정 경로에도 일관 적용 — 콜드스타트↔보정 불연속 제거
     # (구버전은 보정셀이 min-axis 보호를 우회 → 같은 C/L/F가 보정 후 갑자기 발사되던 비일관).

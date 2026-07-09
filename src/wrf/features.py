@@ -98,6 +98,9 @@ def allowed_setups(regime_1h: str, regime_4h: str) -> list:
         s.append("TF")
     if regime_4h == "SQUEEZE" and "BO" not in s:
         s.append("BO")
+    # [⑤] TC(추세지속·섀도)는 TF와 동일 추세레짐에서 활성 — 섀도라 발사엔 무영향(오프라인 표본만).
+    if getattr(config, "WRF_TC_ENABLED", True) and "TF" in s and "TC" not in s:
+        s.append("TC")
     return s
 
 
@@ -232,6 +235,10 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
         # 스키마 변경 불요). BR precond는 이 필드를 아직 요구하지 않음(계측만, 5-I).
         "rev_candle": _sign(bool(c1.get("bullish_pin") or c1.get("bullish_engulf")),
                             bool(c1.get("bearish_pin") or c1.get("bearish_engulf"))),
+        # [④트리거 시간창] 반전캔들이 몇 봉 전에 났나(0=마지막 완성봉, None=최근 창에 없음).
+        # 디텍터가 WRF_TRIG_WINDOW로 '최근 N봉 내 반전캔들'을 트리거로 인정하는 데 소비.
+        "bars_since_rev_bull": (a.get("rev_candle_window") or {}).get("bull_bars_since"),
+        "bars_since_rev_bear": (a.get("rev_candle_window") or {}).get("bear_bars_since"),
         "atr_pct": _f(atr.get("pct")),
         "adx": _f(adx.get("adx")),
         "adx_slope": _f(adx.get("adx_slope")),

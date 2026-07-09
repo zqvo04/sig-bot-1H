@@ -61,7 +61,7 @@ _SYNCED = set()   # 스키마 동기화 완료한 db_id (프로세스당 1회만
 
 _REGIME_OPTS = [{"name": n} for n in ("TRENDING", "EXPLOSIVE", "RANGING", "SQUEEZE", "UNKNOWN")]
 _MACRO_OPTS = [{"name": n} for n in ("UPLEG", "DOWNLEG", "CHOP")]
-_SETUP_OPTS = [{"name": n} for n in ("TF", "BO", "MR", "RV", "BR")]
+_SETUP_OPTS = [{"name": n} for n in ("TF", "BO", "MR", "RV", "BR", "TC")]
 
 
 def enabled() -> bool:
@@ -73,7 +73,7 @@ SIGNALS_PROPS = {
     "Name": {"title": {}},
     "Status": {"select": {"options": [{"name": "OPEN", "color": "gray"},
         {"name": "WIN", "color": "green"}, {"name": "LOSS", "color": "red"},
-        {"name": "TIMEOUT", "color": "yellow"}]}},
+        {"name": "TIMEOUT", "color": "yellow"}, {"name": "SCRATCH", "color": "default"}]}},
     "Setup": {"select": {"options": _SETUP_OPTS}},
     "Direction": {"select": {"options": [{"name": "LONG", "color": "green"}, {"name": "SHORT", "color": "red"}]}},
     "Symbol": {"select": {"options": [{"name": n} for n in ("BTC/USDT", "ETH/USDT", "HYPE/USDT", "SOL/USDT", "SUI/USDT", "XRP/USDT")]}},
@@ -209,6 +209,31 @@ def ensure_snapshots_db():
     return _ensure_db("snap", "NOTION_SNAPSHOTS_DB_ID", config.NOTION_SNAPSHOTS_DB_TITLE, _snapshots_props())
 
 
+# ── 발사 게이트: 같은 심볼·방향 중복 방지 ─────────────────────────────────
+def has_open_signal(symbol: str, direction: str) -> bool:
+    """같은 심볼·방향의 OPEN 신호가 이미 있으면 True(중복 발사 차단용).
+
+    반대 방향은 무관(허용) — Direction 필터로 방향별 격리. Notion 비활성이거나
+    조회 실패 시 False(게이트 미작동 = 기존 동작 보존, 알림 계통 영향 없음).
+    신호 원장(OPEN→WIN/LOSS 판정)이 Notion Signals DB이므로 오픈여부의 진실원본도 여기다."""
+    if not enabled():
+        return False
+    try:
+        db = ensure_signals_db()
+        if not db:
+            return False
+        res = _request("POST", f"/databases/{db}/query", {
+            "filter": {"and": [
+                {"property": "Status", "select": {"equals": "OPEN"}},
+                {"property": "Symbol", "select": {"equals": symbol}},
+                {"property": "Direction", "select": {"equals": direction.upper()}},
+            ]}, "page_size": 1})
+        return bool(res and res.get("results"))
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[NotionWRF] has_open_signal 조회 실패(격리): {e}")
+        return False
+
+
 # ── 신호 기록 (발사 후보 1건 = 1행) ────────────────────────────────────
 def log_signal(cand: dict, engine_out: dict) -> bool:
     """발사 신호 1건을 1H Signal Log에 기록(원트랙). Status=OPEN 으로 적재되어
@@ -278,14 +303,18 @@ def _eval_signal(direction, entry, tp, sl, t_max, candles, signaled_dt, now):
         if tp_hit:
             return {"status": "WIN", "reason": "TP_HIT", "mfe": mfe, "mae": mae,
                     "bars": i + 1, "rdt": rdt, "exit_price": tp, "r_mult": rr}
-    # 타임스톱 도달 → TIMEOUT으로 두지 않고 진입가 대비 손익부호로 WIN/LOSS 판별.
-    # (TP/SL 미터치라도 t_max 경과 시 시장가 청산 가정. 청산 사유는 EXPIRED_*.)
+    # 타임스톱 도달 → t_max 경과 시 시장가 청산 가정. 청산 사유는 EXPIRED_*(손익부호 보존).
+    # [③정합] 만기청산은 보정(triple_barrier)에서 스크래치(tb_win=None)로 제외되는데 원장이
+    # 이를 WIN/LOSS로 세면 사람이 보는 승률이 보정과 갈린다. WRF_LEDGER_SCRATCH_EXPIRED 이면
+    # Status=SCRATCH로 분류 → 원장 WIN/LOSS 승률이 보정 결판모집단과 일치(부호·R은 그대로 기록).
     if len(fut) >= int(t_max):
         last = fut.iloc[int(t_max) - 1]
         px = float(last["close"])
         realized = (px - entry) if long else (entry - px)
         win = realized >= 0
-        return {"status": "WIN" if win else "LOSS",
+        status = ("SCRATCH" if getattr(config, "WRF_LEDGER_SCRATCH_EXPIRED", True)
+                  else ("WIN" if win else "LOSS"))
+        return {"status": status,
                 "reason": "EXPIRED_WIN" if win else "EXPIRED_LOSS",
                 "mfe": mfe, "mae": mae, "bars": int(t_max),
                 "rdt": last.name.isoformat(), "exit_price": round(px, 8),
