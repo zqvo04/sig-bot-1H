@@ -183,13 +183,16 @@ def evaluate(candidate: dict, ctx: dict, table: dict = None) -> dict:
         p_cal, cal_source, cal_floor = p_prior, "prior", floor
 
     # [Phase A] 발사권 — P̂ 추정경로(prior/보정)와 무관하게 셀의 실현 승률 검정 결과.
-    # [개선-A] 방향분리: 테이블에 fire_rights_by_dir 가 있고 해당 방향 항목이 있으면
-    # 방향별 발사권을 쓴다(동일 셀 롱/숏 성과역전 대응). 없으면 셀 단위 폴백(구동작).
+    # [개선-A] 방향분리: 테이블에 fire_rights_by_dir(비어있지 않음)가 있으면 방향
+    # 단위가 권위다 — 해당 방향 항목이 있으면 그 값, 없으면 '그 방향은 발사결판 0'
+    # 이므로 콜드스타트 live(셀 강등이 검정 안 된 방향까지 차단하는 역방향 희석 방지).
+    # by_dir 자체가 없으면(구 테이블/토글 OFF 학습) 셀 단위 폴백(구동작).
     fire_rights = (cell or {}).get("fire_rights") or "live"
     if getattr(config, "WRF_FR_BY_DIR", False) and cell:
-        by_dir = (cell.get("fire_rights_by_dir") or {}).get(candidate.get("dir"))
-        if by_dir and by_dir.get("fire_rights"):
-            fire_rights = by_dir["fire_rights"]
+        by_dir_map = cell.get("fire_rights_by_dir")
+        if by_dir_map:
+            fire_rights = (by_dir_map.get(candidate.get("dir")) or {}).get(
+                "fire_rights") or "live"
 
     disabled = getattr(config, "WRF_CALIB_DISABLED", True)
     if disabled or cal_source != "calibrated":

@@ -28,6 +28,15 @@ jobs:
           cache: 'pip'
       - run: pip install -r requirements.txt
       - name: Run WRF partial-pooling calibration
+        env:
+          # ── 승률 개선 실험 모드(README 참조): 방향분리 발사권 + 공격적 강등 ──
+          # 셀 키 불변 — fire_rights 사후검정만 (cell,dir)별 발행. 소표본 강등의
+          # 과적합 리스크는 자동 복권(히스테리시스)·섀도 기록 지속으로 완충.
+          # Variables에 값을 두면 코드 변경 없이 즉시 조정/롤백.
+          WRF_FR_BY_DIR:      ${{ vars.WRF_FR_BY_DIR || 'true' }}
+          WRF_FR_MIN_DECIDED: ${{ vars.WRF_FR_MIN_DECIDED || '3' }}
+          WRF_FR_DEMOTE_P:    ${{ vars.WRF_FR_DEMOTE_P || '0.35' }}
+          WRF_FR_PRIOR_N:     ${{ vars.WRF_FR_PRIOR_N || '6' }}
         run: python analysis/calibrate.py
       - name: Commit calibration table
         if: always()
