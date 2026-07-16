@@ -114,12 +114,19 @@ def _p_wr_ge_floor(wins: float, losses: float, floor: float, prior_n: float) -> 
 
 
 def _load_prev_rights(path: str) -> dict:
-    """직전 테이블의 셀별 fire_rights(히스테리시스용). 부재/오류 시 {} (전부 live 취급)."""
+    """직전 테이블의 셀별 fire_rights(히스테리시스용). 부재/오류 시 {} (전부 live 취급).
+
+    [개선-A] 방향분리 시 키 `{cell}|{dir}` 도 함께 실어 방향별 히스테리시스를 지원한다
+    (셀 단위 키는 그대로 유지 — 폴백·구동작 보존)."""
     try:
         with open(path, encoding="utf-8") as fh:
             prev = json.load(fh)
-        return {k: (v.get("fire_rights") or "live")
-                for k, v in (prev.get("cells") or {}).items()}
+        out = {}
+        for k, v in (prev.get("cells") or {}).items():
+            out[k] = v.get("fire_rights") or "live"
+            for d, r in (v.get("fire_rights_by_dir") or {}).items():
+                out[f"{k}|{d}"] = r or "live"
+        return out
     except Exception:
         return {}
 
@@ -253,6 +260,19 @@ def calibrate(data_dir: str, prev_table_path: str = None) -> dict:
         n_f = int(len(gf))
         p_ge = _p_wr_ge_floor(wins_f, n_f - wins_f, floor, fr_prior_n)
         rights = _fire_rights(p_ge, n_f, prev_rights.get(str(cell), "live"))
+        # [개선-A] 방향분리 발사권: 셀 단위 검정의 방향 희석을 제거. (cell,dir)별 사후검정으로
+        # 나쁜 방향만 강등. 토글 OFF면 빈 dict → 라이브는 셀 단위 폴백(구동작 보존).
+        fire_rights_by_dir = {}
+        if getattr(config, "WRF_FR_BY_DIR", False) and not gf.empty:
+            for d, gd in gf.groupby("dir"):
+                w_d = float(gd["tb_win"].sum())
+                n_d = int(len(gd))
+                pg_d = _p_wr_ge_floor(w_d, n_d - w_d, floor, fr_prior_n)
+                fire_rights_by_dir[str(d)] = {
+                    "fire_rights": _fire_rights(pg_d, n_d,
+                                                prev_rights.get(f"{cell}|{d}", "live")),
+                    "n_fire_decided": n_d, "p_wr_ge_floor": round(pg_d, 4),
+                }
         rec = {
             "n": int(n), "n_indep": int(n_ind),
             "base": base, "win_rate": round(wr_obs, 4),
@@ -263,6 +283,7 @@ def calibrate(data_dir: str, prev_table_path: str = None) -> dict:
             "win_floor": floor, "p_source": "prior", "delta_eff": 0.0,
             "n_fire_decided": n_f, "p_wr_ge_floor": round(p_ge, 4),
             "fire_rights": rights,
+            "fire_rights_by_dir": fire_rights_by_dir,
         }
         if p_prior_mean is not None and n >= min_dec:
             delta = _logit(wr_pooled) - _logit(p_prior_mean)
@@ -282,6 +303,9 @@ def calibrate(data_dir: str, prev_table_path: str = None) -> dict:
 
     n_cal = sum(1 for c in cells.values() if c["p_source"] == "calibrated")
     n_shadow = sum(1 for c in cells.values() if c.get("fire_rights") == "shadow")
+    n_shadow_dir = sum(1 for c in cells.values()
+                       for v in (c.get("fire_rights_by_dir") or {}).values()
+                       if v.get("fire_rights") == "shadow")
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "schema_version": getattr(config, "WRF_SCHEMA_VERSION", 3),
@@ -290,6 +314,7 @@ def calibrate(data_dir: str, prev_table_path: str = None) -> dict:
         "setups": {s: round(v, 4) for s, v in wr_setup.items()},
         "bases": {b: round(v, 4) for b, v in wr_base.items()},
         "n_cells": len(cells), "n_calibrated": n_cal, "n_shadow": n_shadow,
+        "n_shadow_dir": n_shadow_dir,
         "cells": cells, "drift": drift,
     }
     return report
@@ -321,7 +346,8 @@ def main():
 
     g = rep.get("global", {})
     print(f"보정(부분풀링) 완료: {rep.get('n_cells', 0)}셀 중 보정활성 "
-          f"{rep.get('n_calibrated', 0)}셀 · 발사권강등 {rep.get('n_shadow', 0)}셀 "
+          f"{rep.get('n_calibrated', 0)}셀 · 발사권강등 {rep.get('n_shadow', 0)}셀"
+          f"(방향분리 {rep.get('n_shadow_dir', 0)}) "
           f"(전역승률 {g.get('win_rate')}, 결판 {g.get('n_decided', 0)})")
     if rep.get("note"):
         print(f"  · {rep['note']}")
@@ -329,6 +355,11 @@ def main():
                           key=lambda kv: -abs(kv[1].get("delta_eff", 0))):
         flag = "✅보정" if c["p_source"] == "calibrated" else "·prior"
         fr = " 🚫발사권강등" if c.get("fire_rights") == "shadow" else ""
+        frd = c.get("fire_rights_by_dir") or {}
+        if frd:
+            fr += " [" + " ".join(
+                f"{d}:{v['fire_rights']}({v['n_fire_decided']},P={v['p_wr_ge_floor']})"
+                for d, v in sorted(frd.items())) + "]"
         extra = (f" δ_eff={c.get('delta_eff')} conf={c.get('confidence')}"
                  if c["p_source"] == "calibrated" else "")
         print(f"  {flag} {cell}: n={c['n']} indep={c['n_indep']} "

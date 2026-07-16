@@ -337,6 +337,19 @@ python analysis/calibrate.py --dry-run
 한꺼번에 `live` 콜드스타트로 노출된다 — 그래서 상위 스위치 해제는 "해당 셋업의
 셀 대다수가 결판 8건을 넘기고 승격/강등 판정이 실제로 내려진 뒤"로 미룬다.
 
+**방향분리 발사권**(`WRF_FR_BY_DIR`, 기본 `false`): 셀 키는 방향(long/short)을 담지
+않으므로, 같은 셀에서 롱·숏 성과가 반대일 때(실측: `RV|RANGING|CHOP` 숏 71% vs 롱 9%)
+셀 단위 `P(WR≥floor)` 검정이 **희석**돼 나쁜 방향을 못 잡는다. 토글을 켜면 fire_rights
+사후검정을 `(cell, dir)`별로 집계해 나쁜 방향만 `shadow` 강등하고 좋은 방향은 `live`
+유지한다. **셀 키·δ_eff 학습·라이브 소비경로는 불변**(5-H 무관·5-B 무손상) — 테이블에
+`fire_rights_by_dir`만 추가되고, 라이브 `evaluate`는 그 필드가 있을 때만 방향별 조회,
+없으면 셀 단위로 폴백한다(되돌리기 가능). ⚠️ **오늘 데이터로는 켜도 강등 0건**이다:
+방향별 발사결판이 1~4건으로 `WRF_FR_MIN_DECIDED(8)`에 못 미쳐 판정이 보류되고, Beta
+prior(`WRF_FR_PRIOR_N=10`, floor 중심)가 소표본을 floor로 당겨 `P(WR≥floor)`를 강등
+임계 위로 유지한다. 즉 이 토글은 **희석 차단 인프라**이지 즉효 수정이 아니다 — 방향별
+발사결판이 8건을 넘겨야 자동 발동한다(5-I 검증→점등). 근거: `analysis/audit/
+verify_short_trendkill.py`(방향 희석 정량화), `probe_adx_kill.py`(C축 대안 기각).
+
 ### 새 셋업을 인큐베이터에 넣는 절차 (재사용 체크리스트)
 
 1. **디텍터 작성**: `detectors.py`에 `_detect_<NAME>` 추가. 기존 4셋업(TF/BO/MR/RV)의

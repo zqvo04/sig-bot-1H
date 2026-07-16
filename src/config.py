@@ -1114,6 +1114,12 @@ WRF_FR_PRIOR_N     = _wrf_f("WRF_FR_PRIOR_N", 10.0)     # floor 중심 중립 pr
 WRF_FR_DEMOTE_P    = _wrf_f("WRF_FR_DEMOTE_P", 0.15)    # 강등: P(WR≥floor) < 이 값
 WRF_FR_PROMOTE_P   = _wrf_f("WRF_FR_PROMOTE_P", 0.50)   # 복권: P(WR≥floor) ≥ 이 값
 WRF_FR_MIN_DECIDED = _wrf_i("WRF_FR_MIN_DECIDED", 8)    # 강등 최소 결판수(소표본 오강등 방지)
+# [개선-A] 방향분리 발사권: 셀 키(setup|regime|macro)는 불변(5-H) — fire_rights 사후검정만
+# (cell,dir)별로 집계·발행한다. 동일 셀에서 롱/숏 성과가 반대(예: RV|RANGING|CHOP 숏71%
+# vs 롱9%)면 셀 단위 검정은 희석돼 강등 0건이 된다(실측). 방향별 검정은 나쁜 방향만
+# shadow 강등, 좋은 방향은 live 유지. δ_eff 학습·셀 키·라이브 소비경로는 무손상(5-B).
+# 라이브 evaluate는 이 필드가 있을 때만 방향별 조회, 없으면 셀 단위 폴백(되돌리기 가능).
+WRF_FR_BY_DIR      = os.getenv("WRF_FR_BY_DIR", "false").lower() not in ("0", "false", "no", "")
 
 # ── 섀도 셋업: 라이브 발사권이 없는 셋업(기록·채점만) ─────────────────────
 # [Phase A] BR(밴드반전)은 검증 없는 점등(5-I 위반)으로 라이브에 승격됐다가 실측 승률
