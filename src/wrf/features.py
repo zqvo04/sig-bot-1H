@@ -165,6 +165,7 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
     ema20_ser = close.ewm(span=20, adjust=False).mean()
     vwap_ser = pct.rolling_vwap(df_1h, vwin)
     rsi_ser = pct.series_rsi(df_1h, getattr(config, "RSI_PERIOD", 14))
+    adx_ser = pct.series_adx(df_1h, getattr(config, "ADX_PERIOD", 14))
 
     dist_vwap = pct.dist_series(close, vwap_ser, atr_ser)
     dist_ema20 = pct.dist_series(close, ema20_ser, atr_ser)
@@ -174,6 +175,7 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
     cur_rsi = _f(rsi.get("value_1h")) if rsi.get("value_1h") is not None else _f(rsi_ser.iloc[-1])
     cur_macd = _f(macd.get("histogram"))
     cur_bbpos = _f(bb.get("pct_b"))
+    cur_adx = _f(adx.get("adx")) if adx.get("adx") is not None else _f(adx_ser.iloc[-1])
 
     tail = slice(-win, None)
     p_loc_vwap = pct.pct_rank(dist_vwap.iloc[tail].tolist(), cur_dist_vwap)
@@ -183,6 +185,9 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
                 - df_1h["close"].ewm(span=26, adjust=False).mean())
     macd_hist_ser = macd_ser - macd_ser.ewm(span=9, adjust=False).mean()
     p_macd = pct.pct_rank(macd_hist_ser.iloc[tail].tolist(), cur_macd)
+    # [개선-B] 추세강도 자기분포 백분위 — 반전셋업의 '거스를 추세가 얼마나 센가'.
+    # 계측만(현재 어떤 디텍터도 미소비). 5-C: 절대 임계 대신 코인 자기분포 백분위.
+    p_adx = pct.pct_rank(adx_ser.iloc[tail].tolist(), cur_adx)
     p_bbpos = cur_bbpos if cur_bbpos is not None else 0.5  # %b 자체가 0~1 백분위적
     # 펀딩 백분위(가용 이력에서)
     fund_hist = a.get("_funding_hist_rates") or []
@@ -290,6 +295,7 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
     pcts = {
         "loc_vwap": p_loc_vwap, "loc_ema20": p_loc_ema20,
         "bb_pctb": p_bbpos, "rsi": p_rsi, "macd": p_macd, "funding": p_funding,
+        "adx": p_adx,
     }
 
     r1 = regime.get("regime", "UNKNOWN")

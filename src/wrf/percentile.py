@@ -63,3 +63,26 @@ def series_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
+
+
+def series_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """ADX 시계열(자기분포 백분위 입력용). analysis_engine.calculate_adx와 동일 정의
+    (Wilder EWM). 현재 스칼라 ADX를 이 시계열에 순위매김해 추세강도 백분위를 얻는다."""
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    close = df["close"].astype(float)
+    prev_close = close.shift(1)
+    tr = pd.concat([high - low, (high - prev_close).abs(),
+                    (low - prev_close).abs()], axis=1).max(axis=1)
+    up = high - high.shift(1)
+    dn = low.shift(1) - low
+    pdm = up.where((up > dn) & (up > 0), 0.0)
+    mdm = dn.where((dn > up) & (dn > 0), 0.0)
+    a = 1.0 / period
+    atr_e = tr.ewm(alpha=a, adjust=False).mean()
+    pe = pdm.ewm(alpha=a, adjust=False).mean()
+    me = mdm.ewm(alpha=a, adjust=False).mean()
+    pdi = 100 * pe / atr_e.replace(0, np.nan)
+    mdi = 100 * me / atr_e.replace(0, np.nan)
+    dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
+    return dx.ewm(alpha=a, adjust=False).mean()
