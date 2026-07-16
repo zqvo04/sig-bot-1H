@@ -236,6 +236,27 @@ def _reclaim_kill(C: float, raw: dict, direction: str) -> float:
     return C
 
 
+def _adx_kill(C: float, raw: dict, pcts: dict, direction: str) -> float:
+    """[승률실험 L3] 추세강도-페이드 킬(양방향 대칭): 자기분포 adx 백분위가 극단(≥τ)
+    이면서 페이드 대상 레그가 아직 살아있으면(_leg_alive_n≥2) C를 −0.5로 강제 —
+    강추세를 거스르는 반전(MR/RV/BR) 금지. _impulse_kill(스트레치=위치 극단)과 직교하는
+    축(추세강도 극단)으로, 같은 킬 수위·구조를 재사용한다.
+
+    근거(analysis/audit/probe_winrate_levers.py — 워크포워드 시간분할):
+    후반 평가 발사집합 WR 33.3→44.4%·ΣR −1.5→+1.5R, 제거 3건 전원 패배(FN 0),
+    롱 무손상. 단 floor(0.58) 복원은 못함(probe_adx_kill Gate-In 기각) — '손실
+    트리머'로서 실험 점등(README 승률 개선 실험 모드 참조). 토글 OFF면 무변경."""
+    if not getattr(config, "WRF_REV_ADX_KILL", False):
+        return C
+    apct = pcts.get("adx")
+    if apct is None:
+        return C
+    if (apct >= getattr(config, "WRF_REV_ADX_TAU", 0.6)
+            and _leg_alive_n(raw, direction) >= getattr(config, "WRF_REV_IK_ALIVE", 2)):
+        return min(C, -0.5)
+    return C
+
+
 def _ctx_exhaustion(ctx: dict, raw: dict, pcts: dict, direction: str) -> float:
     """C(반전) — 페이드 대상 추세의 신선도 기반. CHOP은 완만 통과, 신선한 역행레그는 차단.
 
@@ -255,12 +276,14 @@ def _ctx_exhaustion(ctx: dict, raw: dict, pcts: dict, direction: str) -> float:
         align = _ctx_struct_align(ctx, raw)
         align = align if direction == "long" else -align   # 진입방향 정합(양수=안전 페이드)
         C = _clip(base + (1.0 - base) * align)              # envelope [2·base−1, 1] = 구설계와 동일
-        return _reclaim_kill(_impulse_kill(C, raw, pcts, direction), raw, direction)
+        return _adx_kill(_reclaim_kill(_impulse_kill(C, raw, pcts, direction),
+                                       raw, direction), raw, pcts, direction)
     # 구동작: btc_macro echo만(롱반전=하락페이드는 거시 DOWN 신선이면 위험 → fade=m; 숏=-m)
     m = {"UPLEG": 1.0, "DOWNLEG": -1.0, "CHOP": 0.0}.get(ctx.get("btc_macro", "CHOP"), 0.0)
     fade_align = m if direction == "long" else -m
     C = _clip(base + 0.75 * fade_align)
-    return _reclaim_kill(_impulse_kill(C, raw, pcts, direction), raw, direction)
+    return _adx_kill(_reclaim_kill(_impulse_kill(C, raw, pcts, direction),
+                                   raw, direction), raw, pcts, direction)
 
 
 def _flow_exhaustion(raw: dict, pcts: dict, direction: str) -> float:

@@ -39,6 +39,12 @@ jobs:
           # 발사 시 텔레그램 알림 ON(기본 true). 저장소 Settings→Actions→Variables에
           # ALERT_ENABLED=false 를 두면 코드 변경 없이 즉시 다시 OFF(기록만) 가능.
           ALERT_ENABLED:      ${{ vars.ALERT_ENABLED || 'true' }}
+          # ── 승률 개선 실험 모드(README "승률 개선 실험 모드" 참조) ──────────
+          # 과적합 리스크 고지 하에 점등. Variables에 false 를 두면 즉시 롤백.
+          # L3: 강추세 역행 반전 킬(워크포워드 WR 33→44%·FN 0 근거)
+          WRF_REV_ADX_KILL:   ${{ vars.WRF_REV_ADX_KILL || 'true' }}
+          # L2: 방향분리 발사권 소비(테이블의 fire_rights_by_dir 읽기)
+          WRF_FR_BY_DIR:      ${{ vars.WRF_FR_BY_DIR || 'true' }}
           NOTION_TOKEN:           ${{ secrets.NOTION_TOKEN }}
           NOTION_PARENT_PAGE_ID:  ${{ secrets.NOTION_PARENT_PAGE_ID }}
           NOTION_SIGNALS_DB_ID:   ${{ secrets.NOTION_SIGNALS_DB_ID }}

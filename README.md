@@ -32,6 +32,7 @@ OKX 무기한 선물(USDT-Swap) **1시간봉 스윙** 신호 봇. **페이퍼 �
 | BR(밴드반전) 발사권 | `WRF_SHADOW_SETUPS={"BR"}` — 후보생성·기록은 하되 라이브 발사는 안 함 |
 | **P0/P1/P2 실험** | **2026-07-04부로 기본 ON**(사용자 지시 라이브 실험) — [토글 레퍼런스](#toggles) · [실험 로그](#changelog) 참조 |
 | **C축 V5 실험** | **2026-07-04부로 기본 ON**(사용자 지시 FN-최소화 라이브 실험) — 반전C=v2(`WRF_REV_CTX_V2`)·추종 리클레임부스트(`WRF_CTX_RECLAIM_BOOST`). [실험 로그](#changelog) 참조 |
+| **승률 개선 실험** | **2026-07-16부로 workflow env ON**(사용자 지시 — 과적합 리스크 고지 수용) — L3 `WRF_REV_ADX_KILL`·L2 `WRF_FR_BY_DIR`+공격적 강등. [실험 로그](#changelog) "승률 개선 실험 모드" 참조 |
 | 데이터 커버리지 | 거시레짐 UPLEG 관측 **0건**(DOWNLEG/CHOP만) — 롱측 검증은 여전히 보류 상태 |
 
 ---
@@ -343,12 +344,15 @@ python analysis/calibrate.py --dry-run
 사후검정을 `(cell, dir)`별로 집계해 나쁜 방향만 `shadow` 강등하고 좋은 방향은 `live`
 유지한다. **셀 키·δ_eff 학습·라이브 소비경로는 불변**(5-H 무관·5-B 무손상) — 테이블에
 `fire_rights_by_dir`만 추가되고, 라이브 `evaluate`는 그 필드가 있을 때만 방향별 조회,
-없으면 셀 단위로 폴백한다(되돌리기 가능). ⚠️ **오늘 데이터로는 켜도 강등 0건**이다:
-방향별 발사결판이 1~4건으로 `WRF_FR_MIN_DECIDED(8)`에 못 미쳐 판정이 보류되고, Beta
-prior(`WRF_FR_PRIOR_N=10`, floor 중심)가 소표본을 floor로 당겨 `P(WR≥floor)`를 강등
-임계 위로 유지한다. 즉 이 토글은 **희석 차단 인프라**이지 즉효 수정이 아니다 — 방향별
-발사결판이 8건을 넘겨야 자동 발동한다(5-I 검증→점등). 근거: `analysis/audit/
-verify_short_trendkill.py`(방향 희석 정량화), `probe_adx_kill.py`(C축 대안 기각).
+없으면(구 테이블) 셀 단위로 폴백한다(되돌리기 가능). 방향분리 모드에서 by_dir에
+해당 방향 항목이 없으면(그 방향 발사결판 0) 셀 강등과 무관하게 **콜드스타트 live**로
+본다 — 셀 강등이 검정 안 된 방향까지 차단하는 역방향 희석 방지. 기본 파라미터
+(`MIN_DECIDED=8`·`PRIOR_N=10`)로는 현 표본(방향별 결판 1~4건)에서 강등 0건이며,
+**2026-07-16부터 승률 개선 실험 모드**가 workflow env로 공격적 파라미터
+(`MIN_DECIDED=3`·`DEMOTE_P=0.35`·`PRIOR_N=6`)를 주입해 실제 강등을 발행 중이다 —
+과적합 고지·완충·롤백은 [실험 로그](#changelog) "승률 개선 실험 모드" 참조. 근거:
+`analysis/audit/verify_short_trendkill.py`(방향 희석 정량화), `probe_adx_kill.py`
+(C축 floor 복원 기각), `probe_winrate_levers.py`(워크포워드 레버 선별).
 
 ### 새 셋업을 인큐베이터에 넣는 절차 (재사용 체크리스트)
 
@@ -446,6 +450,8 @@ python analysis/audit/verify_p012.py          # BR섀도 포함/반사실 · fas
 | 반전 C축 | `WRF_REV_RECLAIM_KILL` (+`WRF_REV_RECLAIM_MIN`=2) | 신선 리클레임(구조플립+VWAP+EMA ≥2) 페이드 금지 — impulse_kill보다 조기 발동 | **P0** |
 | 반전 C축 | `WRF_REV_CTX_V2` | 반전 C를 macro-echo 포화 대신 심볼-로컬 구조정합으로(공백 A: 바닥반전 FN 해소) | **C축 V5 실험**(2026-07 라이브) |
 | 추종 C축 | `WRF_CTX_RECLAIM_BOOST` (+`WRF_RECLAIM_FRESH_K`=6) | 추종 C에 리클레임 부스트 max-클램프 — P0 킬의 쌍대(공백 B: Phase3 추종 FN 회복) | **C축 V5 실험**(2026-07 라이브) |
+| 반전 C축 | `WRF_REV_ADX_KILL` (+`WRF_REV_ADX_TAU`=0.6) | 강추세(자기분포 adx 백분위≥τ) 역행 반전 킬 — config 기본 OFF, **workflow env로 라이브 ON** | **승률 개선 실험 모드**(2026-07-16) |
+| 발사권 | `WRF_FR_BY_DIR` (+`WRF_FR_MIN_DECIDED`=3·`WRF_FR_DEMOTE_P`=0.35·`WRF_FR_PRIOR_N`=6, calibrate.yml env) | fire_rights를 (cell,dir)별 발행·소비 + 공격적 강등 — config 기본 OFF/보수값, **workflow env로 라이브 ON** | **승률 개선 실험 모드**(2026-07-16) |
 | 반전 C축 | `WRF_D_SHADOW` | BR(밴드반전) 디텍터 가동(후보생성) — 발사권은 별도(`WRF_SHADOW_SETUPS`) | 밴드반전 일원화 |
 | 반전 C축 | `WRF_D_REQUIRE_REENTRY` | BR 무장을 밴드터치가 아닌 '밴드복귀(재진입)'로 요구(밴드라이딩 오탐 방지) | 밴드반전 일원화 |
 | 추종 C축 | `WRF_CTX_FAST_STRUCT` (+`WRF_CTX_FAST_W`=0.20) | 추종 C의 후행 macro 가중 일부를 자기 1H 빠른구조로 이관 | **P1** |
@@ -602,6 +608,57 @@ sig-bot-1H/
 날짜순 변경 이력. 각 항목은 진단→처방→백테스트 검증까지의 전체 기록이며,
 기본 접힘 상태다(가장 최근·진행 중인 실험만 펼쳐져 있다). [토글 레퍼런스](#toggles)의
 **근거** 열이 여기 제목과 매칭된다.
+
+<details open>
+<summary><b>[승률 개선 실험 모드] L3 ADX킬 + L2 방향분리 공격적 발사권 라이브 점등 — ⚠️ 과적합 리스크 고지 수용 (2026-07-16)</b></summary>
+
+**목적(사용자 지시)**: 승률을 우선 개선한다. 과적합 우려가 있는 레버라도 고지·완충
+장치 하에 점등하고, 라이브 실험으로 검증한다(단, 과도한 과적합은 배제).
+
+**진단**(`analysis/audit/verify_short_trendkill.py`, 120 결판): 발사 숏 WR 23%·PF 0.51
+vs 발사 롱 WR 50%·PF 1.87 — 발사 숏이 유일한 적자원. 두 갈래 원인: ① 강추세 역행
+반전숏(승 adx 19.6 vs 패 32.4, 비순환 최강 분리자), ② 셀 발사권의 방향 희석(동일 셀
+숏 71%/롱 9%가 한 검정에 뭉개져 강등 0건).
+
+**레버 선별**(`analysis/audit/probe_winrate_levers.py` — 워크포워드 시간분할):
+
+| 레버 | 후반 평가(유사 OOS) | 인샘플 상한 | 판정 |
+|---|---|---|---|
+| L3 `WRF_REV_ADX_KILL` | 발사 WR 33.3→**44.4%**·ΣR −1.5→**+1.5R**, 제거 3건 전원 패배(FN 0), 롱 무손상 | WR 38.9% | ✅ 점등 |
+| L2 `WRF_FR_BY_DIR`+공격적 강등 | 무효(전반 표본미달 — 전향적 폐루프라 소급 불가) | WR 34.8→**50%**·ΣR +3.5R | ✅ 점등(전향 작동) |
+| L1 보정 P̂ 발사(`WRF_CALIB_DISABLED=false`) | 무효 | WR 34.8→**30%로 악화**(승리 롱 제거) | ❌ 기각 — 계속 그림자 |
+
+**점등 내용**(코드 기본값은 보수 유지, `.github/workflows/*` env로 ON — Repo
+Variables로 코드 변경 없이 즉시 롤백):
+- `signal_1h.yml`: `WRF_REV_ADX_KILL=true`(반전셋업, adx백분위≥0.6 ∧ 페이드레그
+  생존≥2 → C:=min(C,−0.5), 양방향 대칭) · `WRF_FR_BY_DIR=true`(방향별 발사권 소비)
+- `calibrate.yml`: `WRF_FR_BY_DIR=true` + 공격적 강등(`MIN_DECIDED=3`·`DEMOTE_P=0.35`·
+  `PRIOR_N=6`) — 주간 재학습마다 (cell,dir) 발사권 갱신
+- 테이블 즉시 재생성: 방향강등 4건 발행 — `BR|RANGING|CHOP|short`(P=0.12)·
+  `BR|RANGING|DOWNLEG|short`(0.20)·`BR|SQUEEZE|DOWNLEG|short`(0.31)·
+  `RV|RANGING|CHOP|long`(0.31). 좋은 방향(`RV|RANGING|CHOP|short` 71%·
+  `BR|RANGING|CHOP|long`)은 live 유지 — 방향 희석 제거가 정확히 작동.
+
+**⚠️ 과적합 리스크 고지(정직성 — 알고 켠다)**:
+1. **소표본 강등**: 방향별 발사결판 3~4건 기준 강등은 잡음일 수 있다(순수 우연으로
+   3연패 확률은 나쁘지 않게 흔함). 완충: 강등돼도 후보 기록·채점은 계속되고
+   `PROMOTE_P=0.50` 히스테리시스로 증거가 쌓이면 **자동 복권**된다(영구 차단 아님).
+2. **τ=0.6 선택**: ADX 임계는 같은 기간 데이터에서 골랐다(그리드 0.5/0.6/0.7 중
+   워크포워드 최량). 완충: '닫기만'(kill-only) 설계라 새 발사를 열지 않고, 절대값이
+   아닌 자기분포 백분위(5-C)라 레짐 이동에 상대적으로 강건하다.
+3. **표본 자기상관**: 워크포워드 후반 평가 발사결판 12건 — 통계 판정이 아니라 방향
+   점검이다. 진짜 검증은 지금부터의 라이브 OOS.
+4. **공격적 FR 파라미터는 셀 단위 강등에도 적용**된다(민감도 전반 상승) — 승률↑/빈도↓
+   트레이드오프이며 목적함수(max N s.t. WR≥floor)의 제약 우선 방향과 정합.
+
+**모니터링·Gate-Out(4주)**: 주간 `routing_scorecard.py`로 ①발사 숏 WR(목표 ≥50%,
+이전 23%) ②발사 전체 WR(목표 ≥45%, 이전 34.8%) ③강등 (cell,dir)의 섀도 성적(복권
+후보 감시) ④신호 빈도(과도 축소 경계). **롤백 조건**: 2주 연속 발사 전체 WR가
+베이스라인(35%) 미만이거나 롱 성과 악화 → Repo Variables에서 해당 토글 false.
+
+**롤백 방법**: Settings→Actions→Variables에 `WRF_REV_ADX_KILL=false` /
+`WRF_FR_BY_DIR=false` / `WRF_FR_MIN_DECIDED=8` 등 — 코드 변경·재배포 불요.
+</details>
 
 <details open>
 <summary><b>[반전봉 완성봉 정렬] rev_vol_ratio·반전캔들 미완성 형성봉 참조 버그 수리 — 반전 계통 FN 근본원인 (2026-07-07)</b></summary>

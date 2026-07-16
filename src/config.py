@@ -844,6 +844,11 @@ WRF_REV_CTX_V2 = os.getenv("WRF_REV_CTX_V2", "true").lower() not in ("0", "false
 WRF_REV_IMPULSE_KILL = os.getenv("WRF_REV_IMPULSE_KILL", "true").lower() not in ("0", "false", "no", "")
 WRF_REV_IK_STRETCH   = _wrf_f("WRF_REV_IK_STRETCH", 0.6)   # |to_axis(loc_vwap)| ≥ → 극단 스트레치
 WRF_REV_IK_ALIVE     = _wrf_i("WRF_REV_IK_ALIVE", 2)       # 레그 생존 신호 ≥ n/3 → 아직 임펄스
+# [승률실험 L3] 추세강도-페이드 킬: 자기분포 adx 백분위 ≥ TAU ∧ 페이드레그 생존(IK_ALIVE
+# 재사용) → 반전 C:=min(C,-0.5). 워크포워드 근거·과적합 고지는 README "승률 개선 실험
+# 모드" 참조. 기본 OFF(구동작 보존) — 라이브 실험은 workflow env로 점등(되돌리기 가능).
+WRF_REV_ADX_KILL     = os.getenv("WRF_REV_ADX_KILL", "false").lower() not in ("0", "false", "no", "")
+WRF_REV_ADX_TAU      = _wrf_f("WRF_REV_ADX_TAU", 0.6)      # adx 자기분포 백분위 임계
 
 # ── 최소 RR 품질필터: prior 발사는 RR 이 이 값 미만이면 제외(저RR 잡신호 컷). ──
 # 보정셀(calibrated)은 학습된 승률을 존중해 이 필터를 우회한다.
