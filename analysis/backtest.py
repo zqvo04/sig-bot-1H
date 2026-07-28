@@ -22,6 +22,7 @@ CLI:
   python analysis/backtest.py --funnel         # 게이트 퍼널만
   python analysis/backtest.py --min-n 10       # 신뢰 표본 컷
   python analysis/backtest.py --ab             # [Phase 2] prior vs 보정 A/B(Brier/캘리브레이션)
+  python analysis/backtest.py --playbook       # 실행플랜 진단(fired-only OOS 기준)
 """
 from __future__ import annotations
 
@@ -119,6 +120,67 @@ def performance_table(df: pd.DataFrame, by: list, min_n: int = 1) -> pd.DataFram
     return res
 
 
+def _oos_split(df: pd.DataFrame, test_ratio: float = 0.3, embargo_h: int = 72):
+    """시간순 train/OOS 분할(+embargo). 비어 있으면 원본 반환."""
+    if df.empty or "ts" not in df.columns:
+        return df, df.iloc[0:0].copy(), {"cut_ts": None, "embargo_h": embargo_h}
+    d = df[df["ts"].notna()].sort_values("ts").reset_index(drop=True)
+    if len(d) < 2:
+        return d, d.iloc[0:0].copy(), {"cut_ts": None, "embargo_h": embargo_h}
+    ratio = min(0.9, max(0.1, float(test_ratio)))
+    cut = int(len(d) * (1.0 - ratio))
+    cut = min(len(d) - 1, max(1, cut))
+    cut_ts = d["ts"].iloc[cut - 1]
+    emb = pd.Timedelta(hours=max(0, int(embargo_h)))
+    train = d[d["ts"] <= cut_ts - emb].copy()
+    oos = d[d["ts"] >= cut_ts + emb].copy()
+    # 데이터가 매우 적어 embargo로 비면, 분할은 유지하되 embargo만 완화.
+    if train.empty or oos.empty:
+        train = d.iloc[:cut].copy()
+        oos = d.iloc[cut:].copy()
+    return train, oos, {"cut_ts": cut_ts, "embargo_h": int(embargo_h)}
+
+
+def _cell_loss_tables(decided_fired: pd.DataFrame, floor: float, min_decided: int = 8):
+    """셀×방향 손실 식별(신뢰/관찰 분리)."""
+    if decided_fired.empty:
+        z = decided_fired.iloc[0:0].copy()
+        return z, z
+    recs = []
+    keys = ["cell", "setup", "regime_1h", "btc_macro", "dir"]
+    for ks, g in decided_fired.groupby(keys):
+        c, s, r, m, d = ks
+        n = int(len(g))
+        wr = float(g["tb_win"].mean())
+        rs = g["tb_r"].dropna().astype(float)
+        recs.append({
+            "cell": c, "setup": s, "regime_1h": r, "btc_macro": m, "dir": d,
+            "decided": n, "win%": round(wr * 100, 1),
+            "exp_R": round(float(rs.mean()), 3) if len(rs) else None,
+            "reliable": bool(n >= min_decided),
+            "status": "LOSING" if (n >= min_decided and wr < floor) else ("OBSERVE" if n < min_decided else "OK"),
+        })
+    t = pd.DataFrame(recs).sort_values(["status", "decided"], ascending=[True, False]).reset_index(drop=True)
+    losers = t[t["status"] == "LOSING"].sort_values(["win%", "decided"], ascending=[True, False]).reset_index(drop=True)
+    observe = t[t["status"] == "OBSERVE"].sort_values("decided", ascending=False).reset_index(drop=True)
+    return losers, observe
+
+
+def _coverage_table(df: pd.DataFrame) -> pd.DataFrame:
+    """거시/방향 커버리지 진단."""
+    if df.empty:
+        return df
+    out = []
+    for (m, d), g in df.groupby(["btc_macro", "dir"]):
+        dec = g[g["tb_win"].notna()]
+        out.append({
+            "btc_macro": m, "dir": d, "n": len(g),
+            "decided": len(dec),
+            "win%": round(dec["tb_win"].mean() * 100, 1) if len(dec) else None,
+        })
+    return pd.DataFrame(out).sort_values(["btc_macro", "dir"]).reset_index(drop=True)
+
+
 # ════════════════════════════════════════════════════════════════════
 # 게이트 퍼널 (빈도 병목 진단)
 # ════════════════════════════════════════════════════════════════════
@@ -181,6 +243,34 @@ def _brier(p, y) -> float:
     return float(((p - y) ** 2).mean()) if len(p) else float("nan")
 
 
+def _ab_metrics(df: pd.DataFrame):
+    """A/B 비교 핵심 수치(dict). 비교 불가면 None."""
+    dec = df[df["tb_win"].notna()].copy()
+    if dec.empty:
+        return None
+    have_shadow = dec["p_cal"].notna().any() if "p_cal" in dec else False
+    if have_shadow:
+        d = dec[dec["p_cal"].notna() & dec["p_prior"].notna()].copy()
+        src = "스냅샷 기록(p_prior/p_cal)"
+    else:
+        pri, pcal = _recompute_pcal(dec)
+        dec = dec.assign(p_prior=pri, p_cal=pcal)
+        d = dec[dec["p_cal"].notna() & dec["p_prior"].notna()].copy()
+        src = "현 테이블 재계산(in-sample 주의)"
+    if d.empty:
+        return None
+    y = d["tb_win"].astype(float).values
+    bp, bc = _brier(d["p_prior"].values, y), _brier(d["p_cal"].values, y)
+    moved = int((abs(d["p_cal"] - d["p_prior"]) > 1e-4).sum())
+    return {
+        "source": src, "n": len(d), "moved": moved,
+        "win_rate": float(y.mean()),
+        "p_prior_mean": float(d["p_prior"].mean()),
+        "p_cal_mean": float(d["p_cal"].mean()),
+        "brier_prior": float(bp), "brier_cal": float(bc),
+    }
+
+
 def _recompute_pcal(df: pd.DataFrame):
     """라이브 보정 모듈 + 현 테이블로 각 후보의 (p_prior, p_cal) 재계산.
 
@@ -205,36 +295,85 @@ def _recompute_pcal(df: pd.DataFrame):
 
 def ab_report(df: pd.DataFrame) -> None:
     """결판 후보에서 prior vs 보정 P̂의 Brier·캘리브레이션·승률정렬을 비교."""
-    dec = df[df["tb_win"].notna()].copy()
     print("\n■ A/B 그림자 평가 — prior vs 보정 P̂ (결판 후보 기준)")
-    if dec.empty:
+    m = _ab_metrics(df)
+    if not m:
         print("  결판 후보 없음(경로 미성숙) — A/B 보류.")
         return
-
-    # 그림자 필드 우선, 없으면 현 테이블로 재계산
-    have_shadow = dec["p_cal"].notna().any() if "p_cal" in dec else False
-    if have_shadow:
-        d = dec[dec["p_cal"].notna() & dec["p_prior"].notna()].copy()
-        src = "스냅샷 기록(p_prior/p_cal)"
-    else:
-        pri, pcal = _recompute_pcal(dec)
-        dec = dec.assign(p_prior=pri, p_cal=pcal)
-        d = dec[dec["p_cal"].notna() & dec["p_prior"].notna()].copy()
-        src = "현 테이블 재계산(in-sample 주의)"
-
-    if d.empty:
-        print("  C/L/F·확률 결측으로 비교 불가.")
-        return
-    y = d["tb_win"].astype(float).values
-    bp, bc = _brier(d["p_prior"].values, y), _brier(d["p_cal"].values, y)
-    moved = int((abs(d["p_cal"] - d["p_prior"]) > 1e-4).sum())
-    print(f"  소스: {src} | 결판 n={len(d)} | 보정이 prior와 달라진 후보 {moved}건")
-    print(f"  실현승률={y.mean()*100:.1f}%  "
-          f"mean p_prior={d['p_prior'].mean():.4f}  mean p_cal={d['p_cal'].mean():.4f}")
+    bp, bc = m["brier_prior"], m["brier_cal"]
+    print(f"  소스: {m['source']} | 결판 n={m['n']} | 보정이 prior와 달라진 후보 {m['moved']}건")
+    print(f"  실현승률={m['win_rate']*100:.1f}%  mean p_prior={m['p_prior_mean']:.4f}  mean p_cal={m['p_cal_mean']:.4f}")
     print(f"  Brier(prior)={bp:.4f}   Brier(보정)={bc:.4f}   "
           f"Δ={bc - bp:+.4f} ({'보정 우위' if bc < bp else 'prior 우위' if bc > bp else '동률'})")
     print("  ⚠ Gate-Out 판정은 OOS(시간분할+72h embargo)·충분표본에서만 유효. "
           "현재는 표본 부족 — 인프라 검증용.")
+
+
+def playbook_report(df: pd.DataFrame, floor: float, min_n: int,
+                    oos_ratio: float, oos_embargo_h: int, calib_gate_min_decided: int) -> None:
+    """승률 개선 실행 플랜 진단 리포트(라이브 무수정·오프라인 측정 전용)."""
+    fired = df[df["fire"].fillna(False)].copy()
+    train, oos, meta = _oos_split(fired, test_ratio=oos_ratio, embargo_h=oos_embargo_h)
+    print("\n■ 실행 플랜 리포트 (fired-only OOS 기준)")
+    print(f"  fired 총 {len(fired)}건 | train {len(train)}건 / OOS {len(oos)}건"
+          f" | cut={meta.get('cut_ts')} | embargo={meta.get('embargo_h')}h")
+
+    if oos.empty:
+        print("  OOS 표본 0건 — 시간 누적 후 재측정 필요.")
+        return
+
+    dec_oos = oos[oos["tb_win"].notna()].copy()
+    print("\n[1] 승률 목표 고정: fired-only OOS 성능")
+    print(performance_table(oos, [], min_n).to_string(index=False))
+    for by in (["setup"], ["btc_macro"], ["dir"]):
+        print(f"\n  - by {by}")
+        with pd.option_context("display.max_rows", 200, "display.width", 220):
+            print(performance_table(oos, by, min_n).to_string(index=False))
+
+    print("\n[2] 셀×방향 손실 식별")
+    losers, observe = _cell_loss_tables(dec_oos, floor=floor, min_decided=min_n)
+    if losers.empty:
+        print("  신뢰표본 기준(결판≥min_n) floor 미달 셀 없음.")
+    else:
+        with pd.option_context("display.max_rows", 200, "display.width", 240):
+            print(losers.to_string(index=False))
+    print("\n  관찰대기 셀(저표본):")
+    if observe.empty:
+        print("  없음")
+    else:
+        with pd.option_context("display.max_rows", 60, "display.width", 240):
+            print(observe.head(20).to_string(index=False))
+
+    print("\n[3] 커버리지 진단 (거시×방향)")
+    cov = _coverage_table(oos)
+    if cov.empty:
+        print("  커버리지 표본 없음.")
+    else:
+        with pd.option_context("display.max_rows", 200, "display.width", 220):
+            print(cov.to_string(index=False))
+        up = cov[cov["btc_macro"] == "UPLEG"]["decided"].fillna(0).sum()
+        if up <= 0:
+            print("  ⚠ UPLEG 결판 0건: 롱측 승률 판단 왜곡 가능(커버리지 우선 보강).")
+
+    print("\n[4] 보수 운영 가이드")
+    if not losers.empty:
+        print("  · floor 미달 신뢰 셀은 fire_rights/shadow 보수 유지(상위 스위치 해제 보류).")
+    else:
+        print("  · 신뢰 셀 기준 즉시 강등 대상은 없음(현 상태 유지).")
+    if not observe.empty:
+        print("  · 저표본 셀은 개선 확정 금지, 관찰대기 유지.")
+
+    print("\n[5] 보정 실전 반영 Gate-Out 점검")
+    m = _ab_metrics(df)
+    if not m:
+        print("  · A/B 비교 불가: 결판/확률 표본 부족 → WRF_CALIB_DISABLED=true 유지 권고.")
+        return
+    delta = m["brier_cal"] - m["brier_prior"]
+    print(f"  · A/B n={m['n']} | Brier Δ(보정-prior)={delta:+.4f}")
+    if m["n"] < calib_gate_min_decided or delta >= 0:
+        print("  · 우위 불충분/불안정: prior 발사 + 보정 그림자 기록 유지 권고.")
+    else:
+        print("  · 보정 우위 신호: 반복 OOS 검증 누적 후 WRF_CALIB_DISABLED 해제 검토.")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -243,7 +382,9 @@ def ab_report(df: pd.DataFrame) -> None:
 
 def run(rows: list, by_key: str = "setup", min_n: int = 1,
         fired_only: bool = False, funnel_only: bool = False,
-        ab_only: bool = False) -> None:
+        ab_only: bool = False, playbook_only: bool = False,
+        oos_ratio: float = 0.3, oos_embargo_h: int = 72,
+        calib_gate_min_decided: int = 30) -> None:
     floor = 0.58
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
@@ -256,6 +397,12 @@ def run(rows: list, by_key: str = "setup", min_n: int = 1,
     print(_CAVEAT)
     if df.empty:
         print("\nWRF 후보(schema v3+경로) 표본 없음 — 측정할 발사 이력이 아직 없습니다.")
+        return
+
+    if playbook_only:
+        playbook_report(df, floor=floor, min_n=min_n, oos_ratio=oos_ratio,
+                        oos_embargo_h=oos_embargo_h,
+                        calib_gate_min_decided=calib_gate_min_decided)
         return
 
     if ab_only:
@@ -306,11 +453,22 @@ def main():
     ap.add_argument("--funnel", action="store_true", help="게이트 퍼널만 출력")
     ap.add_argument("--ab", action="store_true",
                     help="[Phase 2] prior vs 보정 A/B(Brier/캘리브레이션)")
+    ap.add_argument("--playbook", action="store_true",
+                    help="승률 개선 실행플랜 진단(fired-only OOS·손실셀·커버리지·Gate-Out)")
+    ap.add_argument("--oos-ratio", type=float, default=0.3,
+                    help="playbook OOS 비중(시간순 분할)")
+    ap.add_argument("--oos-embargo-h", type=int, default=72,
+                    help="playbook train/OOS 사이 embargo 시간")
+    ap.add_argument("--calib-gate-min-decided", type=int, default=30,
+                    help="보정 Gate-Out 최소 결판 표본")
     args = ap.parse_args()
 
     rows = load_snapshots(args.dir) if args.dir else load_snapshots()
     run(rows, by_key=args.by, min_n=args.min_n,
-        fired_only=args.fired_only, funnel_only=args.funnel, ab_only=args.ab)
+        fired_only=args.fired_only, funnel_only=args.funnel, ab_only=args.ab,
+        playbook_only=args.playbook, oos_ratio=args.oos_ratio,
+        oos_embargo_h=args.oos_embargo_h,
+        calib_gate_min_decided=args.calib_gate_min_decided)
 
 
 if __name__ == "__main__":

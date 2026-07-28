@@ -9,6 +9,7 @@
 |------|------|
 | `build_dataset.py` | JSONL → 평탄 DataFrame + 경로 파생 라벨(수익률·MFE/MAE·경로효율·TP/SL 재생) |
 | `situation_report.py` | 지문/레짐별 경로 분포 집계 리포트 (+통계 주의 머리말) |
+| `backtest.py` | 후보 리플레이 성능/퍼널 + `--playbook`(fired-only OOS·손실셀·커버리지·Gate-Out 점검) |
 
 ## 사용
 ```bash
@@ -23,6 +24,12 @@ python analysis/situation_report.py
 
 # 전체 지문 키 기준 + TP/SL 재생(롱, 3.6%/2.0% = 1.8R)
 python analysis/situation_report.py --by key --sim long --tp 0.036 --sl 0.020
+
+# WRF 백테스트(발사 후보 근사)
+python analysis/backtest.py --fired-only --by setup
+
+# 승률 개선 실행플랜 진단(표준 지표: fired-only OOS)
+python analysis/backtest.py --playbook --min-n 8 --oos-ratio 0.3 --oos-embargo-h 72
 ```
 
 ## 라벨 정의 (경로에서 파생)
