@@ -88,7 +88,11 @@ SIGNALS_PROPS = {
     "C": {"number": {}}, "L": {"number": {}}, "F": {"number": {}},
     "MFE R": {"number": {}}, "MAE R": {"number": {}}, "Bars To Exit": {"number": {}},
     "Exit Price": {"number": {}}, "R Multiple": {"number": {}},
-    "Exit Reason": {"select": {"options": [{"name": n} for n in ("TP_HIT", "SL_HIT", "TIMEOUT", "EXPIRED_WIN", "EXPIRED_LOSS", "OPEN")]}},
+    # [개선안4-c] Trail Dist — TF trail_dist(절대가격 거리) 기록. 있으면 evaluate_open_signals가
+    # 고정 TP/SL 대신 라이브·오프라인 동일 샹들리에 트레일 규칙으로 채점(WRF_TF_TRAIL_LIVE_EXEC).
+    "Trail Dist": {"number": {}},
+    "Exit Reason": {"select": {"options": [{"name": n} for n in
+        ("TP_HIT", "SL_HIT", "TRAIL_STOP", "TIMEOUT", "EXPIRED_WIN", "EXPIRED_LOSS", "OPEN")]}},
     "Signaled At": {"date": {}}, "Resolved At": {"date": {}},
     "Reason": {"rich_text": {}}, "Signal ID": {"rich_text": {}},
 }
@@ -266,6 +270,8 @@ def log_signal(cand: dict, engine_out: dict) -> bool:
             "Exit Reason": _p_sel("OPEN"), "Signaled At": _p_date_kst(engine_out["ts"]),
             "Reason": _p_txt(cand.get("reason", "")), "Signal ID": _p_txt(sid),
         }
+        if cand.get("trail_dist"):
+            props["Trail Dist"] = _p_num(cand["trail_dist"])
         r = _request("POST", "/pages", {"parent": {"database_id": db}, "properties": props})
         if r:
             logger.info(f"[NotionWRF] 🔔 신호 기록 {name}")
@@ -322,6 +328,59 @@ def _eval_signal(direction, entry, tp, sl, t_max, candles, signaled_dt, now):
     return None  # 미성숙
 
 
+def _eval_signal_trailing(direction, entry, sl, trail_dist, t_max, candles, signaled_dt, now):
+    """[개선안4-c] TF 트레일링 실집행 채점 — labels._trailing_barrier와 동일한 샹들리에
+    규칙(초기 스톱=sl, 이후 유리방향 HWM∓trail_dist로 단조 래칫)을 라이브 원장에도 적용해
+    trail_dist 주석이 라이브 판정에 반영되지 않던 불일치(라이브 고정TP ↔ 오프라인 트레일)를
+    해소한다. 반환 형식은 _eval_signal과 동일(status·reason·mfe·mae·bars·rdt·exit_price·r_mult)."""
+    long = direction.upper() == "LONG"
+    r_dist = abs(entry - sl)
+    if r_dist <= 0 or trail_dist <= 0:
+        return None
+    fut = candles[candles.index > signaled_dt]
+    if len(fut) == 0:
+        return None
+    mfe = mae = 0.0
+    stop = sl
+    hwm = entry
+    for i, (_, row) in enumerate(fut.iterrows()):
+        if i >= int(t_max):
+            break
+        hi, lo = float(row["high"]), float(row["low"])
+        fav = (hi - entry) if long else (entry - lo)
+        adv = (entry - lo) if long else (hi - entry)
+        mfe = max(mfe, fav / r_dist)
+        mae = max(mae, adv / r_dist)
+        rdt = row.name.isoformat()
+        if long:
+            hwm = max(hwm, hi)
+            stop = max(stop, hwm - trail_dist)
+            hit = lo <= stop
+        else:
+            hwm = min(hwm, lo)
+            stop = min(stop, hwm + trail_dist)
+            hit = hi >= stop
+        if hit:
+            r_mult = ((stop - entry) if long else (entry - stop)) / r_dist
+            return {"status": "WIN" if r_mult > 0 else "LOSS",
+                    "reason": "TRAIL_STOP" if r_mult > 0 else "SL_HIT",
+                    "mfe": mfe, "mae": mae, "bars": i + 1, "rdt": rdt,
+                    "exit_price": stop, "r_mult": round(r_mult, 4)}
+    if len(fut) >= int(t_max):
+        last = fut.iloc[int(t_max) - 1]
+        px = float(last["close"])
+        realized = (px - entry) if long else (entry - px)
+        win = realized >= 0
+        status = ("SCRATCH" if getattr(config, "WRF_LEDGER_SCRATCH_EXPIRED", True)
+                  else ("WIN" if win else "LOSS"))
+        return {"status": status,
+                "reason": "EXPIRED_WIN" if win else "EXPIRED_LOSS",
+                "mfe": mfe, "mae": mae, "bars": int(t_max),
+                "rdt": last.name.isoformat(), "exit_price": round(px, 8),
+                "r_mult": round(realized / r_dist, 4) if r_dist else 0.0}
+    return None  # 미성숙
+
+
 def evaluate_open_signals(symbol: str, df_1h) -> int:
     """OPEN 신호를 캔들로 판정 → Status/Exit Reason/MFE/MAE/Bars/Resolved 갱신."""
     if not enabled():
@@ -343,6 +402,7 @@ def evaluate_open_signals(symbol: str, df_1h) -> int:
             direction = _get_sel(p, "Direction")
             entry, tp, sl = _get_num(p, "Entry"), _get_num(p, "TP"), _get_num(p, "SL")
             t_max = _get_num(p, "T_max") or 48
+            trail_dist = _get_num(p, "Trail Dist")
             sig_at = _get_date(p, "Signaled At")
             if not all([direction, entry, tp, sl, sig_at]):
                 continue
@@ -350,7 +410,13 @@ def evaluate_open_signals(symbol: str, df_1h) -> int:
             sdt = pd.Timestamp(sig_at)
             if sdt.tzinfo is None:
                 sdt = sdt.tz_localize(timezone.utc)
-            out = _eval_signal(direction, entry, tp, sl, t_max, df_1h, sdt, now)
+            # [개선안4-c] trail_dist가 실려 있으면(TF) 고정 TP 대신 라이브도 오프라인과
+            # 동일한 샹들리에 트레일 규칙으로 채점 — 라이브·오프라인 채점 불일치 해소.
+            if trail_dist and getattr(config, "WRF_TF_TRAIL_LIVE_EXEC", True):
+                out = _eval_signal_trailing(direction, entry, sl, trail_dist, t_max,
+                                            df_1h, sdt, now)
+            else:
+                out = _eval_signal(direction, entry, tp, sl, t_max, df_1h, sdt, now)
             if not out:
                 continue
             _request("PATCH", f"/pages/{page['id']}", {"properties": {

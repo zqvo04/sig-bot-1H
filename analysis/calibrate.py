@@ -36,6 +36,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
+import numpy as np
 import pandas as pd
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -83,6 +84,116 @@ def _shrink(wr_obs: float, n_eff: float, wr_parent: float, k: float) -> float:
 
 
 # ════════════════════════════════════════════════════════════════════
+# [개선안2] prior 계수 오프라인 재적합 — 릿지 로지스틱(IRLS/뉴턴법), 부호제약 wC/wL/wF≥0
+# ════════════════════════════════════════════════════════════════════
+# prior가 실측 승률과 어긋난 채(캡 근처에 다수 후보가 몰려 해상도 소멸) 고정돼 있던
+# 문제를 오프라인에서 재적합해 교정한다. 라이브는 여전히 학습하지 않는다(5-B) —
+# 재적합은 여기(오프라인 잡)에서만 수행하고, 결과 계수만 테이블에 발행해 라이브가
+# 읽는다. 절편(셋업별 b0)은 약한 정규화, 기울기(wC/wL/wF)는 강한 릿지 + 매 반복 후
+# 0으로 투영(음수 방향 반전 방지) — 소표본에서 축 부호가 뒤집히는 과적합을 차단한다.
+
+def _prior_refit_fit(d: pd.DataFrame, ridge: float, iters: int = 50) -> dict:
+    """릿지 로지스틱 IRLS. d는 setup/C/L/F/tb_win 컬럼을 갖는 학습 서브셋."""
+    setups = sorted(d["setup"].unique().tolist())
+    k = len(setups)
+    idx = {s: i for i, s in enumerate(setups)}
+    n = len(d)
+    X = np.zeros((n, k + 3))
+    for row_i, s in enumerate(d["setup"].to_numpy()):
+        X[row_i, idx[s]] = 1.0
+    X[:, k] = d["C"].to_numpy(dtype=float)
+    X[:, k + 1] = d["L"].to_numpy(dtype=float)
+    X[:, k + 2] = d["F"].to_numpy(dtype=float)
+    y = d["tb_win"].to_numpy(dtype=float)
+
+    theta = np.zeros(k + 3)
+    b0_cfg = getattr(config, "WRF_PRIOR_B0", {})
+    for s, i in idx.items():
+        theta[i] = b0_cfg.get(s, -0.5)
+    theta[k:] = 1.0
+
+    lam = np.full(k + 3, ridge)
+    lam[:k] = min(1.0, ridge)  # 절편(셋업 base-rate)은 약한 정규화만
+
+    for _ in range(iters):
+        z = np.clip(X.dot(theta), -35, 35)
+        p = 1.0 / (1.0 + np.exp(-z))
+        w = np.clip(p * (1 - p), 1e-6, None)
+        grad = X.T.dot(p - y) + lam * theta
+        H = (X * w[:, None]).T.dot(X) + np.diag(lam)
+        try:
+            step = np.linalg.solve(H, grad)
+        except np.linalg.LinAlgError:
+            break
+        theta = theta - step
+        theta[k:] = np.clip(theta[k:], 0.0, None)  # 부호제약: wC,wL,wF ≥ 0
+        if np.max(np.abs(step)) < 1e-6:
+            break
+
+    return {"b0": {s: round(float(theta[i]), 4) for s, i in idx.items()},
+            "wC": round(float(theta[k]), 4), "wL": round(float(theta[k + 1]), 4),
+            "wF": round(float(theta[k + 2]), 4), "n_train": int(n)}
+
+
+def _prior_score(coefs: dict, d: pd.DataFrame):
+    """coefs(b0/wC/wL/wF)로 d에 대한 (Brier, log-loss) 계산."""
+    b0_map = coefs.get("b0") or {}
+    default_b0 = -0.5
+    z = d["setup"].map(lambda s: b0_map.get(s, default_b0)).to_numpy(dtype=float)
+    z = z + coefs["wC"] * d["C"].to_numpy(dtype=float) \
+          + coefs["wL"] * d["L"].to_numpy(dtype=float) \
+          + coefs["wF"] * d["F"].to_numpy(dtype=float)
+    p = 1.0 / (1.0 + np.exp(-np.clip(z, -35, 35)))
+    y = d["tb_win"].to_numpy(dtype=float)
+    p_c = np.clip(p, 1e-6, 1 - 1e-6)
+    brier = float(np.mean((p - y) ** 2))
+    logloss = float(-np.mean(y * np.log(p_c) + (1 - y) * np.log(1 - p_c)))
+    return brier, logloss
+
+
+def fit_prior_refit(dec: pd.DataFrame) -> dict:
+    """결판 후보 전량에서 prior 계수를 재적합. 최근 WRF_PRIOR_REFIT_HOLDOUT 비율은
+    적합에서 제외하고 홀드아웃 진단(config 대비 Brier/log-loss)에만 쓴다. 표본 부족·
+    실패 시 None(라이브는 calibration._prior_coefs 폴백으로 config 상수를 계속 사용)."""
+    ridge = getattr(config, "WRF_PRIOR_REFIT_RIDGE", 8.0)
+    holdout_frac = getattr(config, "WRF_PRIOR_REFIT_HOLDOUT", 0.3)
+    min_n = getattr(config, "WRF_PRIOR_REFIT_MIN_N", 40)
+    d = dec.dropna(subset=["C", "L", "F", "tb_win", "setup"]).sort_values("ts").reset_index(drop=True)
+    if len(d) < min_n:
+        return None
+    n_hold = int(len(d) * holdout_frac)
+    train = d.iloc[:len(d) - n_hold] if n_hold > 0 else d
+    hold = d.iloc[len(d) - n_hold:] if n_hold > 0 else d.iloc[0:0]
+    if len(train) < min_n or train["setup"].nunique() < 1:
+        return None
+    try:
+        fit = _prior_refit_fit(train, ridge)
+    except Exception:
+        return None
+
+    diagnostics = {"train_n": int(len(train)), "holdout_n": int(len(hold))}
+    if len(hold) >= 10:
+        try:
+            cfg_coefs = {"b0": getattr(config, "WRF_PRIOR_B0", {}),
+                        "wC": getattr(config, "WRF_PRIOR_WC", 1.1),
+                        "wL": getattr(config, "WRF_PRIOR_WL", 1.3),
+                        "wF": getattr(config, "WRF_PRIOR_WF", 1.2)}
+            brier_refit, logloss_refit = _prior_score(fit, hold)
+            brier_cfg, logloss_cfg = _prior_score(cfg_coefs, hold)
+            diagnostics.update({
+                "brier_refit": round(brier_refit, 4), "brier_config": round(brier_cfg, 4),
+                "logloss_refit": round(logloss_refit, 4), "logloss_config": round(logloss_cfg, 4),
+                "improved": bool(brier_refit < brier_cfg),
+            })
+        except Exception:
+            pass
+    fit["ridge"] = ridge
+    fit["fit_at"] = datetime.now(timezone.utc).isoformat()
+    fit["diagnostics"] = diagnostics
+    return fit
+
+
+# ════════════════════════════════════════════════════════════════════
 # [Phase A] 발사권(fire-rights) 게이트 — ex-post 플로어 폐루프
 # ════════════════════════════════════════════════════════════════════
 # 목적함수 max N s.t. WR≥floor 의 제약을 실현 결판으로 강제한다: 셀별 Beta-Binomial
@@ -126,6 +237,12 @@ def _load_prev_rights(path: str) -> dict:
             out[k] = v.get("fire_rights") or "live"
             for d, r in (v.get("fire_rights_by_dir") or {}).items():
                 out[f"{k}|{d}"] = r or "live"
+        # [개선안3] 계층 발사권 히스테리시스 — 별도 접두 키로 셀/방향 키와 충돌 방지.
+        hier = prev.get("fire_rights_hier") or {}
+        for hk, v in (hier.get("base_dir") or {}).items():
+            out[f"__base_dir__{hk}"] = v.get("fire_rights") or "live"
+        for hk, v in (hier.get("setup_dir") or {}).items():
+            out[f"__setup_dir__{hk}"] = v.get("fire_rights") or "live"
         return out
     except Exception:
         return {}
@@ -207,6 +324,15 @@ def calibrate(data_dir: str, prev_table_path: str = None) -> dict:
     dec["btc_macro"] = dec["btc_macro"].astype(str)
     dec["base"] = dec["setup"].astype(str) + "|" + dec["regime_1h"].astype(str)
 
+    # [개선안2] prior 계수 오프라인 재적합(활성화 시). 결과는 report["prior_refit"]에
+    # 발행되고 라이브 calibration._prior_coefs가 읽는다 — 실패/미달 시 None → config 폴백.
+    prior_refit = None
+    if getattr(config, "WRF_PRIOR_REFIT_ENABLED", False):
+        try:
+            prior_refit = fit_prior_refit(dec)
+        except Exception:
+            prior_refit = None
+
     # ── 계층 수축 cascade: GLOBAL → SETUP → BASE ──────────────────────
     wr_global = float(dec["tb_win"].mean())
 
@@ -244,8 +370,12 @@ def calibrate(data_dir: str, prev_table_path: str = None) -> dict:
         parent = wr_base.get(base, wr_setup.get(setup, wr_global))
         wr_pooled = _shrink(wr_obs, n_ind, parent, k_cell)
 
-        # 이 셀 결판후보들의 prior raw 평균(δ 기준선; 라이브 base와 동일 정의)
-        priors = [live_calib.prior_raw_p(setup, float(c), float(l), float(f))
+        # 이 셀 결판후보들의 prior raw 평균(δ 기준선; 라이브 base와 동일 정의).
+        # [개선안2 정합] prior_refit이 활성화돼 있으면 δ_eff도 재적합 prior를 기준선으로
+        # 계산해야 라이브(z=refit_logodds+δ_eff)와 오프라인 δ 산출 기준이 일치한다 —
+        # 기준선이 갈리면 같은 δ_eff가 다른 prior 위에서 이중보정되는 불일치가 생긴다.
+        _refit_table = {"prior_refit": prior_refit} if prior_refit else None
+        priors = [live_calib.prior_raw_p(setup, float(c), float(l), float(f), _refit_table)
                   for c, l, f in zip(g["C"], g["L"], g["F"])
                   if c is not None and l is not None and f is not None]
         p_prior_mean = sum(priors) / len(priors) if priors else None
@@ -306,6 +436,35 @@ def calibrate(data_dir: str, prev_table_path: str = None) -> dict:
     n_shadow_dir = sum(1 for c in cells.values()
                        for v in (c.get("fire_rights_by_dir") or {}).values()
                        if v.get("fire_rights") == "shadow")
+
+    # [개선안3] 계층 발사권 — 셀 표본이 희소해(28셀 중 n_fire_decided≥8 셀 실측 1개)
+    # 강등이 사실상 불가능하던 문제 완화. (setup,regime_1h,dir) / (setup,dir) 층에서
+    # '발사 ∪ 격리-미발사' 모집단을 재집계해 라이브가 셀·방향 표본 부족 시 폴백한다.
+    # 예측 파라미터 학습이 아니라 발사권(박탈/복권)만 조정 — 과적합 무관(5-B 원칙 준용).
+    fire_rights_hier = {"base_dir": {}, "setup_dir": {}}
+    n_shadow_hier = 0
+    if getattr(config, "WRF_FR_BY_DIR", True):
+        dec["_fire_ok"] = dec.apply(_would_fire, axis=1)
+        fire_pop = dec[dec["_fire_ok"]]
+        for (s, r, d), g in fire_pop.groupby(["setup", "regime_1h", "dir"]):
+            w = float(g["tb_win"].sum())
+            n_d = int(len(g))
+            pg = _p_wr_ge_floor(w, n_d - w, floor, fr_prior_n)
+            hk = f"{s}|{r}|{d}"
+            rights = _fire_rights(pg, n_d, prev_rights.get(f"__base_dir__{hk}", "live"))
+            fire_rights_hier["base_dir"][hk] = {
+                "fire_rights": rights, "n_fire_decided": n_d, "p_wr_ge_floor": round(pg, 4)}
+            n_shadow_hier += int(rights == "shadow")
+        for (s, d), g in fire_pop.groupby(["setup", "dir"]):
+            w = float(g["tb_win"].sum())
+            n_d = int(len(g))
+            pg = _p_wr_ge_floor(w, n_d - w, floor, fr_prior_n)
+            hk = f"{s}|{d}"
+            rights = _fire_rights(pg, n_d, prev_rights.get(f"__setup_dir__{hk}", "live"))
+            fire_rights_hier["setup_dir"][hk] = {
+                "fire_rights": rights, "n_fire_decided": n_d, "p_wr_ge_floor": round(pg, 4)}
+            n_shadow_hier += int(rights == "shadow")
+
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "schema_version": getattr(config, "WRF_SCHEMA_VERSION", 3),
@@ -314,9 +473,12 @@ def calibrate(data_dir: str, prev_table_path: str = None) -> dict:
         "setups": {s: round(v, 4) for s, v in wr_setup.items()},
         "bases": {b: round(v, 4) for b, v in wr_base.items()},
         "n_cells": len(cells), "n_calibrated": n_cal, "n_shadow": n_shadow,
-        "n_shadow_dir": n_shadow_dir,
-        "cells": cells, "drift": drift,
+        "n_shadow_dir": n_shadow_dir, "n_shadow_hier": n_shadow_hier,
+        "cells": cells, "drift": drift, "fire_rights_hier": fire_rights_hier,
     }
+    if prior_refit:
+        report["prior_refit"] = {k: v for k, v in prior_refit.items() if k != "diagnostics"}
+        report["prior_refit_diagnostics"] = prior_refit.get("diagnostics", {})
     return report
 
 
@@ -347,10 +509,19 @@ def main():
     g = rep.get("global", {})
     print(f"보정(부분풀링) 완료: {rep.get('n_cells', 0)}셀 중 보정활성 "
           f"{rep.get('n_calibrated', 0)}셀 · 발사권강등 {rep.get('n_shadow', 0)}셀"
-          f"(방향분리 {rep.get('n_shadow_dir', 0)}) "
+          f"(방향분리 {rep.get('n_shadow_dir', 0)}, 계층폴백 {rep.get('n_shadow_hier', 0)}) "
           f"(전역승률 {g.get('win_rate')}, 결판 {g.get('n_decided', 0)})")
     if rep.get("note"):
         print(f"  · {rep['note']}")
+    pr = rep.get("prior_refit")
+    if pr:
+        diag = rep.get("prior_refit_diagnostics", {})
+        print(f"  [개선안2] prior 재적합: n_train={pr.get('n_train')} "
+              f"wC={pr.get('wC')} wL={pr.get('wL')} wF={pr.get('wF')} b0={pr.get('b0')}")
+        if diag.get("holdout_n"):
+            print(f"    홀드아웃(n={diag['holdout_n']}): Brier refit={diag.get('brier_refit')} "
+                  f"vs config={diag.get('brier_config')} · logloss refit={diag.get('logloss_refit')} "
+                  f"vs config={diag.get('logloss_config')} · 개선={diag.get('improved')}")
     for cell, c in sorted(rep.get("cells", {}).items(),
                           key=lambda kv: -abs(kv[1].get("delta_eff", 0))):
         flag = "✅보정" if c["p_source"] == "calibrated" else "·prior"

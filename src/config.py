@@ -802,10 +802,36 @@ WRF_PRIOR_MIN_AXIS = _wrf_f("WRF_PRIOR_MIN_AXIS", 0.10)
 WRF_PRIOR_MIN_AXIS_SOFT   = os.getenv("WRF_PRIOR_MIN_AXIS_SOFT", "true").lower() not in ("0", "false", "no", "")
 WRF_PRIOR_MIN_AXIS_LAMBDA = _wrf_f("WRF_PRIOR_MIN_AXIS_LAMBDA", 2.5)  # 로그오즈 페널티 기울기
 
-# ── L0 VETO 하드캡 (≈4) ──────────────────────────────────────────────
+# [개선안2, docs/DIAGNOSTIC_2026-07.md §6] prior 계수 오프라인 재적합.
+# calibrate.py가 결판 후보 전량(purged embargo + ridge + 부호제약 w≥0)으로 b0/wC/wL/wF를
+# 재적합해 calibration_table.json에 "prior_refit" 블록으로 발행한다. 활성화 시
+# calibration._prior_logodds가 이 블록을 우선 소비하고, 블록 부재 시 위 config 상수로
+# 자동 폴백(콜드스타트 안전 — 5-B: 라이브는 여전히 학습하지 않고 읽기만 한다).
+WRF_PRIOR_REFIT_ENABLED = os.getenv("WRF_PRIOR_REFIT_ENABLED", "true").lower() not in ("0", "false", "no", "")
+WRF_PRIOR_REFIT_RIDGE   = _wrf_f("WRF_PRIOR_REFIT_RIDGE", 8.0)      # L2 정규화 강도
+WRF_PRIOR_REFIT_HOLDOUT = _wrf_f("WRF_PRIOR_REFIT_HOLDOUT", 0.3)    # 최근 비율 홀드아웃(진단 전용, 적합 제외)
+WRF_PRIOR_REFIT_MIN_N   = _wrf_i("WRF_PRIOR_REFIT_MIN_N", 40)       # 재적합 최소 결판수(미달 시 config 폴백)
+# prior cap(0.65)을 "확률 상한"에서 "사이징 상한"으로 이관 — 다수 후보가 캡 한 점에
+# 몰려 P̂ 해상도가 소멸하던 문제(실측: 32/59가 cap 고정, corr(P̂,R)=-0.148) 완화.
+# True면 prior_p_hat()이 발사판정·EV·서열화에 쓰이는 값은 캡을 걸지 않고 반환하고,
+# engine._size_from_p 가 사이징 계산에서만 WRF_PRIOR_CAP으로 클립한다.
+WRF_PRIOR_CAP_SIZING_ONLY = os.getenv("WRF_PRIOR_CAP_SIZING_ONLY", "true").lower() not in ("0", "false", "no", "")
+
+# ── L0 VETO 하드캡 (≈4+1) ────────────────────────────────────────────
 WRF_VETO_SPREAD_BP    = _wrf_f("WRF_VETO_SPREAD_BP", 8.0)    # 스프레드 폭발(bp)
 WRF_VETO_DATA_AGE_MIN = _wrf_f("WRF_VETO_DATA_AGE_MIN", 90)  # 데이터 신선도(분)
 WRF_VETO_LIQ_CASCADE  = _wrf_i("WRF_VETO_LIQ_CASCADE", 5)    # 진입 정면 대량청산 캐스케이드 건수
+# [개선안1, docs/DIAGNOSTIC_2026-07.md §6] 방향 드리프트 정면충돌(⑤). btc_macro(BTC 7D
+# 절대% 임계)가 CHOP 태그일 때 방향 베토가 전 구간 무작동이던 공백(실측: 결판 75%가
+# CHOP)을 메운다. 심볼 자기 드리프트의 자기분포 백분위 기반(5-C: 절대임계 아님).
+# 추종/레인지 셋업(TF/BO/TC/MR)은 일반 임계, 반전 셋업(RV/BR — MACRO_HEADON 면제 대상)은
+# 더 극단적인 임계만 차단(반전은 본질적으로 역행이므로 완만한 역행까지 막으면 엣지 소멸).
+WRF_DRIFT_VETO   = os.getenv("WRF_DRIFT_VETO", "true").lower() not in ("0", "false", "no", "")
+WRF_DRIFT_WINDOW = _wrf_i("WRF_DRIFT_WINDOW", 42)     # 드리프트 측정 lookback(1H 봉 수, ≈4H×10~)
+WRF_DRIFT_LO     = _wrf_f("WRF_DRIFT_LO", 0.10)       # 롱 차단: 드리프트 백분위 ≤ (추종/레인지 셋업)
+WRF_DRIFT_HI     = _wrf_f("WRF_DRIFT_HI", 0.90)       # 숏 차단: 드리프트 백분위 ≥
+WRF_DRIFT_REV_LO = _wrf_f("WRF_DRIFT_REV_LO", 0.03)   # 롱 차단(반전 RV/BR): 더 극단만
+WRF_DRIFT_REV_HI = _wrf_f("WRF_DRIFT_REV_HI", 0.97)   # 숏 차단(반전 RV/BR): 더 극단만
 
 # ── 셋업별 타임스톱(시간) — §4 사양. BR=RV 동일(분리 이관·동작 보존) ──────
 WRF_TMAX = {"TF": 48, "BO": 36, "MR": 24, "RV": 48, "BR": 48, "TC": 48}
@@ -863,6 +889,20 @@ WRF_EV_RR_FLOOR = _wrf_f("WRF_EV_RR_FLOOR", 0.85)  # RR 하한(EV 통과해도 �
 # 0.0 으로 두면 구조선 바로 밑(버퍼만) = 구동작 근사(되돌리기 토글).
 WRF_SL_ATR_CUSHION = _wrf_f("WRF_SL_ATR_CUSHION", 1.5)
 
+# [개선안4, docs/DIAGNOSTIC_2026-07.md §6] TF/RV/BR TP 상한 — TP=SL거리×고정RR이
+# 변동성이 클수록 도달 불가능해지던 문제(실측: TF TP=진입가 6.4~8.7%인데 평균 MFE
+# 0.93R) 완화. 심볼 자기 N봉 순방향 유리이동 분포의 Q백분위(ATR배수, 5-C 백분위)로
+# tp_dist 상한을 건다 — 절대임계 아님, 변동성·심볼에 자동 적응.
+WRF_TP_MFE_CAP    = os.getenv("WRF_TP_MFE_CAP", "true").lower() not in ("0", "false", "no", "")
+WRF_TP_MFE_Q      = _wrf_f("WRF_TP_MFE_Q", 0.65)     # 유리이동 분포 백분위(반사실 스윕상 평평구간 중앙)
+WRF_TP_MFE_HORIZON = _wrf_i("WRF_TP_MFE_HORIZON", 48) # 순방향 윈도(1H 봉) — 대표 보유기간
+WRF_TP_MFE_MINN   = _wrf_i("WRF_TP_MFE_MINN", 20)     # 분포 산출 최소표본(미달 시 상한 미적용)
+
+# [개선안4-c] TF 트레일링 실제 채점 — 라이브 trail_dist 주석이 원장 채점(_eval_signal)에
+# 반영되지 않아 라이브·오프라인 규칙이 갈리던 불일치 해소(labels._trailing_barrier와 동일
+# 샹들리에 규칙). trail_dist가 없는 후보는 기존 고정 TP/SL 채점 그대로(무변경).
+WRF_TF_TRAIL_LIVE_EXEC = os.getenv("WRF_TF_TRAIL_LIVE_EXEC", "true").lower() not in ("0", "false", "no", "")
+
 # ── [G4] MR(횡보반전) 박스 기하학 TP/SL ──────────────────────────────────
 # TP = 박스 중심선(mid, 승률우선) 또는 반대편 경계(opposite, RR우선).
 # SL = 박스 경계 외곽 ∓ ATR×cushion. 진입이 경계에 가까울수록 RR↑(미달은 MIN_RR 컷).
@@ -884,6 +924,11 @@ WRF_RV_SOFT_PRECOND   = os.getenv("WRF_RV_SOFT_PRECOND", "true").lower() not in 
 WRF_RV_SOFT_NO_CHOCH_MULT  = _wrf_f("WRF_RV_SOFT_NO_CHOCH_MULT", 0.82)  # CHoCH 부재 시 L 감쇠
 WRF_RV_SOFT_NO_RETEST_MULT = _wrf_f("WRF_RV_SOFT_NO_RETEST_MULT", 0.90) # 리테스트 부재 시 L 감쇠
 WRF_RV_SOFT_MIN_CONFIRMS   = _wrf_i("WRF_RV_SOFT_MIN_CONFIRMS", 2)      # 소프트모드 최소 확인수(완화)
+# [개선안5-a, docs/DIAGNOSTIC_2026-07.md §6] soft precond가 CHoCH·리테스트를 완전히
+# L감쇠로만 흡수해 구조확증이 전무한 "소진우위" 후보까지 통과시키던 문제(실측: CHoCH·
+# 리테스트 둘 다 없는 확인수 조합 0승 3패). (CHoCH ∨ 리테스트) 중 최소 하나는 게이트로
+# 복원 — 전면 하드복귀(둘 다 필수)보다 표본 손실이 적으면서 0승 코호트를 정확히 제거.
+WRF_RV_SOFT_REQUIRE_STRUCT = os.getenv("WRF_RV_SOFT_REQUIRE_STRUCT", "true").lower() not in ("0", "false", "no", "")
 # [④트리거 시간창] 반전캔들(pin/engulf)은 '점 사건'이라 마지막 완성봉(-2) 딱 한 시점에만
 # 존재해야 후보가 됐다 — 반면 소진·극단·zone은 '지속 상태'(수시간 유지)다. 점 사건이 상태와
 # 정확히 같은 봉에 정렬돼야만 후보가 되니 ∏pᵢ로 소멸(무후보 94%의 한 축). 이 값>0이면
@@ -979,6 +1024,12 @@ WRF_BO_FUND_BONUS = _wrf_f("WRF_BO_FUND_BONUS", 0.15)  # 컨트래리언 시 L �
 # BO precond(돌파종가+거래량스파이크+리테스트유지★ 2봉패턴)가 이미 강게이트라
 # 노이즈 위험 낮음. False 로 두면 구동작(SQUEEZE/EXPLOSIVE에서만 BO).
 WRF_BO_IN_RANGING = os.getenv("WRF_BO_IN_RANGING", "true").lower() not in ("0", "false", "no", "")
+# [개선안5-c, docs/DIAGNOSTIC_2026-07.md §6] RANGING 안의 BO는 방향에 따라 극명히
+# 갈렸다(실측: LONG 7건 avgR +1.41 vs SHORT 12건 avgR -0.57, SL 75%). 4H가 RANGING이고
+# 4H EMA가 돌파 반대방향으로 정렬돼 있으면(=4H 구조가 이 돌파를 지지하지 않음) 후보
+# 자체를 생성하지 않는다. 롱/숏 부호만 반전한 완전 대칭(5-D) — LONG BO×RANGING(수익
+# 코호트)은 그대로 두고 SHORT BO×RANGING(손실 코호트)만 정확히 겨냥해 제거.
+WRF_BO_DIR_ALIGN = os.getenv("WRF_BO_DIR_ALIGN", "true").lower() not in ("0", "false", "no", "")
 
 # ── [연결결함#2] RV(전환) 거시 베토 면제: RV는 CHoCH+리테스트+소진을 이미 강제 ──
 # (=구조붕괴 증거). 거시 정면충돌 하드베토가 전환셋업 본분을 무력화 → RV만 면제하고
@@ -1119,13 +1170,24 @@ WRF_FR_MIN_DECIDED = _wrf_i("WRF_FR_MIN_DECIDED", 8)    # 강등 최소 결판�
 # vs 롱9%)면 셀 단위 검정은 희석돼 강등 0건이 된다(실측). 방향별 검정은 나쁜 방향만
 # shadow 강등, 좋은 방향은 live 유지. δ_eff 학습·셀 키·라이브 소비경로는 무손상(5-B).
 # 라이브 evaluate는 이 필드가 있을 때만 방향별 조회, 없으면 셀 단위 폴백(되돌리기 가능).
-WRF_FR_BY_DIR      = os.getenv("WRF_FR_BY_DIR", "false").lower() not in ("0", "false", "no", "")
+WRF_FR_BY_DIR      = os.getenv("WRF_FR_BY_DIR", "true").lower() not in ("0", "false", "no", "")
+# [개선안3, docs/DIAGNOSTIC_2026-07.md §6] 계층 발사권 — 셀 표본이 희소해(28셀 중
+# n_fire_decided≥8인 셀이 실측 1개) 강등이 사실상 발동 불가하던 문제(n_shadow=0) 완화.
+# (setup,dir)→(setup,regime_1h,dir)→(cell,dir) 순으로 가장 구체적이면서 결판수가
+# WRF_FR_HIER_MIN_DECIDED 이상인 층에서 발사권을 발행한다. 예측 파라미터 학습이 아니라
+# 발사권(박탈/복권)만 조정하므로 과적합 무관(5-B와 동일 원칙). 셀 키(5-H)는 불변 —
+# 계층은 검정 집계 층일 뿐 δ_eff 학습 키를 늘리지 않는다.
+WRF_FR_HIER_ENABLED    = os.getenv("WRF_FR_HIER_ENABLED", "true").lower() not in ("0", "false", "no", "")
+WRF_FR_HIER_MIN_DECIDED = _wrf_i("WRF_FR_HIER_MIN_DECIDED", 6)  # 계층 폴백 최소 결판수(셀보다 완화)
 
 # ── 섀도 셋업: 라이브 발사권이 없는 셋업(기록·채점만) ─────────────────────
 # [Phase A] BR(밴드반전)은 검증 없는 점등(5-I 위반)으로 라이브에 승격됐다가 실측 승률
 # 미달(결판 15건 승률 40% < floor 0.58)로 섀도 원상복귀. 재점등은 발사권 게이트 통과 +
 # 사람 심사 후 이 목록에서 제거(env WRF_SHADOW_SETUPS=""=전부 라이브 → 구동작 복귀).
-WRF_SHADOW_SETUPS = {s.strip() for s in os.getenv("WRF_SHADOW_SETUPS", "BR,TC").split(",") if s.strip()}
+# [개선안5-b, docs/DIAGNOSTIC_2026-07.md §6] TF 추가 — 라이브 7건 1승6패(결판 0/5),
+# 오프라인 셀 TF|RANGING|CHOP 0/6·TF|SQUEEZE|CHOP 0/3·TF|TRENDING|CHOP 0/2로 레짐
+# 불문 전패. 개선안4(TP 상한/트레일 실집행) 검증 표본이 섀도로 축적된 뒤 재심사·복권.
+WRF_SHADOW_SETUPS = {s.strip() for s in os.getenv("WRF_SHADOW_SETUPS", "BR,TC,TF").split(",") if s.strip()}
 
 # ── 보정 발사 스위치(그림자 운영) ────────────────────────────────────────
 # true(기본): 라이브는 prior로 '발사', 보정 P̂은 계산·기록만(A/B 그림자).

@@ -105,6 +105,13 @@ def compute_levels(candidate: dict, feat: dict) -> dict:
                 pass
         rr = 2.5 if setup == "TF" else 2.0
         tp_dist = sl_dist * rr
+        # [개선안4-a, docs/DIAGNOSTIC_2026-07.md §6] TP=SL거리×고정RR이 변동성이 클수록
+        # 도달 불가능해지던 문제(실측: TF TP=진입가 6.4~8.7%인데 평균 MFE 0.93R) 완화.
+        # 심볼 자기 N봉 순방향 유리이동 분포 Q백분위(ATR배수, features.py 계측)로 상한.
+        if getattr(config, "WRF_TP_MFE_CAP", True):
+            mfe_mult = feat.get("raw", {}).get(f"mfe_pctile_{direction}")
+            if mfe_mult is not None and mfe_mult > 0:
+                tp_dist = min(tp_dist, mfe_mult * atr)
 
     sl_dist = min(sl_dist, max_sl)
     # [P2] TF 추세 태우기(무상태 트레일링): 고정 TP가 스윙 몸통을 자르는 FN을 완화. TF에 한해
