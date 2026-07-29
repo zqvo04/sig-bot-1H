@@ -20,10 +20,16 @@ except ImportError:  # pragma: no cover
     from src import config  # type: ignore
 
 
-def _size_from_p(p_hat: float, floor: float) -> float:
-    """사이징 ∝ P̂. floor에서 base, 그 위로 선형 증가, 상한 적용(페이퍼)."""
+def _size_from_p(p_hat: float, floor: float, source: str = "prior") -> float:
+    """사이징 ∝ P̂. floor에서 base, 그 위로 선형 증가, 상한 적용(페이퍼).
+
+    [개선안2-d] WRF_PRIOR_CAP_SIZING_ONLY=true 면 prior_p_hat이 확률 캡 없이 반환되므로
+    (해상도 보존 목적), source가 'prior'일 때만 여기서 사이징용 캡을 적용해 과신 사이징을
+    차단한다. source가 'calibrated'면 그쪽 캡(WRF_CALIB_CAP)이 이미 확률에 적용돼 있다."""
     base = getattr(config, "WRF_SIZE_BASE", 1.0)
     smax = getattr(config, "WRF_SIZE_MAX", 2.0)
+    if source == "prior" and getattr(config, "WRF_PRIOR_CAP_SIZING_ONLY", False):
+        p_hat = min(p_hat, getattr(config, "WRF_PRIOR_CAP", 0.65))
     if p_hat <= floor:
         return round(base, 3)
     span = max(1e-6, 1.0 - floor)
@@ -136,7 +142,7 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
                 and not fire and not vetoes and rr_ok
                 and (floor - band_w) <= p_hat < floor
             )
-            size = _size_from_p(p_hat, floor) if fire else 0.0
+            size = _size_from_p(p_hat, floor, source) if fire else 0.0
             rec = {
                 "setup": c["setup"], "dir": c["dir"], "precond": True,
                 "entry": lv["entry"], "tp": lv["tp"], "sl": lv["sl"],

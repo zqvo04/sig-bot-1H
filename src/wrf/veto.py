@@ -75,6 +75,23 @@ def directional_vetoes(candidate: dict, feat: dict, collected: dict) -> list:
                 v.append("LIQ_CASCADE")
     except Exception:
         pass
+    # ⑤ [개선안1] 방향 드리프트 정면충돌 — btc_macro(BTC 7D 절대% 임계)가 CHOP
+    # 태그일 때 ④가 무작동이던 공백을 메운다. 심볼 자기 드리프트 백분위 기반(5-C).
+    # RV/BR(반전, ④와 동일 면제군)은 극단전용 임계만 — 반전은 본질적으로 역행이라
+    # 완만한 역행까지 막으면 엣지가 소멸한다(면제가 아니라 임계만 더 극단적).
+    try:
+        if getattr(config, "WRF_DRIFT_VETO", True):
+            dp = (feat.get("pct") or {}).get("drift")
+            if dp is not None:
+                is_rev = candidate.get("setup") in ("RV", "BR")
+                lo = getattr(config, "WRF_DRIFT_REV_LO" if is_rev else "WRF_DRIFT_LO",
+                             0.03 if is_rev else 0.10)
+                hi = getattr(config, "WRF_DRIFT_REV_HI" if is_rev else "WRF_DRIFT_HI",
+                             0.97 if is_rev else 0.90)
+                if (long and dp <= lo) or ((not long) and dp >= hi):
+                    v.append("DRIFT_HEADON")
+    except Exception:
+        pass
     return v
 
 

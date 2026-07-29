@@ -481,7 +481,7 @@ python analysis/audit/verify_p012.py          # BR섀도 포함/반사실 · fas
 | 스위치 | 기본값 | 의미 | 되돌리기 |
 |---|---|---|---|
 | `WRF_CALIB_DISABLED` | `true` | **true = 보정 비활성** — 발사는 prior 사용, 보정 P̂은 그림자 기록만 | `false` = OOS Brier 우위 입증 후 보정 P̂으로 발사 전환 |
-| `WRF_SHADOW_SETUPS` | `{"BR","TC"}` | 목록의 셋업은 후보생성·기록만, 라이브 발사는 안 함 | `""`(빈 문자열) = 전부 라이브 |
+| `WRF_SHADOW_SETUPS` | `{"BR","TC","TF"}` | 목록의 셋업은 후보생성·기록만, 라이브 발사는 안 함(TF는 2026-07 진단 개선안5로 추가 — 아래 "2026-07 진단 기반 개선안 5종" 참조) | `""`(빈 문자열) = 전부 라이브 |
 | `WRF_FIRE_RIGHTS_ENABLED` | `true` | 셀별 사후검정 강등(`quarantine=FIRE_RIGHTS`) 게이트 작동 | `false` = 게이트 없이 구동작(전 셀 발사권 유지) |
 
 ### 표본처리량·정합 개선 (2026-07 · ②③④⑤)
@@ -494,6 +494,25 @@ python analysis/audit/verify_p012.py          # BR섀도 포함/반사실 · fas
 | `WRF_LEDGER_SCRATCH_EXPIRED` | `true` | **③원장-보정 정합** — 만기청산을 원장에서 `SCRATCH`로 분류(보정 tb_win=None과 일치) | `false` = 만기도 손익부호 WIN/LOSS(구동작) |
 | `WRF_TRIG_WINDOW` | 0 | **④트리거 시간창** — 반전캔들을 '최근 N개 완성봉'까지 인정(점사건↔상태 정렬 소멸 완화) | 0 = 현재봉만(구동작) |
 | `WRF_TC_ENABLED` | `true` | **⑤셋업 인큐베이터** — TC(추세지속·채널라이드) 섀도 셋업 후보생성(발사는 `WRF_SHADOW_SETUPS`가 차단) | `false` = TC 후보 미생성 |
+
+### 2026-07 진단 기반 개선안 5종 (기본 ON — 사용자 지시)
+
+`docs/DIAGNOSTIC_2026-07.md`(1H Signal Log 결판 59건 + 코드 대조 진단) 근거로 도입.
+CLAUDE.md 5-I 원칙(검증→점등)의 기본값은 OFF지만, 이 배치는 **사용자가 명시적으로
+기본 ON을 지시**해 그렇게 출시했다 — 모든 토글은 env override로 즉시 되돌리기 가능.
+
+| 개선안 | 토글 | 효과 | 데이터 근거(요약) |
+|---|---|---|---|
+| 1. 방향 드리프트 베토 | `WRF_DRIFT_VETO` (+`WRF_DRIFT_WINDOW`=42·`WRF_DRIFT_LO/HI`=0.10/0.90·`WRF_DRIFT_REV_LO/HI`=0.03/0.97) | `btc_macro`가 CHOP일 때 무작동이던 방향 베토를 심볼 자기 드리프트 백분위로 보강(RV/BR은 더 극단만) | 결판 75%가 CHOP 태그, ETH SHORT 11건 −8.70R(SL82%, +9.7% 상승구간 역행) |
+| 2. prior 재적합 + 캡 사이징 분리 | `WRF_PRIOR_REFIT_ENABLED` (+`WRF_PRIOR_REFIT_RIDGE`=8.0·`WRF_PRIOR_REFIT_HOLDOUT`=0.3·`WRF_PRIOR_REFIT_MIN_N`=40), `WRF_PRIOR_CAP_SIZING_ONLY` | `calibrate.py`가 결판 전량(홀드아웃 분리)으로 b0/wC/wL/wF를 릿지 로지스틱(부호제약 w≥0)으로 재적합해 테이블에 발행, 라이브가 소비. 캡(0.65)은 사이징에만 적용 | P̂ 32/59가 cap 고정·corr(P̂,R)=−0.148(단조성 역전). 실측 홀드아웃 Brier 0.36→0.15, logloss 0.95→0.48 |
+| 3. 계층 발사권 | `WRF_FR_BY_DIR`(기본 `true`로 전환), `WRF_FR_HIER_ENABLED` (+`WRF_FR_HIER_MIN_DECIDED`=6) | 셀 표본 희소로 강등이 사실상 불가하던 문제 완화 — (cell,dir)→(setup,regime,dir)→(setup,dir) 순 계층 폴백 | 28셀 중 n_fire_decided≥8인 셀 실측 1개(n_shadow=0). 계층 적용 후 BO/BR SHORT가 정확히 강등(P(WR≥floor)≈0.03~0.04) |
+| 4. TP 상한 + TF 트레일 실집행 | `WRF_TP_MFE_CAP` (+`WRF_TP_MFE_Q`=0.65·`WRF_TP_MFE_HORIZON`=48·`WRF_TP_MFE_MINN`=20), `WRF_TF_TRAIL_LIVE_EXEC` | TF/RV/BR의 `TP=SL거리×고정RR`을 심볼 자기 N봉 순방향 유리이동 분포 백분위(ATR배수)로 상한. TF는 라이브도 오프라인과 동일 샹들리에 트레일로 채점(Notion `Trail Dist` 컬럼) | TF TP=진입가 6.4~8.7%인데 평균 MFE 0.93R. 만기청산 16건 MFE평균 1.51R(13/16≥1.0R)인데 실현 +0.51R |
+| 5. precond 복원 + TF 섀도 | `WRF_RV_SOFT_REQUIRE_STRUCT`, `WRF_BO_DIR_ALIGN`, `WRF_SHADOW_SETUPS`에 `TF` 추가(`"BR,TC,TF"`) | RV soft에 (CHoCH∨리테스트) 최소 1개 게이트 복원. BO는 4H RANGING에서 4H EMA 역행방향 후보 생성 차단(대칭). TF는 라이브 발사권 박탈(기록·채점은 계속) | RV "소진우위"(CHoCH·리테스트 둘 다 없음) 0승 3패. BO SHORT×RANGING 12건 avgR −0.57(SL75%) vs LONG +1.41. TF 라이브 0/5, 오프라인 전 레짐 0승 |
+
+> 개선안2 산출물(`prior_refit`/`fire_rights_hier`)은 `data/calibration_table.json`
+> 최상위 키에 실린다 — `analysis/calibrate.py` 실행마다 갱신. `WRF_CALIB_DISABLED`는
+> 이 배치와 무관하게 `true`(발사는 여전히 prior)로 유지 — 보정 P̂ 발사 전환은 별도
+> OOS 검증 후 결정(가장 위험한 전환이라 이번 배치에서 함께 넘기지 않음).
 
 ### 레벨/구조 파라미터 (되돌리기 값 존재)
 

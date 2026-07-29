@@ -413,6 +413,14 @@ def _detect_bo(feat: dict, measures: dict):
         precond = bool(broke and vol_spike and retest and hold)
         if not precond:
             continue
+        # [개선안5-c, docs/DIAGNOSTIC_2026-07.md §6] RANGING 4H 안의 BO는 방향에
+        # 따라 성과가 극명히 갈렸다(실측: SHORT 12건 avgR -0.57·SL75% vs LONG 7건
+        # avgR +1.41). 4H EMA구조가 돌파 반대방향이면(4H가 이 돌파를 지지하지 않음)
+        # 후보 자체를 생성하지 않는다 — 롱/숏 대칭(5-D), 손실 코호트만 정확히 제거.
+        if getattr(config, "WRF_BO_DIR_ALIGN", True) and ctx.get("regime_4h") == "RANGING":
+            h4 = raw.get("ema_4h")
+            if (long and h4 == -1) or ((not long) and h4 == 1):
+                continue
         C = _ctx_align(ctx, raw, direction)
         L = _clip(0.5 + min(0.5, box_h * 10))  # 박스가 넓을수록 측정이동 여지 ↑
         # [G7] 펀딩 컨트래리언 확증: 군중이 돌파 반대로 쏠림 → 스퀴즈 연료 → L 가점
@@ -538,6 +546,12 @@ def _detect_rv(feat: dict, measures: dict):
             # 아래 L 감쇠로 흡수 → 부분정렬 반전도 후보화하되, 약하면 P̂<floor로 자동 탈락(FP는 floor).
             precond = bool(n_exh >= 1 and bool(rev_candle)
                            and confirms >= getattr(config, "WRF_RV_SOFT_MIN_CONFIRMS", 2))
+            # [개선안5-a, docs/DIAGNOSTIC_2026-07.md §6] soft 최소치만으로는 CHoCH·
+            # 리테스트가 둘 다 없는 "소진우위" 후보까지 통과했다(실측: 0승 3패). 완전
+            # 하드복귀(둘 다 필수) 대신 최소 하나는 게이트로 복원 — 표본 손실을 줄이며
+            # 무구조확증 코호트만 정확히 제거.
+            if precond and getattr(config, "WRF_RV_SOFT_REQUIRE_STRUCT", True):
+                precond = bool(choch or retest)
         else:
             precond = bool(
                 n_exh >= 1

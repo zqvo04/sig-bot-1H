@@ -45,7 +45,11 @@ def cell_key(setup: str, regime_1h: str, btc_macro: str) -> str:
 
 
 def load_table(path: str = None) -> dict:
-    """calibration_table.json 로드(mtime 캐시). 부재 시 {} (전부 prior)."""
+    """calibration_table.json 로드(mtime 캐시). 부재 시 {} (전부 prior).
+
+    [개선안2·3] 반환은 파일 전체(cells·prior_refit·fire_rights_hier 등 최상위 키 보존).
+    과거엔 cells 서브딕만 반환했으나(하위호환: 셀 조회부(evaluate)가 table.get("cells",
+    table)로 양쪽 형태 모두 처리), prior_refit·fire_rights_hier 소비를 위해 전체로 확장."""
     global _TABLE_CACHE, _TABLE_MTIME
     path = path or getattr(config, "WRF_CALIB_TABLE", "data/calibration_table.json")
     try:
@@ -56,7 +60,7 @@ def load_table(path: str = None) -> dict:
             return _TABLE_CACHE
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-        _TABLE_CACHE = data.get("cells", data) if isinstance(data, dict) else {}
+        _TABLE_CACHE = data if isinstance(data, dict) else {}
         _TABLE_MTIME = mtime
         return _TABLE_CACHE
     except Exception as e:  # pragma: no cover
@@ -68,18 +72,30 @@ def load_table(path: str = None) -> dict:
 # prior (보수적 고정 직교게이트) — 보정의 '기울기·기준선'이기도 하다
 # ════════════════════════════════════════════════════════════════════
 
-def _prior_logodds(setup: str, C: float, L: float, F: float) -> float:
+def _prior_coefs(table: dict = None) -> dict:
+    """[개선안2] prior 계수 소스 — 활성화 시 오프라인 재적합 블록(테이블의 prior_refit)을
+    우선 소비, 부재/미달/비활성이면 config 상수로 폴백(콜드스타트 안전). 라이브는 이
+    테이블을 읽기만 한다(5-B) — 재적합 자체는 analysis/calibrate.py 오프라인 전용."""
+    if getattr(config, "WRF_PRIOR_REFIT_ENABLED", False) and table:
+        refit = table.get("prior_refit")
+        if refit and refit.get("b0") and refit.get("wC") is not None:
+            return refit
+    return {"b0": getattr(config, "WRF_PRIOR_B0", {}),
+            "wC": getattr(config, "WRF_PRIOR_WC", 1.1),
+            "wL": getattr(config, "WRF_PRIOR_WL", 1.3),
+            "wF": getattr(config, "WRF_PRIOR_WF", 1.2)}
+
+
+def _prior_logodds(setup: str, C: float, L: float, F: float, table: dict = None) -> float:
     """prior 로그오즈 z = b0[setup] + wC·C + wL·L + wF·F (캡·min-axis 적용 전)."""
-    b0 = getattr(config, "WRF_PRIOR_B0", {}).get(setup, -0.5)
-    wC = getattr(config, "WRF_PRIOR_WC", 1.1)
-    wL = getattr(config, "WRF_PRIOR_WL", 1.3)
-    wF = getattr(config, "WRF_PRIOR_WF", 1.2)
-    return b0 + wC * C + wL * L + wF * F
+    coefs = _prior_coefs(table)
+    b0 = (coefs.get("b0") or {}).get(setup, -0.5)
+    return b0 + coefs["wC"] * C + coefs["wL"] * L + coefs["wF"] * F
 
 
-def prior_raw_p(setup: str, C: float, L: float, F: float) -> float:
+def prior_raw_p(setup: str, C: float, L: float, F: float, table: dict = None) -> float:
     """캡·min-axis 적용 전 raw 로지스틱 확률. 보정 δ 측정의 '기준선'(일관성)."""
-    return _sigmoid(_prior_logodds(setup, C, L, F))
+    return _sigmoid(_prior_logodds(setup, C, L, F, table))
 
 
 def _min_axis_penalty(C: float, L: float, F: float) -> float:
@@ -97,15 +113,21 @@ def _min_axis_penalty(C: float, L: float, F: float) -> float:
     return lam * (min_axis - m)
 
 
-def prior_p_hat(setup: str, C: float, L: float, F: float) -> float:
-    """보수적 고정 직교게이트 prior(발사용). 셋업별 b0 비대칭 + 캡 + min-axis 게이트."""
+def prior_p_hat(setup: str, C: float, L: float, F: float, table: dict = None) -> float:
+    """보수적 고정 직교게이트 prior(발사용). 셋업별 b0 비대칭 + 캡 + min-axis 게이트.
+
+    [개선안2] WRF_PRIOR_CAP_SIZING_ONLY=true 면 캡을 확률에 걸지 않고 그대로 반환한다
+    (다수 후보가 캡 한 점에 몰려 해상도가 소멸하던 문제 완화 — 실측 32/59가 cap 고정).
+    사이징(engine._size_from_p)에서만 캡을 적용해 과신 사이징은 그대로 차단한다."""
     cap = getattr(config, "WRF_PRIOR_CAP", 0.65)
-    z = _prior_logodds(setup, C, L, F)
+    z = _prior_logodds(setup, C, L, F, table)
+    sizing_only = getattr(config, "WRF_PRIOR_CAP_SIZING_ONLY", False)
     if getattr(config, "WRF_PRIOR_MIN_AXIS_SOFT", True):
         # 연속 페널티(소프트) — 약한 축은 매끄럽게, 역행 축은 강하게 차단.
-        return min(cap, _sigmoid(z - _min_axis_penalty(C, L, F)))
+        p = _sigmoid(z - _min_axis_penalty(C, L, F))
+        return min(1.0, p) if sizing_only else min(cap, p)
     # 구동작: 하드 절벽(한 축이라도 <min_axis → floor-0.03 고정).
-    p = min(cap, _sigmoid(z))
+    p = _sigmoid(z) if sizing_only else min(cap, _sigmoid(z))
     min_axis = getattr(config, "WRF_PRIOR_MIN_AXIS", 0.10)
     if min(C, L, F) < min_axis:
         floor = getattr(config, "WRF_WIN_FLOOR", 0.58)
@@ -128,7 +150,7 @@ def cell_delta(cell: dict) -> float:
 
 
 def calibrated_p_hat(setup: str, C: float, L: float, F: float,
-                     cell: dict) -> tuple:
+                     cell: dict, table: dict = None) -> tuple:
     """보정 P̂ = min(calib_cap, sigmoid(prior_logodds + δ_eff)).
 
     반환 (p, source, floor). 보정셀 부재/δ=0이면 (prior_p_hat, 'prior', floor).
@@ -136,14 +158,14 @@ def calibrated_p_hat(setup: str, C: float, L: float, F: float,
     floor = getattr(config, "WRF_WIN_FLOOR", 0.58)
     delta = cell_delta(cell)
     if delta == 0.0:
-        return prior_p_hat(setup, C, L, F), "prior", floor
+        return prior_p_hat(setup, C, L, F, table), "prior", floor
     # [②캡 비대칭 수리] 보정 캡은 셀 신뢰도(conf=n_indep/(n_indep+k_conf))가 충분할 때만.
     # 소표본 셀(conf<min)은 δ가 미미해 캡만 오르면 과신 → prior 캡(0.65)으로 강등.
     cap = getattr(config, "WRF_CALIB_CAP", 0.72)
     conf = float(cell.get("confidence", 0.0) or 0.0)
     if conf < getattr(config, "WRF_CALIB_CAP_CONF_MIN", 0.50):
         cap = min(cap, getattr(config, "WRF_PRIOR_CAP", 0.65))
-    z = _prior_logodds(setup, C, L, F) + delta
+    z = _prior_logodds(setup, C, L, F, table) + delta
     # [Pillar3-②] min-axis 페널티를 보정 경로에도 일관 적용 — 콜드스타트↔보정 불연속 제거
     # (구버전은 보정셀이 min-axis 보호를 우회 → 같은 C/L/F가 보정 후 갑자기 발사되던 비일관).
     if getattr(config, "WRF_PRIOR_MIN_AXIS_SOFT", True):
@@ -171,13 +193,16 @@ def evaluate(candidate: dict, ctx: dict, table: dict = None) -> dict:
     C, L, F = candidate["C"], candidate["L"], candidate["F"]
     floor = getattr(config, "WRF_WIN_FLOOR", 0.58)
 
-    p_prior = prior_p_hat(setup, C, L, F)
-
     table = load_table() if table is None else table
+    p_prior = prior_p_hat(setup, C, L, F, table)
+
     key = cell_key(setup, ctx.get("regime_1h", "UNKNOWN"), ctx.get("btc_macro", "CHOP"))
-    cell = table.get(key) if table else None
+    # table은 파일 전체(cells 서브딕 포함)이거나, 하위호환으로 cells-only 딕셔너리일 수
+    # 있다 — "cells" 키가 없으면 table 자체를 셀맵으로 취급(구 캐시·외부 호출 대비).
+    cells_map = (table or {}).get("cells", table or {})
+    cell = cells_map.get(key) if cells_map else None
     try:
-        p_cal, cal_source, cal_floor = calibrated_p_hat(setup, C, L, F, cell)
+        p_cal, cal_source, cal_floor = calibrated_p_hat(setup, C, L, F, cell, table)
     except Exception as e:  # pragma: no cover
         logger.warning(f"[calib] 셀 {key} 보정 실패 → prior: {e}")
         p_cal, cal_source, cal_floor = p_prior, "prior", floor
@@ -185,11 +210,27 @@ def evaluate(candidate: dict, ctx: dict, table: dict = None) -> dict:
     # [Phase A] 발사권 — P̂ 추정경로(prior/보정)와 무관하게 셀의 실현 승률 검정 결과.
     # [개선-A] 방향분리: 테이블에 fire_rights_by_dir 가 있고 해당 방향 항목이 있으면
     # 방향별 발사권을 쓴다(동일 셀 롱/숏 성과역전 대응). 없으면 셀 단위 폴백(구동작).
+    direction = candidate.get("dir")
     fire_rights = (cell or {}).get("fire_rights") or "live"
+    resolved_n = 0
     if getattr(config, "WRF_FR_BY_DIR", False) and cell:
-        by_dir = (cell.get("fire_rights_by_dir") or {}).get(candidate.get("dir"))
+        by_dir = (cell.get("fire_rights_by_dir") or {}).get(direction)
         if by_dir and by_dir.get("fire_rights"):
             fire_rights = by_dir["fire_rights"]
+            resolved_n = int(by_dir.get("n_fire_decided") or 0)
+    # [개선안3] 계층 폴백 — 셀 표본이 희소해 강등이 사실상 불가능하던 문제 완화.
+    # (cell,dir)의 결판수가 부족하면 더 넓은 층((setup,regime,dir) → (setup,dir))에서
+    # 결판수가 충분한 첫 층의 발사권을 쓴다. 셀 키(5-H)는 불변 — 이 계층은 검정 집계용.
+    hier_min = getattr(config, "WRF_FR_HIER_MIN_DECIDED", 6)
+    if getattr(config, "WRF_FR_HIER_ENABLED", True) and resolved_n < hier_min and table:
+        hier = table.get("fire_rights_hier") or {}
+        regime_1h = ctx.get("regime_1h", "UNKNOWN")
+        base_entry = (hier.get("base_dir") or {}).get(f"{setup}|{regime_1h}|{direction}")
+        setup_entry = (hier.get("setup_dir") or {}).get(f"{setup}|{direction}")
+        for entry in (base_entry, setup_entry):
+            if entry and int(entry.get("n_fire_decided") or 0) >= hier_min:
+                fire_rights = entry["fire_rights"]
+                break
 
     disabled = getattr(config, "WRF_CALIB_DISABLED", True)
     if disabled or cal_source != "calibrated":

@@ -13,6 +13,7 @@ import logging
 from datetime import timezone
 
 import numpy as np
+import pandas as pd
 
 from . import percentile as pct
 
@@ -48,6 +49,37 @@ def _lin_slope(rates) -> float:
     try:
         slope = float(np.polyfit(x, np.asarray(chrono, dtype=float), 1)[0])
         return slope if np.isfinite(slope) else None
+    except Exception:
+        return None
+
+
+def _fwd_favorable_pctile(df_1h, atr_ser, direction: str, n: int, window: int,
+                          q: float, min_n: int) -> float | None:
+    """[개선안4] 심볼 자기 N봉 순방향 유리이동(ATR배수) 분포의 Q백분위 — TP 상한 근거.
+
+    각 과거봉 i의 '그 이후 n봉 유리극값'은 i 시점 기준 이미 실현된 값이라 미래참조가
+    아니다(현재 미완성 마지막 n봉만 자동 제외). 절대임계 아님 — 심볼·변동성에 자동
+    적응하는 자기분포 백분위(5-C). 표본 부족 시 None(호출부가 상한 미적용으로 폴백)."""
+    try:
+        lookback = min(len(df_1h), window + n + 1)
+        if lookback <= n + min_n:
+            return None
+        h = df_1h["high"].to_numpy(dtype=float)[-lookback:]
+        l = df_1h["low"].to_numpy(dtype=float)[-lookback:]
+        c = df_1h["close"].to_numpy(dtype=float)[-lookback:]
+        a = atr_ser.to_numpy(dtype=float)[-lookback:]
+        if direction == "long":
+            roll = pd.Series(h[::-1]).rolling(n, min_periods=n).max().to_numpy()[::-1]
+            fwd = np.concatenate([roll[1:], [np.nan]])
+            fav = (fwd - c) / a
+        else:
+            roll = pd.Series(l[::-1]).rolling(n, min_periods=n).min().to_numpy()[::-1]
+            fwd = np.concatenate([roll[1:], [np.nan]])
+            fav = (c - fwd) / a
+        valid = fav[np.isfinite(fav) & (a > 0)]
+        if len(valid) < min_n:
+            return None
+        return float(np.quantile(valid, q))
     except Exception:
         return None
 
@@ -194,6 +226,25 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
     p_funding = pct.pct_rank(fund_hist, _f(fund.get("rate"))) if fund_hist else 0.5
     funding_slope = _lin_slope(fund_hist)  # 펀딩 이력 추세 기울기(최근으로 갈수록 +)
 
+    # [개선안1] 방향 드리프트 자기분포 백분위 — btc_macro(BTC 7D 절대% 임계)가 CHOP
+    # 태그일 때 방향 베토가 무작동이던 공백을 메운다(심볼 자기 드리프트, 5-C).
+    drift_win = getattr(config, "WRF_DRIFT_WINDOW", 42)
+    if len(close) > drift_win:
+        drift_ser = (close - close.shift(drift_win)) / atr_ser
+        cur_drift = _f(drift_ser.iloc[-1])
+        p_drift = pct.pct_rank(drift_ser.iloc[tail].tolist(), cur_drift)
+    else:
+        cur_drift = None
+        p_drift = 0.5
+
+    # [개선안4] TF/RV/BR TP 상한 근거 — 심볼 자기 N봉 순방향 유리이동 분포 Q백분위
+    # (ATR배수). levels.py가 tp_dist = min(구조타깃, mfe_pctile×ATR)로 소비한다.
+    mfe_n = getattr(config, "WRF_TP_MFE_HORIZON", 48)
+    mfe_q = getattr(config, "WRF_TP_MFE_Q", 0.65)
+    mfe_minn = getattr(config, "WRF_TP_MFE_MINN", 20)
+    mfe_pctile_long = _fwd_favorable_pctile(df_1h, atr_ser, "long", mfe_n, win, mfe_q, mfe_minn)
+    mfe_pctile_short = _fwd_favorable_pctile(df_1h, atr_ser, "short", mfe_n, win, mfe_q, mfe_minn)
+
     # 컨플루언스 카운트(FVG/OB/피보/주간 동시중첩)
     confluence_long = sum([
         bool(fvg.get("in_bullish_fvg")), bool(ob.get("in_bullish_ob")),
@@ -290,12 +341,17 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
         # 시간
         "hour_utc": int(last_ts.hour),
         "dow": int(last_ts.weekday()),
+        # [개선안1] 방향 드리프트(ATR정규화 순변화, 계측값 — 베토는 pct["drift"] 소비)
+        "drift_norm": cur_drift,
+        # [개선안4] TP 상한 근거(ATR배수, levels.py 소비)
+        "mfe_pctile_long": mfe_pctile_long,
+        "mfe_pctile_short": mfe_pctile_short,
     }
 
     pcts = {
         "loc_vwap": p_loc_vwap, "loc_ema20": p_loc_ema20,
         "bb_pctb": p_bbpos, "rsi": p_rsi, "macd": p_macd, "funding": p_funding,
-        "adx": p_adx,
+        "adx": p_adx, "drift": p_drift,
     }
 
     r1 = regime.get("regime", "UNKNOWN")
