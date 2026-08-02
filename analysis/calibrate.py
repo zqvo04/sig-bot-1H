@@ -92,8 +92,10 @@ def _shrink(wr_obs: float, n_eff: float, wr_parent: float, k: float) -> float:
 # 읽는다. 절편(셋업별 b0)은 약한 정규화, 기울기(wC/wL/wF)는 강한 릿지 + 매 반복 후
 # 0으로 투영(음수 방향 반전 방지) — 소표본에서 축 부호가 뒤집히는 과적합을 차단한다.
 
-def _prior_refit_fit(d: pd.DataFrame, ridge: float, iters: int = 50) -> dict:
-    """릿지 로지스틱 IRLS. d는 setup/C/L/F/tb_win 컬럼을 갖는 학습 서브셋."""
+def _prior_refit_fit(d: pd.DataFrame, ridge: float, iters: int = 50,
+                     b0_init: dict = None) -> dict:
+    """릿지 로지스틱 IRLS. d는 setup/C/L/F/tb_win 컬럼을 갖는 학습 서브셋.
+    b0_init 주어지면 절편 초기값으로 사용(부재 시 config 상수)."""
     setups = sorted(d["setup"].unique().tolist())
     k = len(setups)
     idx = {s: i for i, s in enumerate(setups)}
@@ -107,7 +109,7 @@ def _prior_refit_fit(d: pd.DataFrame, ridge: float, iters: int = 50) -> dict:
     y = d["tb_win"].to_numpy(dtype=float)
 
     theta = np.zeros(k + 3)
-    b0_cfg = getattr(config, "WRF_PRIOR_B0", {})
+    b0_cfg = b0_init if b0_init is not None else getattr(config, "WRF_PRIOR_B0", {})
     for s, i in idx.items():
         theta[i] = b0_cfg.get(s, -0.5)
     theta[k:] = 1.0
@@ -135,15 +137,54 @@ def _prior_refit_fit(d: pd.DataFrame, ridge: float, iters: int = 50) -> dict:
             "wF": round(float(theta[k + 2]), 4), "n_train": int(n)}
 
 
-def _prior_score(coefs: dict, d: pd.DataFrame):
-    """coefs(b0/wC/wL/wF)로 d에 대한 (Brier, log-loss) 계산."""
+def _fit_slope_only(d: pd.DataFrame, b0_fixed: dict, ridge: float, iters: int = 50) -> dict:
+    """[개선안3] 절편 고정(b0_fixed, offset) 상태로 wC/wL/wF만 IRLS 재적합.
+
+    d 를 발사 가능(비섀도) 서브셋으로 제한해 호출하면, '공유 파라미터(기울기)는 발사
+    가능 모집단이, 고유 파라미터(절편)는 전량이' 라는 원칙을 구현한다 — 절편은 이미
+    전량으로 적합된 b0_fixed 를 그대로 쓰고 기울기만 다시 푼다."""
+    n = len(d)
+    X = np.zeros((n, 3))
+    X[:, 0] = d["C"].to_numpy(dtype=float)
+    X[:, 1] = d["L"].to_numpy(dtype=float)
+    X[:, 2] = d["F"].to_numpy(dtype=float)
+    offset = d["setup"].map(lambda s: b0_fixed.get(s, -0.5)).to_numpy(dtype=float)
+    y = d["tb_win"].to_numpy(dtype=float)
+
+    theta = np.ones(3)
+    lam = np.full(3, ridge)
+    for _ in range(iters):
+        z = np.clip(offset + X.dot(theta), -35, 35)
+        p = 1.0 / (1.0 + np.exp(-z))
+        w = np.clip(p * (1 - p), 1e-6, None)
+        grad = X.T.dot(p - y) + lam * theta
+        H = (X * w[:, None]).T.dot(X) + np.diag(lam)
+        try:
+            step = np.linalg.solve(H, grad)
+        except np.linalg.LinAlgError:
+            break
+        theta = theta - step
+        theta = np.clip(theta, 0.0, None)  # 부호제약: wC,wL,wF ≥ 0
+        if np.max(np.abs(step)) < 1e-6:
+            break
+    return {"wC": round(float(theta[0]), 4), "wL": round(float(theta[1]), 4),
+            "wF": round(float(theta[2]), 4), "n_train_slope": int(n)}
+
+
+def _predict_p(coefs: dict, d: pd.DataFrame):
+    """coefs(b0/wC/wL/wF)로 d에 대한 예측확률 배열."""
     b0_map = coefs.get("b0") or {}
     default_b0 = -0.5
     z = d["setup"].map(lambda s: b0_map.get(s, default_b0)).to_numpy(dtype=float)
     z = z + coefs["wC"] * d["C"].to_numpy(dtype=float) \
           + coefs["wL"] * d["L"].to_numpy(dtype=float) \
           + coefs["wF"] * d["F"].to_numpy(dtype=float)
-    p = 1.0 / (1.0 + np.exp(-np.clip(z, -35, 35)))
+    return 1.0 / (1.0 + np.exp(-np.clip(z, -35, 35)))
+
+
+def _prior_score(coefs: dict, d: pd.DataFrame):
+    """coefs(b0/wC/wL/wF)로 d에 대한 (Brier, log-loss) 계산."""
+    p = _predict_p(coefs, d)
     y = d["tb_win"].to_numpy(dtype=float)
     p_c = np.clip(p, 1e-6, 1 - 1e-6)
     brier = float(np.mean((p - y) ** 2))
@@ -151,19 +192,67 @@ def _prior_score(coefs: dict, d: pd.DataFrame):
     return brier, logloss
 
 
+def _auc(y: pd.Series, s: pd.Series) -> float:
+    """Mann-Whitney AUC. 결측 제외, 단일클래스면 nan."""
+    t = pd.DataFrame({"y": y, "s": s}).dropna()
+    if t["y"].nunique() < 2:
+        return float("nan")
+    r = t["s"].rank()
+    n1 = int((t["y"] == 1).sum())
+    n0 = int((t["y"] == 0).sum())
+    return float((r[t["y"] == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0))
+
+
+def _auc_within_setup(coefs: dict, d: pd.DataFrame) -> float:
+    """셋업 절편을 고정한 상태에서 P̂ 랭크가 셋업'내부' 순위정보를 갖는지 측정.
+    0.5 근방이면 P̂ 은 사실상 셋업 화이트리스트다(진단 근거:
+    docs/DIAGNOSTIC_2026-08_FPFN.md §2-D)."""
+    p = _predict_p(coefs, d)
+    dd = d.assign(_p=p)
+    dd["_rank"] = dd.groupby("setup")["_p"].rank(pct=True)
+    return _auc(dd["tb_win"], dd["_rank"])
+
+
 def fit_prior_refit(dec: pd.DataFrame) -> dict:
     """결판 후보 전량에서 prior 계수를 재적합. 최근 WRF_PRIOR_REFIT_HOLDOUT 비율은
-    적합에서 제외하고 홀드아웃 진단(config 대비 Brier/log-loss)에만 쓴다. 표본 부족·
-    실패 시 None(라이브는 calibration._prior_coefs 폴백으로 config 상수를 계속 사용)."""
+    적합에서 제외하고(+WRF_EMBARGO_HOURS 만큼 경계를 purge) 홀드아웃 진단에만 쓴다.
+    표본 부족·실패 시 None(라이브는 calibration._prior_coefs 폴백으로 config 상수 사용).
+
+    [개선안2, docs/DIAGNOSTIC_2026-08_FPFN.md §4] 승격(기울기 발행) 조건은 더 이상
+    Brier 단독이 아니다 — Brier는 레벨(평균) 보정만으로 개선될 수 있어 순위정보 붕괴를
+    가리지 못했다(실측: 재적합 Brier 0.36→0.15 인데 셋업내부 AUC 0.49). 홀드아웃에서
+    ① Brier 개선 ∧ ② 전체 AUC ≥ WRF_PRIOR_REFIT_AUC_MIN ∧ ③ 셋업내부 AUC ≥
+    WRF_PRIOR_REFIT_WITHIN_AUC_MIN 을 모두 만족해야 기울기(wC/wL/wF)가 발행되고,
+    미달이면 절편(셋업 base-rate)만 발행하고 기울기는 0으로 폴백(더 단순하고 정직한
+    모델 — 5-I: 검증 실패 시 안전한 쪽으로).
+    """
     ridge = getattr(config, "WRF_PRIOR_REFIT_RIDGE", 8.0)
     holdout_frac = getattr(config, "WRF_PRIOR_REFIT_HOLDOUT", 0.3)
     min_n = getattr(config, "WRF_PRIOR_REFIT_MIN_N", 40)
+    embargo_h = getattr(config, "WRF_EMBARGO_HOURS", 72)
+    auc_min = getattr(config, "WRF_PRIOR_REFIT_AUC_MIN", 0.55)
+    within_auc_min = getattr(config, "WRF_PRIOR_REFIT_WITHIN_AUC_MIN", 0.55)
+    slope_live_only = getattr(config, "WRF_REFIT_SLOPE_LIVE_ONLY", False)
+    shadow_setups = getattr(config, "WRF_SHADOW_SETUPS", set())
+
     d = dec.dropna(subset=["C", "L", "F", "tb_win", "setup"]).sort_values("ts").reset_index(drop=True)
     if len(d) < min_n:
         return None
     n_hold = int(len(d) * holdout_frac)
-    train = d.iloc[:len(d) - n_hold] if n_hold > 0 else d
-    hold = d.iloc[len(d) - n_hold:] if n_hold > 0 else d.iloc[0:0]
+    if n_hold > 0:
+        train_all = d.iloc[:len(d) - n_hold]
+        hold = d.iloc[len(d) - n_hold:]
+        # [purged embargo] hold 시작 이전 embargo_h 이내에 청산되는 train 행은 라벨
+        # 형성 윈도가 hold 경계를 침범할 수 있어 제외한다(72h 중첩 자기상관 차단).
+        if not hold.empty and "tb_exit_h" in train_all.columns:
+            hold_start = hold["ts"].min()
+            exit_ts = train_all["ts"] + pd.to_timedelta(
+                train_all["tb_exit_h"].fillna(48), unit="h")
+            train = train_all[exit_ts + pd.Timedelta(hours=embargo_h) <= hold_start]
+        else:
+            train = train_all
+    else:
+        train, hold = d, d.iloc[0:0]
     if len(train) < min_n or train["setup"].nunique() < 1:
         return None
     try:
@@ -171,7 +260,24 @@ def fit_prior_refit(dec: pd.DataFrame) -> dict:
     except Exception:
         return None
 
-    diagnostics = {"train_n": int(len(train)), "holdout_n": int(len(hold))}
+    # [개선안3] 기울기만 발사 가능(비섀도) 모집단으로 재적합 — 절편(b0)은 전량 적합값을
+    # 그대로 고정 사용. 기본 OFF(WRF_REFIT_SLOPE_LIVE_ONLY) — 부트스트랩 CI 검증 전.
+    if slope_live_only:
+        slope_pop = train[~train["setup"].isin(shadow_setups)]
+        if len(slope_pop) >= min_n and slope_pop["setup"].nunique() >= 1:
+            try:
+                slope_fit = _fit_slope_only(slope_pop, fit["b0"], ridge)
+                fit["wC"], fit["wL"], fit["wF"] = (
+                    slope_fit["wC"], slope_fit["wL"], slope_fit["wF"])
+                fit["slope_population"] = f"non_shadow(n={slope_fit['n_train_slope']})"
+            except Exception:
+                fit["slope_population"] = "full(non_shadow_fit_failed)"
+        else:
+            fit["slope_population"] = f"full(non_shadow_insufficient n={len(slope_pop)})"
+
+    diagnostics = {"train_n": int(len(train)), "holdout_n": int(len(hold)),
+                   "embargo_h": embargo_h}
+    slope_promoted = False
     if len(hold) >= 10:
         try:
             cfg_coefs = {"b0": getattr(config, "WRF_PRIOR_B0", {}),
@@ -180,13 +286,31 @@ def fit_prior_refit(dec: pd.DataFrame) -> dict:
                         "wF": getattr(config, "WRF_PRIOR_WF", 1.2)}
             brier_refit, logloss_refit = _prior_score(fit, hold)
             brier_cfg, logloss_cfg = _prior_score(cfg_coefs, hold)
+            auc_refit = _auc(hold["tb_win"], _predict_p(fit, hold))
+            auc_within = _auc_within_setup(fit, hold)
+            improved = brier_refit < brier_cfg
+            gates_ok = (not math.isnan(auc_refit) and auc_refit >= auc_min
+                       and not math.isnan(auc_within) and auc_within >= within_auc_min)
+            slope_promoted = bool(improved and gates_ok)
             diagnostics.update({
                 "brier_refit": round(brier_refit, 4), "brier_config": round(brier_cfg, 4),
                 "logloss_refit": round(logloss_refit, 4), "logloss_config": round(logloss_cfg, 4),
-                "improved": bool(brier_refit < brier_cfg),
+                "auc_refit": None if math.isnan(auc_refit) else round(auc_refit, 4),
+                "auc_within_setup": None if math.isnan(auc_within) else round(auc_within, 4),
+                "auc_min": auc_min, "within_auc_min": within_auc_min,
+                "improved": bool(improved), "slope_promoted": slope_promoted,
             })
         except Exception:
             pass
+    else:
+        diagnostics["slope_promoted"] = False
+        diagnostics["note"] = "홀드아웃 <10 — 변별력 검증 불가, 기울기 미승격(안전 폴백)"
+
+    if not slope_promoted:
+        # 승격 실패 — 절편(셋업 base-rate)만 발행, 기울기는 0(=순수 base-rate 모델).
+        fit["wC"], fit["wL"], fit["wF"] = 0.0, 0.0, 0.0
+        fit.pop("slope_population", None)
+
     fit["ridge"] = ridge
     fit["fit_at"] = datetime.now(timezone.utc).isoformat()
     fit["diagnostics"] = diagnostics
@@ -522,6 +646,12 @@ def main():
             print(f"    홀드아웃(n={diag['holdout_n']}): Brier refit={diag.get('brier_refit')} "
                   f"vs config={diag.get('brier_config')} · logloss refit={diag.get('logloss_refit')} "
                   f"vs config={diag.get('logloss_config')} · 개선={diag.get('improved')}")
+            print(f"    [개선안2] AUC refit={diag.get('auc_refit')} "
+                  f"셋업내부AUC={diag.get('auc_within_setup')} "
+                  f"(임계 {diag.get('auc_min')}/{diag.get('within_auc_min')}) "
+                  f"→ 기울기승격={diag.get('slope_promoted')}")
+        elif diag.get("note"):
+            print(f"    [개선안2] {diag['note']}")
     for cell, c in sorted(rep.get("cells", {}).items(),
                           key=lambda kv: -abs(kv[1].get("delta_eff", 0))):
         flag = "✅보정" if c["p_source"] == "calibrated" else "·prior"

@@ -98,18 +98,30 @@ def prior_raw_p(setup: str, C: float, L: float, F: float, table: dict = None) ->
     return _sigmoid(_prior_logodds(setup, C, L, F, table))
 
 
-def _min_axis_penalty(C: float, L: float, F: float) -> float:
+def _min_axis_penalty(C: float, L: float, F: float, table: dict = None) -> float:
     """[Pillar3-①/②] 직교 3축 동의 게이트의 '연속' 페널티(로그오즈 차감, ≥0).
 
     구버전은 한 축이라도 <min_axis면 p를 floor-0.03(=0.55)로 고정 → floor 통과 불가한
     '위장 하드베토'(불연속 절벽). 대신 가장 약한 축의 '부족분'(min_axis−m)에 비례하는 연속
     페널티를 로그오즈에서 뺀다 — m이 0.10 근방이면 미미(near-miss FN 회복), m이 음수(역추세
-    칼받기·무소진)면 급증(FP 보존). prior·보정 경로에 동일 적용해 불연속을 제거한다."""
+    칼받기·무소진)면 급증(FP 보존). prior·보정 경로에 동일 적용해 불연속을 제거한다.
+
+    [개선안4, docs/DIAGNOSTIC_2026-08_FPFN.md §4] λ=2.5는 config 고정 기울기(wC/wL/wF
+    합 3.6)의 스케일에서 정해진 값이다. prior 재적합(WRF_PRIOR_REFIT_ENABLED)이 기울기를
+    줄이면(예: 합 0.03) 페널티만 원래 크기로 남아 신호보다 감점이 커진다(이중 차감).
+    WRF_MIN_AXIS_SCALED=true 면 λ를 재적합 기울기 합에 비례하도록 재계산 —
+    WRF_MIN_AXIS_LAMBDA_RATIO 기본값(0.69)은 config 기본 기울기(합 3.6)에서 λ≈2.484로
+    현행 동작을 근사 보존한다(5-K③). 기본 OFF — 셋업내부 AUC 개선 측정 후 점등(5-I)."""
     min_axis = getattr(config, "WRF_PRIOR_MIN_AXIS", 0.10)
     m = min(C, L, F)
     if m >= min_axis:
         return 0.0
     lam = getattr(config, "WRF_PRIOR_MIN_AXIS_LAMBDA", 2.5)
+    if getattr(config, "WRF_MIN_AXIS_SCALED", False):
+        coefs = _prior_coefs(table)
+        slope_sum = abs(coefs.get("wC", 0.0)) + abs(coefs.get("wL", 0.0)) + abs(coefs.get("wF", 0.0))
+        ratio = getattr(config, "WRF_MIN_AXIS_LAMBDA_RATIO", 0.69)
+        lam = ratio * slope_sum
     return lam * (min_axis - m)
 
 
@@ -124,7 +136,7 @@ def prior_p_hat(setup: str, C: float, L: float, F: float, table: dict = None) ->
     sizing_only = getattr(config, "WRF_PRIOR_CAP_SIZING_ONLY", False)
     if getattr(config, "WRF_PRIOR_MIN_AXIS_SOFT", True):
         # 연속 페널티(소프트) — 약한 축은 매끄럽게, 역행 축은 강하게 차단.
-        p = _sigmoid(z - _min_axis_penalty(C, L, F))
+        p = _sigmoid(z - _min_axis_penalty(C, L, F, table))
         return min(1.0, p) if sizing_only else min(cap, p)
     # 구동작: 하드 절벽(한 축이라도 <min_axis → floor-0.03 고정).
     p = _sigmoid(z) if sizing_only else min(cap, _sigmoid(z))
@@ -169,7 +181,7 @@ def calibrated_p_hat(setup: str, C: float, L: float, F: float,
     # [Pillar3-②] min-axis 페널티를 보정 경로에도 일관 적용 — 콜드스타트↔보정 불연속 제거
     # (구버전은 보정셀이 min-axis 보호를 우회 → 같은 C/L/F가 보정 후 갑자기 발사되던 비일관).
     if getattr(config, "WRF_PRIOR_MIN_AXIS_SOFT", True):
-        z -= _min_axis_penalty(C, L, F)
+        z -= _min_axis_penalty(C, L, F, table)
     p = min(cap, _sigmoid(z))
     cell_floor = float(cell.get("win_floor", floor))
     return p, "calibrated", cell_floor
