@@ -514,6 +514,30 @@ CLAUDE.md 5-I 원칙(검증→점등)의 기본값은 OFF지만, 이 배치는 *
 > 이 배치와 무관하게 `true`(발사는 여전히 prior)로 유지 — 보정 P̂ 발사 전환은 별도
 > OOS 검증 후 결정(가장 위험한 전환이라 이번 배치에서 함께 넘기지 않음).
 
+### 2026-08 FP/FN 진단 기반 개선안 (`docs/DIAGNOSTIC_2026-08_FPFN.md`)
+
+결판 337건 재채점 진단: prior 재적합(위 2026-07 개선안2)이 P̂ 스케일을 정직화했는데
+`WRF_WIN_FLOOR`가 구 스케일에 맞춰진 채 안 옮겨져 BO 외 5셋업이 P̂ 도달 상한 미만으로
+대수적 봉쇄(FN)됐고, 그 유일한 발사 가능 셋업(BO) 내부에서는 P̂ 변별력이 0(셋업내부
+AUC 0.490, 셋업 base-rate AUC 0.698 — 발사판정이 사실상 셋업 화이트리스트)이었다(FP).
+원인은 재적합 승격 조건이 **Brier 단독**이라 레벨보정만으로 통과하고 순위정보(AUC)
+붕괴를 못 걸렀기 때문(실측 Brier 0.36→0.15, AUC 0.49) — 재현: `python
+analysis/audit/diagnose_fp_fn.py`.
+
+| 개선안 | 토글 | 기본값 | 효과 | 되돌리기 |
+|---|---|---|---|---|
+| 2. 재적합 승격 게이트 AUC화 | `WRF_PRIOR_REFIT_AUC_MIN`, `WRF_PRIOR_REFIT_WITHIN_AUC_MIN` | 각 0.55 | `WRF_PRIOR_REFIT_ENABLED=true`일 때 기울기(wC/wL/wF) 발행 조건에 **Brier 개선 ∧ 홀드아웃 AUC ∧ 셋업내부 AUC**를 모두 요구(기존은 Brier 단독). 홀드아웃 분리에 `WRF_EMBARGO_HOURS`(72h) purge 추가(경계 라벨 누수 차단). 미달 시 절편(셋업 base-rate)만 발행, 기울기는 0 — 라이브 반영: `analysis/calibrate.py` 실행 시 즉시 적용 | 임계를 0으로 내리면 구동작(Brier만으로 승격)과 사실상 동일 |
+| 1. EV 기준 발사 임계 | `WRF_FLOOR_MODE` | `"winrate"`(무변경) | `"ev"`로 바꾸면 발사조건이 `P̂≥WRF_WIN_FLOOR`에서 `P̂≥(1+WRF_EV_MIN)/(1+RR)`로 교체(RR과 정합된 임계, 신규 튜닝 파라미터 없음) | `"winrate"` = 구동작(현재 기본) |
+| 3. 재적합 기울기 학습모집단 한정 | `WRF_REFIT_SLOPE_LIVE_ONLY` | `false`(무변경) | `true`면 절편은 전량, 기울기는 비섀도(발사 가능) 결판만으로 재적합(결판의 67%가 섀도 셋업이라 단일 pooled 기울기가 그쪽에 지배되던 문제 완화) | `false` = 구동작 |
+| 4. min-axis 페널티 스케일 정합 | `WRF_MIN_AXIS_SCALED` (+`WRF_MIN_AXIS_LAMBDA_RATIO`=0.69) | `false`(무변경) | `true`면 `WRF_PRIOR_MIN_AXIS_LAMBDA`(고정 2.5) 대신 λ=비율×재적합 기울기 합으로 재계산(재적합이 기울기를 줄이면 페널티도 같이 줄어 이중차감 방지) | `false` = 구동작(λ=2.5 고정) |
+
+> **Fork A(`W_floor`의 의미) 미결정**: 개선안1(EV 임계)은 발사빈도를 정상화하지만
+> Gate-In(반기 2분할 모두 발사집합 edge≥0)이 현재 표본에서 미충족(H2 avgR −0.384) —
+> 그래서 기본값을 `"winrate"`(무변경)로 유지했다. 개선안2(AUC 게이트)는 이미 라이브에
+> 반영됐다(다음 `calibrate.py` 실행부터, 되돌릴 필요 없는 순수 버그 수정 성격) — 실측
+> 회귀 없음(BO long 발사 7건 동일 유지, 셋업내부 AUC 0.475로 정직화).
+> 개선안5(유니버스 확장)는 이번 배치에서 보류(사용자 지시 — 유니버스 유지).
+
 ### 레벨/구조 파라미터 (되돌리기 값 존재)
 
 단순 ON/OFF가 아니라 수치 하나로 "무효과 값"이 정의된 파라미터.

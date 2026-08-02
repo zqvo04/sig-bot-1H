@@ -729,6 +729,14 @@ WRF_PCT_MIDRANK = os.getenv("WRF_PCT_MIDRANK", "true").lower() not in ("0", "fal
 # 포함)으로 숏에 관대(비대칭). 숏도 명시적 약세(히스토그램<0)를 요구해 대칭화.
 WRF_TF_MACD_SYM = os.getenv("WRF_TF_MACD_SYM", "true").lower() not in ("0", "false", "no", "")
 WRF_WIN_FLOOR      = _wrf_f("WRF_WIN_FLOOR", 0.58)    # 승률 플로어(발사 임계)
+# [개선안1, docs/DIAGNOSTIC_2026-08_FPFN.md §4] 발사 임계 모드. "winrate"(기본·무변경):
+# P̂ ≥ WRF_WIN_FLOOR. "ev": P̂ ≥ (1+WRF_EV_MIN)/(1+RR) — RR과 정합된 임계로 교체(신규
+# 튜닝 파라미터 없음, EV_MIN 재사용). prior 재적합이 P̂ 스케일을 바꿔도 플로어가 따로
+# 안 움직여 생기는 대수적 봉쇄(예: RV 도달상한 0.408 < floor 0.58)를 막는다.
+# Gate-In(반기 2분할 모두 발사집합 edge≥0) 미충족 상태 — 기본값을 "winrate"로 두어
+# 되돌리기 가능(5-K③) + 검증 후 점등(5-I). "ev"로 바꿀 때도 rr_ok(EV/RR 게이트)는
+# 그대로 유지된다(임계만 교체, 게이트 추가 아님).
+WRF_FLOOR_MODE     = os.getenv("WRF_FLOOR_MODE", "winrate")  # "winrate" | "ev"
 
 # [③원장-보정 라벨 정합] 오프라인 보정(labels.triple_barrier)은 타임스톱 청산(TP/SL 미터치)을
 # tb_win=None = 스크래치로 '제외'한다. 그런데 원장(Notion Signal Log)은 만기청산을 손익부호로
@@ -801,6 +809,13 @@ WRF_PRIOR_MIN_AXIS = _wrf_f("WRF_PRIOR_MIN_AXIS", 0.10)
 # 음수(역추세 칼받기) 축은 강하게 차단(FP 보존). prior·보정 양 경로에 일관 적용(불연속 제거).
 WRF_PRIOR_MIN_AXIS_SOFT   = os.getenv("WRF_PRIOR_MIN_AXIS_SOFT", "true").lower() not in ("0", "false", "no", "")
 WRF_PRIOR_MIN_AXIS_LAMBDA = _wrf_f("WRF_PRIOR_MIN_AXIS_LAMBDA", 2.5)  # 로그오즈 페널티 기울기
+# [개선안4, docs/DIAGNOSTIC_2026-08_FPFN.md §4] WRF_PRIOR_MIN_AXIS_LAMBDA는 config 고정
+# 기울기(합 3.6) 스케일에서 정해진 상수라, prior 재적합이 기울기를 줄이면 페널티가 신호를
+# 압도한다(이중 차감). true면 λ = WRF_MIN_AXIS_LAMBDA_RATIO × (재적합|config 기울기 합)로
+# 재계산 — 재적합이 없으면(config 폴백, 합 3.6) 기본 비율 0.69가 λ≈2.484로 현행값을 근사
+# 보존한다(되돌리기 가능). 기본 OFF — 셋업내부 AUC 개선 측정 후 점등(5-I).
+WRF_MIN_AXIS_SCALED       = os.getenv("WRF_MIN_AXIS_SCALED", "false").lower() not in ("0", "false", "no", "")
+WRF_MIN_AXIS_LAMBDA_RATIO = _wrf_f("WRF_MIN_AXIS_LAMBDA_RATIO", 0.69)
 
 # [개선안2, docs/DIAGNOSTIC_2026-07.md §6] prior 계수 오프라인 재적합.
 # calibrate.py가 결판 후보 전량(purged embargo + ridge + 부호제약 w≥0)으로 b0/wC/wL/wF를
@@ -811,6 +826,19 @@ WRF_PRIOR_REFIT_ENABLED = os.getenv("WRF_PRIOR_REFIT_ENABLED", "true").lower() n
 WRF_PRIOR_REFIT_RIDGE   = _wrf_f("WRF_PRIOR_REFIT_RIDGE", 8.0)      # L2 정규화 강도
 WRF_PRIOR_REFIT_HOLDOUT = _wrf_f("WRF_PRIOR_REFIT_HOLDOUT", 0.3)    # 최근 비율 홀드아웃(진단 전용, 적합 제외)
 WRF_PRIOR_REFIT_MIN_N   = _wrf_i("WRF_PRIOR_REFIT_MIN_N", 40)       # 재적합 최소 결판수(미달 시 config 폴백)
+# [개선안2, docs/DIAGNOSTIC_2026-08_FPFN.md §4] 기울기(wC/wL/wF) 승격 게이트 — 홀드아웃
+# Brier 개선만으로는 순위정보(AUC) 붕괴를 못 걸렀다(실측 Brier 0.36→0.15, AUC 0.49).
+# 전체 AUC·셋업내부 AUC(셋업 절편 고정 후 잔여 변별력) 모두 이 임계 이상이어야 기울기가
+# 발행되고, 미달이면 절편만 발행하고 기울기는 0(=순수 셋업 base-rate 모델)으로 폴백한다.
+# 0.55는 "동전던지기보다 약간 나음" — 임의 상향이 아니라 무정보(0.5)와 구분되는 최소선.
+WRF_PRIOR_REFIT_AUC_MIN        = _wrf_f("WRF_PRIOR_REFIT_AUC_MIN", 0.55)
+WRF_PRIOR_REFIT_WITHIN_AUC_MIN = _wrf_f("WRF_PRIOR_REFIT_WITHIN_AUC_MIN", 0.55)
+# [개선안3, docs/DIAGNOSTIC_2026-08_FPFN.md §4] true 면 기울기(wC/wL/wF)는 발사 가능
+# (비섀도) 결판만으로, 절편(b0, 셋업별 고유값)은 전량으로 적합한다 — 결판의 다수(현재
+# 67%)가 라이브가 쏘지 않는 섀도 셋업이라 단일 pooled 기울기가 그쪽에 지배되는 문제
+# 완화(실측: 전량 wC=0.009 vs 비섀도만 wC=0.327). 기본 OFF — 블록 부트스트랩(72h) 계수
+# 신뢰구간이 0을 배제할 때만 점등(5-I, Gate-Out 미충족 상태).
+WRF_REFIT_SLOPE_LIVE_ONLY = os.getenv("WRF_REFIT_SLOPE_LIVE_ONLY", "false").lower() not in ("0", "false", "no", "")
 # prior cap(0.65)을 "확률 상한"에서 "사이징 상한"으로 이관 — 다수 후보가 캡 한 점에
 # 몰려 P̂ 해상도가 소멸하던 문제(실측: 32/59가 cap 고정, corr(P̂,R)=-0.148) 완화.
 # True면 prior_p_hat()이 발사판정·EV·서열화에 쓰이는 값은 캡을 걸지 않고 반환하고,

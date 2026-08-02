@@ -133,16 +133,25 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
                 quarantine.append("SHADOW_SETUP")
             if fire_rights_on and pe.get("fire_rights") == "shadow":
                 quarantine.append("FIRE_RIGHTS")
-            fire = bool(p_hat >= floor and not vetoes and rr_ok and not quarantine)
+            # [개선안1, docs/DIAGNOSTIC_2026-08_FPFN.md §4] 발사 임계 모드 — 기본
+            # "winrate"(무변경): P̂ ≥ 승률플로어. "ev": P̂ ≥ (1+EV_MIN)/(1+RR) 로 대체(RR과
+            # 정합된 임계 — prior 재적합으로 P̂ 스케일이 바뀌어도 자동 추종, 신규 파라미터
+            # 없음). Gate-In 미충족(반기 분할 모두 edge≥0 아님) 상태 — 기본 OFF, 검증 후
+            # 점등(5-I). ON 이어도 rr_ok(EV/RR 게이트)는 그대로 유지 — 임계만 교체한다.
+            if getattr(config, "WRF_FLOOR_MODE", "winrate") == "ev" and lv["rr"] > -1.0:
+                fire_floor = (1.0 + getattr(config, "WRF_EV_MIN", 0.15)) / (1.0 + lv["rr"])
+            else:
+                fire_floor = floor
+            fire = bool(p_hat >= fire_floor and not vetoes and rr_ok and not quarantine)
             # [near-miss 섀도 밴드] 플로어만 못 넘은 '문턱탈락'(veto·RR은 통과) 후보 태깅.
             # 발사엔 무영향 — 표본 굶주린 클래스(특히 숏)의 near-miss 기록용(오프라인 보정).
             band_w = getattr(config, "WRF_SHADOW_BAND_WIDTH", 0.03)
             shadow_band = bool(
                 getattr(config, "WRF_SHADOW_BAND", True)
                 and not fire and not vetoes and rr_ok
-                and (floor - band_w) <= p_hat < floor
+                and (fire_floor - band_w) <= p_hat < fire_floor
             )
-            size = _size_from_p(p_hat, floor, source) if fire else 0.0
+            size = _size_from_p(p_hat, fire_floor, source) if fire else 0.0
             rec = {
                 "setup": c["setup"], "dir": c["dir"], "precond": True,
                 "entry": lv["entry"], "tp": lv["tp"], "sl": lv["sl"],
@@ -151,7 +160,7 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
                 "p_hat": round(p_hat, 4), "p_source": source,
                 "p_prior": round(pe["p_prior"], 4), "p_cal": round(pe["p_cal"], 4),
                 "p_cal_source": pe["cal_source"],
-                "win_floor": round(floor, 4),
+                "win_floor": round(fire_floor, 4),
                 "C": c["C"], "L": c["L"], "F": c["F"],
                 "confluence_n": c.get("confluence_n", 0),
                 "veto": vetoes, "size": size, "fire": fire,
