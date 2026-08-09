@@ -822,7 +822,7 @@ WRF_MIN_AXIS_LAMBDA_RATIO = _wrf_f("WRF_MIN_AXIS_LAMBDA_RATIO", 0.69)
 # 재적합해 calibration_table.json에 "prior_refit" 블록으로 발행한다. 활성화 시
 # calibration._prior_logodds가 이 블록을 우선 소비하고, 블록 부재 시 위 config 상수로
 # 자동 폴백(콜드스타트 안전 — 5-B: 라이브는 여전히 학습하지 않고 읽기만 한다).
-WRF_PRIOR_REFIT_ENABLED = os.getenv("WRF_PRIOR_REFIT_ENABLED", "true").lower() not in ("0", "false", "no", "")
+WRF_PRIOR_REFIT_ENABLED = os.getenv("WRF_PRIOR_REFIT_ENABLED", "false").lower() not in ("0", "false", "no", "")
 WRF_PRIOR_REFIT_RIDGE   = _wrf_f("WRF_PRIOR_REFIT_RIDGE", 8.0)      # L2 정규화 강도
 WRF_PRIOR_REFIT_HOLDOUT = _wrf_f("WRF_PRIOR_REFIT_HOLDOUT", 0.3)    # 최근 비율 홀드아웃(진단 전용, 적합 제외)
 WRF_PRIOR_REFIT_MIN_N   = _wrf_i("WRF_PRIOR_REFIT_MIN_N", 40)       # 재적합 최소 결판수(미달 시 config 폴백)
@@ -882,7 +882,7 @@ WRF_REV_CTX_BASE = _wrf_f("WRF_REV_CTX_BASE", 0.25)
 # IC 0.038 < v1 0.054 < v2 0.095로 열등 확인 → v2 채택. FN 관점: v2는 macro-echo 포화가
 # 막던 바닥 반전(공백 A) 해소 + downleg의 knife-catch 롱 FP 제거(발사 6→2, 승자 숏 +1).
 # 단일레짐 한계는 유효 → 실험기간 다레짐 표본으로 계속 감시. 되돌리기: WRF_REV_CTX_V2=false.
-WRF_REV_CTX_V2 = os.getenv("WRF_REV_CTX_V2", "true").lower() not in ("0", "false", "no", "")
+WRF_REV_CTX_V2 = os.getenv("WRF_REV_CTX_V2", "false").lower() not in ("0", "false", "no", "")
 
 # ── [Phase C-v4] 임펄스-페이드 킬 (반전형 C축 개혁 — FP 누수 봉합·양방향 대칭) ──
 # 진단(2026-06~07 반사실 3종 + 킬 검증, analysis/audit/verify_rev_ctx_reform.py):
@@ -995,11 +995,11 @@ WRF_ROUTING_SELF_STRUCT = os.getenv("WRF_ROUTING_SELF_STRUCT", "true").lower() n
 #   요구 → 지각)의 거울짝을 '구조 리클레임' 시점으로 앞당김. 페이드 대상 레그가 자기 1H
 #   구조로 신선하게 리클레임(구조플립+VWAP재탈환+EMA)하면 역추세 반전(MR/RV/BR) C 하드차단.
 #   예측이 아니라 거부 → 신호분리력 불요. 상승랠리 숏·하락임펄스 롱(칼받기) 동시 차단(대칭).
-WRF_REV_RECLAIM_KILL = os.getenv("WRF_REV_RECLAIM_KILL", "true").lower() not in ("0", "false", "no", "")
+WRF_REV_RECLAIM_KILL = os.getenv("WRF_REV_RECLAIM_KILL", "false").lower() not in ("0", "false", "no", "")
 WRF_REV_RECLAIM_MIN  = _wrf_i("WRF_REV_RECLAIM_MIN", 2)   # 리클레임 확증 수(구조/VWAP/EMA 중 ≥N) → 킬
 # P1 — [FN] C축 fast-struct 주입: 후행 macro 가중(0.45)을 자기 1H 빠른구조(bos/choch/failed_break/
 #   ema/VWAP)로 일부 이관 → 반전점에서 추종 C가 후행 거시에 덜 눌림(가중합=1 보존·대칭).
-WRF_CTX_FAST_STRUCT = os.getenv("WRF_CTX_FAST_STRUCT", "true").lower() not in ("0", "false", "no", "")
+WRF_CTX_FAST_STRUCT = os.getenv("WRF_CTX_FAST_STRUCT", "false").lower() not in ("0", "false", "no", "")
 WRF_CTX_FAST_W      = _wrf_f("WRF_CTX_FAST_W", 0.20)   # fast 가중(macro 가중에서 이관). 0.45 상한.
 # [V5-B] 리클레임 부스트 — P0 킬의 쌍대(추종형 TF/BO 전용, docs/CAXIS_V5_DESIGN.md §5).
 #   진입방향 다중확증 리클레임 완결(≥WRF_REV_RECLAIM_MIN, P0 임계 재사용) ∧ VWAP/EMA20
@@ -1012,12 +1012,12 @@ WRF_CTX_FAST_W      = _wrf_f("WRF_CTX_FAST_W", 0.20)   # fast 가중(macro 가�
 #   정교화: slow-lag(심볼 자체 4H/일봉/macro 블렌드<0) vs macro-only 비교 → macro-only는
 #   새발사 0(과엄격·자기FN)로 기각, slow-lag 채택. K 민감도 무(4~18 동일) → 기본 6 유지
 #   (샘플튜닝 금지). 되돌리기: WRF_CTX_RECLAIM_BOOST=false.
-WRF_CTX_RECLAIM_BOOST = os.getenv("WRF_CTX_RECLAIM_BOOST", "true").lower() not in ("0", "false", "no", "")
+WRF_CTX_RECLAIM_BOOST = os.getenv("WRF_CTX_RECLAIM_BOOST", "false").lower() not in ("0", "false", "no", "")
 WRF_RECLAIM_FRESH_K   = _wrf_i("WRF_RECLAIM_FRESH_K", 6)   # 신선도: 부호플립 ≤ K봉(1H)
 # P2 — [FN] TF 추세 태우기(무상태 트레일링 익절): 고정 2.5R TP가 스윙 몸통을 자름. TF에 한해
 #   HWM−k·ATR 샹들리에 트레일 + 보유상한 확장. 무상태(신호시점 주석 = trail_dist)로 발행,
 #   오프라인 라벨러가 동일 규칙으로 채점(라이브 포지션 상태 불필요 → 5-E 준수).
-WRF_TF_TRAIL      = os.getenv("WRF_TF_TRAIL", "true").lower() not in ("0", "false", "no", "")
+WRF_TF_TRAIL      = os.getenv("WRF_TF_TRAIL", "false").lower() not in ("0", "false", "no", "")
 WRF_TF_TRAIL_ATR  = _wrf_f("WRF_TF_TRAIL_ATR", 3.0)   # 트레일 거리 = k×ATR(HWM 기준)
 WRF_TF_TRAIL_TMAX = _wrf_i("WRF_TF_TRAIL_TMAX", 72)   # TF 보유상한 확장(48→72h, 추세 태우기)
 

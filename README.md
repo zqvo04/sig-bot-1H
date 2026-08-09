@@ -30,8 +30,8 @@ OKX 무기한 선물(USDT-Swap) **1시간봉 스윙** 신호 봇. **페이퍼 �
 | 알림(텔레그램) | `ALERT_ENABLED=true` — Notion 기록만, 학습기간 중 |
 | 보정(L3) | `WRF_CALIB_DISABLED=true` — 발사는 **prior**, 보정 P̂은 그림자 기록만 |
 | BR(밴드반전) 발사권 | `WRF_SHADOW_SETUPS={"BR"}` — 후보생성·기록은 하되 라이브 발사는 안 함 |
-| **P0/P1/P2 실험** | **2026-07-04부로 기본 ON**(사용자 지시 라이브 실험) — [토글 레퍼런스](#toggles) · [실험 로그](#changelog) 참조 |
-| **C축 V5 실험** | **2026-07-04부로 기본 ON**(사용자 지시 FN-최소화 라이브 실험) — 반전C=v2(`WRF_REV_CTX_V2`)·추종 리클레임부스트(`WRF_CTX_RECLAIM_BOOST`). [실험 로그](#changelog) 참조 |
+| **P0/P1/P2 · C축 V5 실험** | **2026-08-09 전량 롤백(기본 OFF)** — 결판 62건 진단에서 7/4 동시점등 전후로 승률 52%→20%, 셋업 믹스도 함께 뒤바뀌어 개별 토글 평가 불능. 단일변수 재점등 대기. [롤백](#rollback-2026-08) 참조 |
+| **prior 재적합** | **2026-08-09 기본 OFF** — 발행 기울기가 wC=wL=wF=0으로 붕괴해 P̂이 셋업별 상수가 됐다(해상도 0). config 기울기로 폴백. [롤백](#rollback-2026-08) 참조 |
 | 데이터 커버리지 | 거시레짐 UPLEG 관측 **0건**(DOWNLEG/CHOP만) — 롱측 검증은 여전히 보류 상태 |
 
 ---
@@ -443,12 +443,8 @@ python analysis/audit/verify_p012.py          # BR섀도 포함/반사실 · fas
 | 레짐/라우팅 | `WRF_BO_IN_RANGING` | RANGING에서도 박스돌파(BO) 허용(강게이트로 통제) | 연결결함#1 |
 | 레짐/라우팅 | `WRF_RV_MACRO_EXEMPT` | RV(전환)만 거시정면충돌 하드베토 면제(구조붕괴 증거로 대체) | 연결결함#2 |
 | 반전 C축 | `WRF_REV_IMPULSE_KILL` | 신선 임펄스(극단스트레치+단기구조 생존) 페이드 금지 | Phase C-v4 |
-| 반전 C축 | `WRF_REV_RECLAIM_KILL` (+`WRF_REV_RECLAIM_MIN`=2) | 신선 리클레임(구조플립+VWAP+EMA ≥2) 페이드 금지 — impulse_kill보다 조기 발동 | **P0** |
-| 반전 C축 | `WRF_REV_CTX_V2` | 반전 C를 macro-echo 포화 대신 심볼-로컬 구조정합으로(공백 A: 바닥반전 FN 해소) | **C축 V5 실험**(2026-07 라이브) |
-| 추종 C축 | `WRF_CTX_RECLAIM_BOOST` (+`WRF_RECLAIM_FRESH_K`=6) | 추종 C에 리클레임 부스트 max-클램프 — P0 킬의 쌍대(공백 B: Phase3 추종 FN 회복) | **C축 V5 실험**(2026-07 라이브) |
 | 반전 C축 | `WRF_D_SHADOW` | BR(밴드반전) 디텍터 가동(후보생성) — 발사권은 별도(`WRF_SHADOW_SETUPS`) | 밴드반전 일원화 |
 | 반전 C축 | `WRF_D_REQUIRE_REENTRY` | BR 무장을 밴드터치가 아닌 '밴드복귀(재진입)'로 요구(밴드라이딩 오탐 방지) | 밴드반전 일원화 |
-| 추종 C축 | `WRF_CTX_FAST_STRUCT` (+`WRF_CTX_FAST_W`=0.20) | 추종 C의 후행 macro 가중 일부를 자기 1H 빠른구조로 이관 | **P1** |
 | 추종 C축 | `WRF_TF_FIB_PULLBACK` | TF 눌림 판정에 4H 피보 깊은눌림(50~61.8%) 경로 추가 | A1 |
 | precond 완화 | `WRF_RV_SOFT_PRECOND` | RV 5중 AND를 소프트 스코어로(안전최소치만 게이트, 나머지는 L 감쇠) | Pillar2 |
 | precond 완화 | `WRF_RV_REQUIRE_CHOCH` / `WRF_RV_REQUIRE_RETEST` | RV 하드모드 요구조건(soft=true면 사실상 L감쇠로 대체) | A4/G6 |
@@ -458,7 +454,6 @@ python analysis/audit/verify_p012.py          # BR섀도 포함/반사실 · fas
 | min-axis/EV | `WRF_PRIOR_MIN_AXIS_SOFT` | min-axis 하드절벽을 연속 페널티로(근거리 회복, 역행축은 강차단) | Pillar3 |
 | min-axis/EV | `WRF_EV_GATE` (+`WRF_EV_RR_FLOOR`=0.85) | 고정 RR 대신 기대값(EV=P̂·RR−(1−P̂)≥0.15) 결합 게이트 | Pillar3 |
 | SL/레벨 | `WRF_BO_SL_NEAR` | BO SL을 박스반대편 대신 돌파경계 근처로(RR 정상화) | grind-fix |
-| SL/레벨 | `WRF_TF_TRAIL` (+`WRF_TF_TRAIL_ATR`=3.0·`WRF_TF_TRAIL_TMAX`=72) | TF 고정TP 대신 HWM∓ATR 무상태 트레일링 | **P2** |
 | 계측 | `WRF_SHADOW_BAND` | 플로어 근접 미발사 후보(near-miss)를 기록만(표본기근 클래스 계측) | Phase 1 |
 | 계측 | `WRF_RESEARCH_BARS` | 스냅샷에 백워드 1H 봉 N개 동봉 기록(오프라인 재현용) | — |
 
@@ -467,12 +462,30 @@ python analysis/audit/verify_p012.py          # BR섀도 포함/반사실 · fas
 | 토글 | 효과 | 근거 / OFF 사유 |
 |---|---|---|
 | `WRF_BR_REQUIRE_REV_VOL` / `WRF_BR_REQUIRE_REV_CANDLE` | BR precond에 TF/MR/RV와 동일한 반전봉 거래량·반전캔들 게이트 재사용 배선 | 과거 BR 후보 31건 전량이 이 게이트로 걸러짐(거래량 100%·반전캔들 필드 자체 부재) — 승률 재검증이 현재로선 불가, ON 후 신규 섀도 표본 축적 필요 ([BR정합](#changelog)) |
+| `WRF_REV_RECLAIM_KILL`(P0) / `WRF_CTX_FAST_STRUCT`(P1) / `WRF_TF_TRAIL`(P2) / `WRF_REV_CTX_V2` / `WRF_CTX_RECLAIM_BOOST` | 7/4 C축·트레일 실험 배치 | **2026-08-09 롤백** — 동시 점등이라 개별 효과 분리 불가([롤백](#rollback-2026-08)) |
+| `WRF_PRIOR_REFIT_ENABLED` | prior 계수를 오프라인 재적합 블록에서 소비 | **2026-08-09 롤백** — 발행 기울기 전부 0(P̂ 해상도 소멸). config 1.1/1.3/1.2 폴백([롤백](#rollback-2026-08)) |
 | `WRF_REGIME_ADX_SOLE` | ADX 단독으로 TRENDING 승격(구동작 복귀 스위치) | 후행 ADX 스파이크는 소진/반전 직전 신호라 추종 라우팅에 음(−)스킬 확인(AUC 0.45) — 강등 유지 (Pillar1) |
 
-> **참고**: `WRF_REV_CTX_V2`·`WRF_CTX_RECLAIM_BOOST`는 2026-07-04 C축 V5 실험으로
-> **기본 ON으로 전환**(위 "기본 ON" 표 참조). 사전등록 게이트(UPLEG 다레짐·B1 결판≥8)는
-> 여전히 미충족이나, 백테스트가 악화를 보인 게 아니라 표본부족이라 사용자 지시로
-> 실측 표본 축적을 위한 조건부 라이브 실험으로 전환. 되돌리기: 각 토글 `=false`.
+<a id="rollback-2026-08"></a>
+### 2026-08-09 롤백 (결판 62건 진단)
+
+Notion 1H Signal Log 결판 62건(2026-06-19~08-09) 분석 결과 두 가지가 확인됐다.
+
+1. **7/4 동시 점등의 평가 불능.** P0/P1/P2 + C축 V5를 같은 날 함께 켰고, 그 전후로
+   승률 52%(n=27) → 20%(n=35), 셋업 믹스도 RV 우세 → BO 우세로 바뀌었다. 토글 효과·믹스
+   변화·시장 국면이 분리되지 않아 어떤 토글도 채점할 수 없다. 5종 전부 기본 OFF로 되돌리고,
+   재점등은 **단일변수·최소 4주 고정** 조건에서만 한다(CLAUDE.md 5-I).
+2. **P̂ 기울기 붕괴.** `prior_refit` 블록이 `wC=wL=wF=0.0`을 발행한 상태였고(AUC 승격
+   게이트 미달로 절편만 발행) 라이브가 그것을 소비해 `P̂ = sigmoid(b0[setup])` — 셋업별
+   상수가 됐다. C/L/F가 판정에 전혀 들어가지 않았고 floor 0.58을 넘는 셋업은 MR 하나뿐.
+   `WRF_PRIOR_REFIT_ENABLED=false`로 config 기울기(1.1/1.3/1.2) 폴백.
+
+같은 진단에서 P̂ 캡(0.65) 포화는 이미 해소돼 있음을 확인했다 —
+`WRF_PRIOR_CAP_SIZING_ONLY=true`(2026-07 개선안2)가 캡을 사이징에만 적용한다.
+
+자기점검: `python analysis/audit/verify_rollback_2026_08.py`
+
+되돌리기: 각 토글 `=true`.
 
 ### 거버넌스 스위치 (그림자 운영 · 발사권)
 
