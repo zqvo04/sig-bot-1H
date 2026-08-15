@@ -1,4 +1,4 @@
-"""schema v3 — 매시간 학습데이터 1행 빌더 (JSONL).
+"""schema v4 — 매시간 학습데이터 1행 빌더 (JSONL).
 
 한 시간 = 1행. 라벨은 박제하지 않고 경로에서 오프라인 파생. 멱등키 =
 symbol + 봉시각. path는 처음 null, 4h부터 증분, 72h 완성 시 complete=true.
@@ -61,14 +61,21 @@ def build_row(engine_out: dict, legacy_meta: dict = None) -> dict:
             "setup": c["setup"], "dir": c["dir"], "precond": c["precond"],
             "entry": c["entry"], "tp": c["tp"], "sl": c["sl"],
             "r_dist": c["r_dist"], "rr": c["rr"], "t_max": c["t_max"],
-            "p_hat": c["p_hat"], "p_source": c["p_source"],
+            "trail_dist": c.get("trail_dist"),
+            # 모델 확률과 실제 발사 확률을 분리 보존한다.
+            "p_hat": c["p_hat"], "p_execution": c.get("p_execution", c["p_hat"]),
+            "p_source": c["p_source"],
             "p_prior": c.get("p_prior"), "p_cal": c.get("p_cal"),
-            "p_cal_source": c.get("p_cal_source"),
+            "p_execution_prior": c.get("p_execution_prior"),
+            "p_execution_cal": c.get("p_execution_cal"),
+            "p_cal_source": c.get("p_cal_source"), "win_floor": c.get("win_floor"),
             "C": c["C"], "L": c["L"], "F": c["F"],
             "confluence_n": c["confluence_n"], "veto": c["veto"],
             "size": c["size"], "fire": c["fire"],
             "shadow_band": c.get("shadow_band", False),
             "quarantine": c.get("quarantine", []),
+            "reason": c.get("reason", ""), "decision_id": c.get("decision_id"),
+            "execution_plan": c.get("execution_plan"),
         }
         for c in engine_out.get("candidates", [])
     ]
@@ -76,7 +83,8 @@ def build_row(engine_out: dict, legacy_meta: dict = None) -> dict:
         "snapshot_id": f"{symbol}_{ts}",
         "ts": ts,
         "symbol": symbol,
-        "schema_version": getattr(config, "WRF_SCHEMA_VERSION", 3),
+        "schema_version": getattr(config, "WRF_SCHEMA_VERSION", 4),
+        "execution_semantics": "canonical_execution_plan_v1",
         "p0": engine_out["p0"],
         "raw": engine_out["raw"],
         "ctx": engine_out["ctx"],

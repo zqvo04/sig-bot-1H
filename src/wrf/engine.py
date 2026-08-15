@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from . import calibration, detectors, features, levels, veto
+from . import calibration, detectors, execution, features, levels, veto
 from .btc_macro import classify_btc_macro
 
 logger = logging.getLogger(__name__)
@@ -105,26 +105,30 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
             # [Phase 2] prior·보정 동시 평가(그림자 A/B). p_hat는 스위치 반영값.
             pe = calibration.evaluate(c, feat["ctx"], table)
             p_hat, source, floor = pe["p_hat"], pe["source"], pe["floor"]
-            # [Pillar2-③] BO near-SL 타이트니스 보정 — SL을 박스높이→~ATR로 당기면 실제 승률↓
-            # 인데 prior P̂은 SL을 모른다 → r_dist/박스높이가 작을수록 p_hat 소폭 차감(기하-확률 결합).
+            # BO near-SL 타이트니스는 모델 확률과 실행 확률을 혼동하지 않도록
+            # prior·calibrated 양쪽에 같은 geometry transform으로 적용한다. p_hat는
+            # 실제 발사 확률(p_execution)이며 A/B는 아래 두 실행 확률을 비교해야 한다.
+            p_exec_prior = float(pe["p_prior"])
+            p_exec_cal = float(pe["p_cal"])
             if (c["setup"] == "BO" and getattr(config, "WRF_BO_SL_NEAR", False)
                     and "box_hi" in c and "box_lo" in c):
                 box_h = abs(float(c["box_hi"]) - float(c["box_lo"]))
                 if box_h > 0:
                     tight = lv["r_dist"] / box_h
                     ref = getattr(config, "WRF_BO_SL_TIGHT_REF", 0.60)
-                    p_hat = max(0.0, p_hat - getattr(config, "WRF_BO_SL_TIGHT_PEN", 0.15)
-                                * max(0.0, ref - tight))
+                    penalty = getattr(config, "WRF_BO_SL_TIGHT_PEN", 0.15) * max(0.0, ref - tight)
+                    p_exec_prior = max(0.0, p_exec_prior - penalty)
+                    p_exec_cal = max(0.0, p_exec_cal - penalty)
+            p_hat = p_exec_cal if source == "calibrated" else p_exec_prior
             vetoes = veto.evaluate(c, feat, collected, global_v)
-            # [Pillar3-③] EV-결합 게이트: 고정 RR≥1.5 대신 기대값 EV=P̂·RR−(1−P̂)≥EV_MIN
-            # (고확률일수록 RR 요구 완화 = EV 정합). 보정셀은 학습 승률 존중 → 우회.
+            # EV/RR 안전제약은 확률 출처와 무관하게 적용한다. 보정은 확률을 바꿀 뿐
+            # 음의 기대값 거래를 통과시킬 권한이 없다.
             if getattr(config, "WRF_EV_GATE", True):
                 ev = p_hat * lv["rr"] - (1.0 - p_hat)
-                rr_ok = (source == "calibrated") or (
-                    ev >= getattr(config, "WRF_EV_MIN", 0.15)
-                    and lv["rr"] >= getattr(config, "WRF_EV_RR_FLOOR", 1.0))
+                rr_ok = (ev >= getattr(config, "WRF_EV_MIN", 0.15)
+                         and lv["rr"] >= getattr(config, "WRF_EV_RR_FLOOR", 1.0))
             else:
-                rr_ok = (source == "calibrated") or (lv["rr"] >= getattr(config, "WRF_MIN_RR", 1.5))
+                rr_ok = lv["rr"] >= getattr(config, "WRF_MIN_RR", 1.5)
             # [Phase A] 격리(quarantine): 발사조건과 무관한 발사권 통제(거버넌스 게이트).
             #   SHADOW_SETUP — 미검증 셋업(WRF_SHADOW_SETUPS)  ·  FIRE_RIGHTS — 실현
             #   승률 사후검정 강등 셀(테이블 발행). 격리돼도 기록·오프라인 채점은 계속.
@@ -157,8 +161,10 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
                 "entry": lv["entry"], "tp": lv["tp"], "sl": lv["sl"],
                 "r_dist": lv["r_dist"], "rr": lv["rr"], "t_max": lv["t_max"],
                 **({"trail_dist": lv["trail_dist"]} if "trail_dist" in lv else {}),
-                "p_hat": round(p_hat, 4), "p_source": source,
+                "p_hat": round(p_hat, 4), "p_execution": round(p_hat, 4), "p_source": source,
                 "p_prior": round(pe["p_prior"], 4), "p_cal": round(pe["p_cal"], 4),
+                "p_execution_prior": round(p_exec_prior, 4),
+                "p_execution_cal": round(p_exec_cal, 4),
                 "p_cal_source": pe["cal_source"],
                 "win_floor": round(fire_floor, 4),
                 "C": c["C"], "L": c["L"], "F": c["F"],
@@ -168,6 +174,9 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
                 "quarantine": quarantine,
                 "reason": c.get("reason", ""),
             }
+            # execution_plan은 엔진·원장·오프라인 라벨러가 공유하는 불변 거래 정의다.
+            rec["execution_plan"] = execution.build_plan(symbol, feat["ts"], rec)
+            rec["decision_id"] = rec["execution_plan"]["decision_id"]
             enriched.append(rec)
             if fire:
                 fired.append(rec)

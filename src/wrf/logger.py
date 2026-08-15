@@ -120,6 +120,70 @@ def record_snapshot(row: dict) -> bool:
     return True
 
 
+_DECISION_STATES = {"ENGINE_APPROVED", "ENGINE_REJECTED", "SUPPRESSED_OPEN", "LEDGER_CREATED", "LEDGER_WRITE_FAILED", "CLOSED"}
+
+
+def _decision_ledger_file(symbol: str, ts: str) -> str:
+    """Monthly, symbol-partitioned append-only decision state ledger."""
+    stamp = pd.Timestamp(ts)
+    base = getattr(config, "WRF_DECISION_LEDGER_DIR", "data/decision_ledger")
+    slug = symbol.replace("/", "-").replace(":", "-")
+    out_dir = os.path.join(base, slug)
+    os.makedirs(out_dir, exist_ok=True)
+    return os.path.join(out_dir, f"{stamp.strftime('%Y-%m')}.jsonl")
+
+
+def _event_exists(path: str, decision_id: str, state: str) -> bool:
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("decision_id") == decision_id and row.get("state") == state:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def record_decision_event(plan: dict, state: str, reason: str = "", extra: dict | None = None) -> bool:
+    """Record one idempotent state transition for a canonical execution plan.
+
+    This ledger is intentionally independent of Notion. A Notion outage can no
+    longer erase whether engine approval was suppressed, written, or closed.
+    """
+    if state not in _DECISION_STATES or not isinstance(plan, dict):
+        return False
+    decision_id = plan.get("decision_id")
+    ts = plan.get("decision_ts")
+    symbol = plan.get("symbol")
+    if not decision_id or not ts or not symbol:
+        return False
+    try:
+        path = _decision_ledger_file(str(symbol), str(ts))
+        if _event_exists(path, str(decision_id), state):
+            return False
+        event = {
+            "decision_id": decision_id,
+            "state": state,
+            "event_ts": pd.Timestamp.now(tz=timezone.utc).isoformat(),
+            "reason": reason,
+            "execution_plan": plan,
+        }
+        if extra:
+            event["extra"] = extra
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+        return True
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[wrf.logger] decision event 기록 실패 {state}: {e}")
+        return False
+
+
 def capture_paths(symbol: str, df_1h: "pd.DataFrame") -> int:
     """성숙 행의 72h 경로 증분 캡처(스키마 무관 머신 재사용)."""
     if not enabled():

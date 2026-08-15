@@ -11,6 +11,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone, timedelta
 
+from . import execution
+from . import logger as decision_logger
+
 try:
     import config
     from notion_logger import (_request, _p_num, _p_sel, _p_txt, _p_title,
@@ -95,6 +98,7 @@ SIGNALS_PROPS = {
         ("TP_HIT", "SL_HIT", "TRAIL_STOP", "TIMEOUT", "EXPIRED_WIN", "EXPIRED_LOSS", "OPEN")]}},
     "Signaled At": {"date": {}}, "Resolved At": {"date": {}},
     "Reason": {"rich_text": {}}, "Signal ID": {"rich_text": {}},
+    "Decision ID": {"rich_text": {}},
 }
 
 SNAP_NUM = ["RSI", "RSI 4H", "RSI 1D", "BB %b", "Dist VWAP ATR", "Dist EMA20 ATR",
@@ -214,28 +218,30 @@ def ensure_snapshots_db():
 
 
 # ── 발사 게이트: 같은 심볼·방향 중복 방지 ─────────────────────────────────
-def has_open_signal(symbol: str, direction: str) -> bool:
-    """같은 심볼·방향의 OPEN 신호가 이미 있으면 True(중복 발사 차단용).
+def has_open_signal(symbol: str, direction: str) -> bool | None:
+    """Return True for an existing OPEN, False for a confirmed absence, None if unknown.
 
-    반대 방향은 무관(허용) — Direction 필터로 방향별 격리. Notion 비활성이거나
-    조회 실패 시 False(게이트 미작동 = 기존 동작 보존, 알림 계통 영향 없음).
-    신호 원장(OPEN→WIN/LOSS 판정)이 Notion Signals DB이므로 오픈여부의 진실원본도 여기다."""
+    The caller must fail closed on None. Treating unavailable external state as
+    False previously created engine fires that never reached the paper ledger.
+    """
     if not enabled():
-        return False
+        return None
     try:
         db = ensure_signals_db()
         if not db:
-            return False
+            return None
         res = _request("POST", f"/databases/{db}/query", {
             "filter": {"and": [
                 {"property": "Status", "select": {"equals": "OPEN"}},
                 {"property": "Symbol", "select": {"equals": symbol}},
                 {"property": "Direction", "select": {"equals": direction.upper()}},
             ]}, "page_size": 1})
-        return bool(res and res.get("results"))
+        if res is None:
+            return None
+        return bool(res.get("results"))
     except Exception as e:  # pragma: no cover
-        logger.warning(f"[NotionWRF] has_open_signal 조회 실패(격리): {e}")
-        return False
+        logger.warning(f"[NotionWRF] has_open_signal 조회 실패: {e}")
+        return None
 
 
 # ── 신호 기록 (발사 후보 1건 = 1행) ────────────────────────────────────
@@ -269,6 +275,7 @@ def log_signal(cand: dict, engine_out: dict) -> bool:
             "C": _p_num(cand["C"]), "L": _p_num(cand["L"]), "F": _p_num(cand["F"]),
             "Exit Reason": _p_sel("OPEN"), "Signaled At": _p_date_kst(engine_out["ts"]),
             "Reason": _p_txt(cand.get("reason", "")), "Signal ID": _p_txt(sid),
+            "Decision ID": _p_txt(cand.get("decision_id", "")),
         }
         if cand.get("trail_dist"):
             props["Trail Dist"] = _p_num(cand["trail_dist"])
@@ -381,6 +388,34 @@ def _eval_signal_trailing(direction, entry, sl, trail_dist, t_max, candles, sign
     return None  # 미성숙
 
 
+def _eval_canonical_signal(direction, entry, tp, sl, t_max, candles, signaled_dt, trail_dist=None):
+    """Evaluate the exact absolute paper plan used by both ledger and labels."""
+    if not all([direction, entry, tp, sl, signaled_dt]):
+        return None
+    try:
+        import pandas as pd
+        sdt = pd.Timestamp(signaled_dt)
+        if sdt.tzinfo is None:
+            sdt = sdt.tz_localize(timezone.utc)
+        fut = candles[candles.index > sdt]
+        plan = {
+            "dir": str(direction).lower(), "entry": float(entry), "tp": float(tp), "sl": float(sl),
+            "r_dist": abs(float(entry) - float(sl)), "rr": abs(float(tp) - float(entry)) / abs(float(entry) - float(sl)),
+            "t_max": int(t_max), "trail_dist": float(trail_dist) if trail_dist else None,
+        }
+        out = execution.evaluate_plan(plan, fut)
+        if out is None:
+            return None
+        rdt = fut.index[int(out["bars"]) - 1].isoformat()
+        return {
+            "status": out["status"], "reason": out["reason"], "mfe": out["mfe"], "mae": out["mae"],
+            "bars": out["bars"], "rdt": rdt, "exit_price": out["exit_price"], "r_mult": out["r_multiple"],
+        }
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[NotionWRF] canonical plan 평가 실패: {e}")
+        return None
+
+
 def evaluate_open_signals(symbol: str, df_1h) -> int:
     """OPEN 신호를 캔들로 판정 → Status/Exit Reason/MFE/MAE/Bars/Resolved 갱신."""
     if not enabled():
@@ -410,21 +445,28 @@ def evaluate_open_signals(symbol: str, df_1h) -> int:
             sdt = pd.Timestamp(sig_at)
             if sdt.tzinfo is None:
                 sdt = sdt.tz_localize(timezone.utc)
-            # [개선안4-c] trail_dist가 실려 있으면(TF) 고정 TP 대신 라이브도 오프라인과
-            # 동일한 샹들리에 트레일 규칙으로 채점 — 라이브·오프라인 채점 불일치 해소.
-            if trail_dist and getattr(config, "WRF_TF_TRAIL_LIVE_EXEC", True):
-                out = _eval_signal_trailing(direction, entry, sl, trail_dist, t_max,
-                                            df_1h, sdt, now)
-            else:
-                out = _eval_signal(direction, entry, tp, sl, t_max, df_1h, sdt, now)
+            # immutable 절대 execution plan으로 평가한다. 이 경로는 labels.py의
+            # execution.evaluate_plan_path와 동일하며 future open으로 TP/SL을 재배치하지 않는다.
+            out = _eval_canonical_signal(direction, entry, tp, sl, t_max, df_1h, sdt, trail_dist=trail_dist)
             if not out:
                 continue
-            _request("PATCH", f"/pages/{page['id']}", {"properties": {
+            patched = _request("PATCH", f"/pages/{page['id']}", {"properties": {
                 "Status": _p_sel(out["status"]), "Exit Reason": _p_sel(out["reason"]),
                 "MFE R": _p_num(round(out["mfe"], 3)), "MAE R": _p_num(round(out["mae"], 3)),
                 "Bars To Exit": _p_num(out["bars"]), "Resolved At": _p_date_kst(out["rdt"]),
                 "Exit Price": _p_num(out["exit_price"]), "R Multiple": _p_num(out["r_mult"])}})
-            updated += 1
+            if patched:
+                decision_id = _get_txt(p, "Decision ID")
+                if decision_id:
+                    decision_logger.record_decision_event({
+                        "decision_id": decision_id, "decision_ts": sdt.isoformat(), "symbol": symbol,
+                        "setup": _get_sel(p, "Setup"), "dir": str(direction).lower(),
+                        "entry": entry, "tp": tp, "sl": sl, "r_dist": abs(entry - sl),
+                        "rr": abs(tp - entry) / abs(entry - sl), "t_max": int(t_max),
+                        "trail_dist": trail_dist,
+                    }, "CLOSED", reason=out["reason"],
+                    extra={"status": out["status"], "r_multiple": out["r_mult"], "exit_price": out["exit_price"]})
+                updated += 1
         if updated:
             logger.info(f"[NotionWRF] ✅ 신호 판정 {symbol}: {updated}건")
         return updated

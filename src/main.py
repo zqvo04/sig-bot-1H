@@ -131,12 +131,32 @@ def run_signal(symbol: str, exchange) -> None:
         fired_dirs = set()
         for cand in out["fired"]:
             d = cand["dir"]
-            if d in fired_dirs or notion_wrf.has_open_signal(symbol, d):
-                logger.info(f"[main] {symbol} {d.upper()} 이미 OPEN/발사됨 → 같은 방향 추가 신호 생략")
+            plan = cand.get("execution_plan") or {}
+            # ENGINE_APPROVED는 detector/engine의 의사결정이며 이후 원장 결과와 분리해 남긴다.
+            wrf_logger.record_decision_event(plan, "ENGINE_APPROVED", reason="engine_fire")
+            if d in fired_dirs:
+                wrf_logger.record_decision_event(plan, "SUPPRESSED_OPEN", reason="same_run_direction_duplicate")
+                logger.info(f"[main] {symbol} {d.upper()} 같은 실행의 중복 발사 → 억제")
                 continue
-            notion_wrf.log_signal(cand, out)
-            _alert(cand, out)
-            fired_dirs.add(d)
+            open_state = notion_wrf.has_open_signal(symbol, d)
+            # 외부 원장의 가용성을 모르면 새 페이퍼 포지션을 만들지 않는다. 기존 fail-open은
+            # JSONL에만 fire가 남고 Signal Log가 사라지는 회계 누수의 원인이었다.
+            if open_state is None:
+                wrf_logger.record_decision_event(plan, "SUPPRESSED_OPEN", reason="ledger_unavailable")
+                logger.warning(f"[main] {symbol} {d.upper()} 원장 OPEN 상태 불명 → fail-closed 억제")
+                continue
+            if open_state:
+                wrf_logger.record_decision_event(plan, "SUPPRESSED_OPEN", reason="existing_open_signal")
+                logger.info(f"[main] {symbol} {d.upper()} 이미 OPEN → 같은 방향 추가 신호 생략")
+                continue
+            if notion_wrf.log_signal(cand, out):
+                wrf_logger.record_decision_event(plan, "LEDGER_CREATED", reason="notion_signal_created",
+                                                  extra={"signal_id": cand.get("decision_id")})
+                _alert(cand, out)
+                fired_dirs.add(d)
+            else:
+                wrf_logger.record_decision_event(plan, "LEDGER_WRITE_FAILED", reason="notion_signal_write_failed")
+                logger.warning(f"[main] {symbol} {d.upper()} Signal Log 기록 실패 → 알림/발사 억제")
     except Exception as e:
         logger.error(f"[main] {symbol} 엔진 실패(격리): {e}\n{traceback.format_exc()}")
 

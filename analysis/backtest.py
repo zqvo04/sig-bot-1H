@@ -248,25 +248,36 @@ def _ab_metrics(df: pd.DataFrame):
     dec = df[df["tb_win"].notna()].copy()
     if dec.empty:
         return None
+    # v4는 geometry 보정까지 반영한 p_execution_*만 A/B 평가에 쓴다.
+    # legacy v3의 p_prior/p_cal은 실행 확률과 다를 수 있으므로 별도 표시한다.
+    have_execution = ("p_execution_prior" in dec and "p_execution_cal" in dec
+                      and dec["p_execution_prior"].notna().any()
+                      and dec["p_execution_cal"].notna().any())
     have_shadow = dec["p_cal"].notna().any() if "p_cal" in dec else False
-    if have_shadow:
+    if have_execution:
+        d = dec[dec["p_execution_prior"].notna() & dec["p_execution_cal"].notna()].copy()
+        prior_col, cal_col = "p_execution_prior", "p_execution_cal"
+        src = "v4 스냅샷 기록(p_execution_prior/p_execution_cal)"
+    elif have_shadow:
         d = dec[dec["p_cal"].notna() & dec["p_prior"].notna()].copy()
-        src = "스냅샷 기록(p_prior/p_cal)"
+        prior_col, cal_col = "p_prior", "p_cal"
+        src = "legacy v3 스냅샷 기록(p_prior/p_cal; 실행확률과 다를 수 있음)"
     else:
         pri, pcal = _recompute_pcal(dec)
         dec = dec.assign(p_prior=pri, p_cal=pcal)
         d = dec[dec["p_cal"].notna() & dec["p_prior"].notna()].copy()
-        src = "현 테이블 재계산(in-sample 주의)"
+        prior_col, cal_col = "p_prior", "p_cal"
+        src = "현 테이블 재계산(in-sample·legacy semantics 주의)"
     if d.empty:
         return None
     y = d["tb_win"].astype(float).values
-    bp, bc = _brier(d["p_prior"].values, y), _brier(d["p_cal"].values, y)
-    moved = int((abs(d["p_cal"] - d["p_prior"]) > 1e-4).sum())
+    bp, bc = _brier(d[prior_col].values, y), _brier(d[cal_col].values, y)
+    moved = int((abs(d[cal_col] - d[prior_col]) > 1e-4).sum())
     return {
         "source": src, "n": len(d), "moved": moved,
         "win_rate": float(y.mean()),
-        "p_prior_mean": float(d["p_prior"].mean()),
-        "p_cal_mean": float(d["p_cal"].mean()),
+        "p_prior_mean": float(d[prior_col].mean()),
+        "p_cal_mean": float(d[cal_col].mean()),
         "brier_prior": float(bp), "brier_cal": float(bc),
     }
 
@@ -399,6 +410,21 @@ def run(rows: list, by_key: str = "setup", min_n: int = 1,
         print("\nWRF 후보(schema v3+경로) 표본 없음 — 측정할 발사 이력이 아직 없습니다.")
         return
 
+    # v3은 미래 시가 rebasing을 사용한 legacy semantics다. v4 canonical plan이
+    # 존재하는 시점부터 두 보상 함수를 같은 성과표에 섞지 않는다.
+    sem_col = "execution_semantics"
+    canonical = "canonical_execution_plan_v1"
+    if sem_col in df.columns:
+        counts = df[sem_col].fillna("legacy_v3").value_counts().to_dict()
+        print(f"\n■ 실행 의미론 표본: {counts}")
+        if (df[sem_col] == canonical).any():
+            legacy_n = int((df[sem_col] != canonical).sum())
+            if legacy_n:
+                print(f"  ⚠ legacy v3 {legacy_n}건은 canonical v4와 보상 정의가 달라 제외합니다.")
+            df = df[df[sem_col] == canonical].copy()
+        else:
+            print("  ⚠ canonical v4 표본 0건: 아래 결과는 legacy v3 연구용이며 실거래 근사 성과로 해석할 수 없습니다.")
+
     if playbook_only:
         playbook_report(df, floor=floor, min_n=min_n, oos_ratio=oos_ratio,
                         oos_embargo_h=oos_embargo_h,
@@ -418,7 +444,11 @@ def run(rows: list, by_key: str = "setup", min_n: int = 1,
         return
 
     work = df[df["fire"].fillna(False)] if fired_only else df
-    scope = "발사 후보만(실거래 근사)" if fired_only else "전체 precond 통과 후보"
+    is_canonical = sem_col in df.columns and (df[sem_col] == canonical).all()
+    if fired_only:
+        scope = "발사 승인 후보(canonical 실행계획)" if is_canonical else "발사 승인 후보(legacy v3 연구용)"
+    else:
+        scope = "전체 precond 통과 후보"
 
     # 전체 성능
     print(f"\n■ 성능 요약 — {scope}")

@@ -17,8 +17,12 @@ from datetime import timedelta
 
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_ANALYSIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_ANALYSIS_DIR, ".."))
+sys.path.insert(0, _ANALYSIS_DIR)
+sys.path.insert(0, os.path.join(_REPO_ROOT, "src"))
 from build_dataset import _entry_ref, fwd_ret, mfe_mae, path_efficiency  # noqa: E402
+from wrf import execution  # noqa: E402
 
 try:  # 임계 일관성(calibrate 경유 시 src 가 sys.path 에 있음). 부재 시 기본값.
     import config
@@ -226,6 +230,20 @@ def triple_barrier(path: dict, direction: str, sl_frac: float, tp_frac: float,
             "r_multiple": realized / sl_frac if sl_frac > 0 else 0.0, "tb_win": None}
 
 
+def _canonical_tb(plan: dict, path: dict, p0: float) -> dict | None:
+    """Canonical v4 label: evaluate the stored absolute execution plan unchanged."""
+    out = execution.evaluate_plan_path(plan, path, p0)
+    if out is None:
+        return None
+    outcome = out["outcome"]
+    return {
+        "outcome": outcome,
+        "exit_h": out["bars"],
+        "r_multiple": out["r_multiple"],
+        "tb_win": 1 if outcome == "WIN" else 0 if outcome == "LOSS" else None,
+    }
+
+
 def build_btc_ret_map(rows: list) -> dict:
     """BTC 행에서 {ts → {h: ret_h}} 맵을 만들어 exret(초과수익) 계산에 쓴다."""
     m = {}
@@ -288,11 +306,17 @@ def candidate_dataset(rows: list, sl_priority: bool = True):
             long = c.get("dir") == "long"
             sl_frac = abs(entry - sl) / entry
             tp_frac = abs(tp - entry) / entry
-            # [P2] 후보에 trail_dist가 실리면(WRF_TF_TRAIL) 트레일링으로 채점(고정 TP 무시)
-            td = c.get("trail_dist")
-            trail_frac = (abs(float(td)) / entry) if td else None
-            tb = triple_barrier(path, c["dir"], sl_frac, tp_frac,
-                                c.get("t_max", 48), sl_priority, trail_frac=trail_frac)
+            # v4는 decision time에 확정된 절대 execution_plan을 그대로 재생한다.
+            # 기존 v3 행만 하위호환 legacy rebasing 라벨을 사용하며 성과 집계에서
+            # canonical v4와 혼합하면 안 된다.
+            plan = c.get("execution_plan")
+            if isinstance(plan, dict):
+                tb = _canonical_tb(plan, path, r.get("p0"))
+            else:
+                td = c.get("trail_dist")
+                trail_frac = (abs(float(td)) / entry) if td else None
+                tb = triple_barrier(path, c["dir"], sl_frac, tp_frac,
+                                    c.get("t_max", 48), sl_priority, trail_frac=trail_frac)
             mfe, mae = mfe_mae(path, k=c.get("t_max", 48))
             recs.append({
                 "snapshot_id": r.get("snapshot_id"), "ts": ts, "symbol": r.get("symbol"),
@@ -303,9 +327,14 @@ def candidate_dataset(rows: list, sl_priority: bool = True):
                 "cell": f"{c.get('setup')}|{ctx.get('regime_1h')}|{ctx.get('btc_macro')}",
                 "C": c.get("C"), "L": c.get("L"), "F": c.get("F"),
                 "confluence_n": c.get("confluence_n"),
-                "p_hat": c.get("p_hat"), "p_source": c.get("p_source"),
+                "p_hat": c.get("p_hat"), "p_execution": c.get("p_execution", c.get("p_hat")),
+                "p_source": c.get("p_source"),
                 "p_prior": c.get("p_prior"), "p_cal": c.get("p_cal"),
+                "p_execution_prior": c.get("p_execution_prior"),
+                "p_execution_cal": c.get("p_execution_cal"),
                 "p_cal_source": c.get("p_cal_source"),
+                "decision_id": c.get("decision_id"),
+                "execution_semantics": r.get("execution_semantics", "legacy_v3"),
                 "win_floor": c.get("win_floor"), "rr": c.get("rr"),
                 "fire": c.get("fire"), "veto_n": len(c.get("veto") or []),
                 "quarantine_n": len(c.get("quarantine") or []),

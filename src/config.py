@@ -1127,7 +1127,9 @@ WRF_SIZE_MAX  = _wrf_f("WRF_SIZE_MAX", 2.0)     # 사이즈 상한 단위
 
 # ── 산출물/경로 ──────────────────────────────────────────────────────
 WRF_CALIB_TABLE = os.getenv("WRF_CALIB_TABLE", "data/calibration_table.json")
-WRF_SCHEMA_VERSION = 3
+# v4부터 후보는 immutable execution_plan을 포함한다. v3은 legacy semantics로만 재생한다.
+WRF_SCHEMA_VERSION = 4
+WRF_DECISION_LEDGER_DIR = os.getenv("WRF_DECISION_LEDGER_DIR", "data/decision_ledger")
 
 # ── [테제B 검증 인프라] 진입직전 캔들 윈도 저장 (precond 재실행 백테스트 가능화) ──
 # 기존 오프라인 하니스는 '저장된 후보(candidates)'만 리플레이 → C/L/F·임계 재채점은
