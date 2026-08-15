@@ -10,7 +10,7 @@ F 흐름 : RSI/MACD 소진·동조 + OKX 포지셔닝(펀딩백분위·OI사분�
 from __future__ import annotations
 
 import logging
-from datetime import timezone
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -136,8 +136,13 @@ def allowed_setups(regime_1h: str, regime_4h: str) -> list:
     return s
 
 
-def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
+def build_features(measures: dict, ohlcv: dict, btc_macro: str,
+                   decision_ts: str | None = None) -> dict:
     """측정치(run_full_analysis) + 캔들 + 거시방향 → L1 raw·백분위·ctx.
+
+    ``feature_bar_ts`` is the market-data bar timestamp; ``decision_ts`` is
+    the actual UTC instant at which the paper entry is approved. They are
+    separate fields because an hourly workflow can run after a bar opens.
 
     반환: {"raw": {...schema v3 L1...}, "pct": {...백분위...},
            "ctx": {...}, "ts": iso, "p0": float}
@@ -154,6 +159,12 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
         last_ts = last_ts.tz_localize(timezone.utc)
     else:
         last_ts = last_ts.tz_convert(timezone.utc)
+    if decision_ts is None:
+        decision_dt = datetime.now(timezone.utc)
+    else:
+        decision_dt = pd.Timestamp(decision_ts)
+        decision_dt = (decision_dt.tz_localize(timezone.utc) if decision_dt.tzinfo is None
+                       else decision_dt.tz_convert(timezone.utc))
     price = _f(a.get("current_price")) or _f(df_1h["close"].iloc[-1])
 
     rsi = a.get("rsi", {})
@@ -367,7 +378,8 @@ def build_features(measures: dict, ohlcv: dict, btc_macro: str) -> dict:
         "raw": raw, "pct": pcts, "ctx": ctx,
         "confluence_long": int(confluence_long),
         "confluence_short": int(confluence_short),
-        "ts": last_ts.isoformat(), "p0": price,
+        "ts": decision_dt.isoformat(), "decision_ts": decision_dt.isoformat(),
+        "feature_bar_ts": last_ts.isoformat(), "p0": price,
         "df_1h": df_1h, "df_4h": df_4h, "df_1d": df_1d,
         "measures": a,
     }

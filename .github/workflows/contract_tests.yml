@@ -1,0 +1,36 @@
+name: WRF Contract Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'analysis/**'
+      - 'tests/**'
+      - '.github/workflows/contract_tests.yml'
+      - 'requirements.txt'
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Compile canonical execution modules
+        run: >
+          python -m py_compile
+          src/wrf/gates.py src/wrf/execution.py src/wrf/engine.py
+          src/wrf/features.py src/wrf/logger.py src/wrf/notion_wrf.py
+          src/wrf/schema.py src/wrf/veto.py src/data_pipeline.py
+          analysis/labels.py analysis/audit/diagnose_fp_fn.py src/main.py
+      - name: Run execution contracts
+        run: python -m unittest discover -s tests -v

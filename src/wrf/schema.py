@@ -68,6 +68,7 @@ def build_row(engine_out: dict, legacy_meta: dict = None) -> dict:
             "p_prior": c.get("p_prior"), "p_cal": c.get("p_cal"),
             "p_execution_prior": c.get("p_execution_prior"),
             "p_execution_cal": c.get("p_execution_cal"),
+            "p_execution_adjustment": c.get("p_execution_adjustment"),
             "p_cal_source": c.get("p_cal_source"), "win_floor": c.get("win_floor"),
             "C": c["C"], "L": c["L"], "F": c["F"],
             "confluence_n": c["confluence_n"], "veto": c["veto"],
@@ -76,15 +77,20 @@ def build_row(engine_out: dict, legacy_meta: dict = None) -> dict:
             "quarantine": c.get("quarantine", []),
             "reason": c.get("reason", ""), "decision_id": c.get("decision_id"),
             "execution_plan": c.get("execution_plan"),
+            "execution_path": c.get("execution_path"),
         }
         for c in engine_out.get("candidates", [])
     ]
     row = {
-        "snapshot_id": f"{symbol}_{ts}",
+        # Snapshot identity remains feature-bar based; decision/entry time can
+        # vary inside that hour and is explicitly persisted below.
+        "snapshot_id": f"{symbol}_{engine_out.get('feature_bar_ts', ts)}",
         "ts": ts,
+        "decision_ts": engine_out.get("decision_ts", ts),
+        "feature_bar_ts": engine_out.get("feature_bar_ts", ts),
         "symbol": symbol,
-        "schema_version": getattr(config, "WRF_SCHEMA_VERSION", 4),
-        "execution_semantics": "canonical_execution_plan_v1",
+        "schema_version": getattr(config, "WRF_SCHEMA_VERSION", 5),
+        "execution_semantics": "canonical_execution_plan_v2_5m",
         "p0": engine_out["p0"],
         "raw": engine_out["raw"],
         "ctx": engine_out["ctx"],

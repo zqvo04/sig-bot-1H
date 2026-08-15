@@ -76,13 +76,22 @@ def make_decision_id(symbol: str, ts: str, candidate: dict, cfg_hash: str, sha: 
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
-def build_plan(symbol: str, ts: str, candidate: dict) -> dict:
-    """Freeze a candidate into the one execution definition consumed everywhere."""
+def build_plan(symbol: str, ts: str, candidate: dict, feature_bar_ts: str | None = None) -> dict:
+    """Freeze a candidate into the one execution definition consumed everywhere.
+
+    ``decision_ts`` is the actual decision/entry timestamp. ``feature_bar_ts``
+    independently records the newest 1H market-data bar used by the signal.
+    They must never be conflated during path replay.
+    """
     cfg_hash = config_hash()
     sha = code_sha()
     plan = {
         "plan_schema_version": PLAN_SCHEMA_VERSION,
         "decision_ts": ts,
+        "entry_ts": ts,
+        "feature_bar_ts": feature_bar_ts or ts,
+        "path_timeframe": "5m",
+        "path_bar_minutes": 5,
         "symbol": symbol,
         "setup": candidate["setup"],
         "dir": candidate["dir"],
@@ -138,15 +147,21 @@ def path_to_absolute_ohlc(path: dict, p0: float) -> pd.DataFrame | None:
     })
 
 
-def _timeout(plan: dict, candles: pd.DataFrame, mfe: float, mae: float) -> dict:
+def _max_bars(plan: dict) -> int:
+    """Convert hour-based ``t_max`` into the declared replay path resolution."""
+    minutes = int(plan.get("path_bar_minutes") or 60)
+    return max(1, int(plan["t_max"]) * 60 // max(1, minutes))
+
+
+def _timeout(plan: dict, candles: pd.DataFrame, mfe: float, mae: float, bars: int) -> dict:
     long = plan["dir"].lower() == "long"
     entry, r_dist = float(plan["entry"]), float(plan["r_dist"])
-    px = float(candles.iloc[int(plan["t_max"]) - 1]["close"])
+    px = float(candles.iloc[bars - 1]["close"])
     realized = (px - entry) if long else (entry - px)
     return {
         "status": "SCRATCH", "outcome": "TIMEOUT",
         "reason": "EXPIRED_WIN" if realized >= 0 else "EXPIRED_LOSS",
-        "mfe": mfe, "mae": mae, "bars": int(plan["t_max"]),
+        "mfe": mfe, "mae": mae, "bars": bars,
         "exit_price": round(px, 8), "r_multiple": round(realized / r_dist, 8),
     }
 
@@ -167,12 +182,13 @@ def evaluate_plan(plan: dict, candles: pd.DataFrame) -> dict | None:
         return None
     if entry <= 0 or r_dist <= 0 or t_max <= 0:
         return None
-    if len(candles) < t_max:
+    max_bars = _max_bars(plan)
+    if len(candles) < max_bars:
         # A barrier touch can still resolve a short partial path; otherwise it
         # remains PENDING rather than being labelled as a timeout.
         horizon = len(candles)
     else:
-        horizon = t_max
+        horizon = max_bars
     long = str(plan.get("dir", "")).lower() == "long"
     trail_dist = plan.get("trail_dist")
     trailing = trail_dist is not None and float(trail_dist) > 0
@@ -222,9 +238,9 @@ def evaluate_plan(plan: dict, candles: pd.DataFrame) -> dict | None:
                     "mfe": mfe, "mae": mae, "bars": i + 1,
                     "exit_price": round(tp, 8), "r_multiple": round(r, 8)}
 
-    if len(candles) < t_max:
+    if len(candles) < max_bars:
         return None
-    return _timeout(plan, candles, mfe, mae)
+    return _timeout(plan, candles, mfe, mae, max_bars)
 
 
 def evaluate_plan_path(plan: dict, path: dict, p0: float) -> dict | None:

@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "analysis"))
 
 import config
-from wrf import calibration, detectors, engine, execution, levels, logger, notion_wrf, schema, veto
+from wrf import calibration, detectors, engine, execution, gates, levels, logger, notion_wrf, schema, veto
 import labels
 
 
@@ -25,6 +25,10 @@ class ExecutionContractTests(unittest.TestCase):
             "plan_schema_version": 1,
             "decision_id": "decision-test-1",
             "decision_ts": "2026-01-01T00:00:00+00:00",
+            "entry_ts": "2026-01-01T00:00:00+00:00",
+            "feature_bar_ts": "2025-12-31T23:00:00+00:00",
+            "path_timeframe": "5m",
+            "path_bar_minutes": 5,
             "symbol": "TEST/USDT",
             "setup": "BO",
             "dir": "long",
@@ -57,7 +61,8 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertEqual(execution.evaluate_plan(self.plan, candles), execution.evaluate_plan_path(self.plan, path, 100.0))
 
     def test_trailing_does_not_assume_same_bar_high_then_low(self):
-        plan = dict(self.plan, tp=110.0, t_max=1, trail_dist=2.0)
+        plan = dict(self.plan, tp=110.0, t_max=1, trail_dist=2.0,
+                    path_timeframe="1h", path_bar_minutes=60)
         candles = pd.DataFrame({"open": [100.0], "high": [104.0], "low": [101.0], "close": [103.0]})
         out = execution.evaluate_plan(plan, candles)
         self.assertEqual(out["outcome"], "TIMEOUT")
@@ -87,7 +92,7 @@ class ExecutionContractTests(unittest.TestCase):
         row = schema.build_row({"symbol": "TEST/USDT", "ts": self.plan["decision_ts"], "p0": 100.0,
                                 "raw": {}, "ctx": {}, "pct": {}, "feat": {}, "candidates": [candidate]})
         persisted = row["candidates"][0]
-        self.assertEqual(row["execution_semantics"], "canonical_execution_plan_v1")
+        self.assertEqual(row["execution_semantics"], "canonical_execution_plan_v2_5m")
         self.assertEqual(persisted["execution_plan"], candidate["execution_plan"])
         self.assertEqual(persisted["trail_dist"], 2.0)
         self.assertEqual(persisted["decision_id"], self.plan["decision_id"])
@@ -102,7 +107,8 @@ class ExecutionContractTests(unittest.TestCase):
             "p_cal": 0.60, "p_execution_prior": 0.60, "p_execution_cal": 0.60,
             "p_cal_source": "prior", "win_floor": 0.58, "C": 0.1, "L": 0.2, "F": 0.3,
             "confluence_n": 0, "veto": [], "quarantine": [], "fire": True,
-            "execution_plan": self.plan, "decision_id": self.plan["decision_id"],
+            "execution_plan": dict(self.plan, path_timeframe="1h", path_bar_minutes=60),
+            "decision_id": self.plan["decision_id"],
         }
         row = {
             "schema_version": 4, "execution_semantics": "canonical_execution_plan_v1",
@@ -115,6 +121,33 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertEqual(df.iloc[0]["tb_outcome"], "WIN")
         self.assertEqual(float(df.iloc[0]["tb_r"]), 1.0)
         self.assertEqual(df.iloc[0]["execution_semantics"], "canonical_execution_plan_v1")
+
+    def test_candidate_dataset_uses_v5_entry_time_execution_path(self):
+        plan = dict(self.plan, t_max=1, path_timeframe="5m", path_bar_minutes=5)
+        execution_path = {
+            "o": [0.0] * 12, "h": [0.0] * 12, "l": [-0.011] + [0.0] * 11,
+            "c": [-0.01] * 12, "timeframe": "5m", "bar_minutes": 5, "complete": True,
+        }
+        candidate = {
+            "setup": "BO", "dir": "long", "entry": 100.0, "tp": 101.0, "sl": 99.0,
+            "r_dist": 1.0, "rr": 1.0, "t_max": 1, "trail_dist": None,
+            "p_hat": 0.60, "p_execution": 0.60, "p_source": "prior", "p_prior": 0.60,
+            "p_cal": 0.60, "p_execution_prior": 0.60, "p_execution_cal": 0.60,
+            "p_execution_adjustment": 0.0, "p_cal_source": "prior", "win_floor": 0.58,
+            "C": 0.1, "L": 0.2, "F": 0.3, "confluence_n": 0, "veto": [],
+            "quarantine": [], "fire": True, "execution_plan": plan,
+            "execution_path": execution_path, "decision_id": plan["decision_id"],
+        }
+        row = {
+            "schema_version": 5, "execution_semantics": "canonical_execution_plan_v2_5m",
+            "snapshot_id": "TEST/USDT_bar", "ts": plan["decision_ts"], "symbol": "TEST/USDT",
+            "p0": 100.0, "raw": {}, "ctx": {}, "candidates": [candidate],
+            # A contradictory 1H path would be a WIN; v5 must not consume it.
+            "path": {"o": [0.02], "h": [0.021], "l": [0.019], "c": [0.02], "complete": True},
+        }
+        df = labels.candidate_dataset([row])
+        self.assertEqual(df.iloc[0]["tb_outcome"], "LOSS")
+        self.assertTrue(bool(df.iloc[0]["execution_path_complete"]))
 
     def test_decision_ledger_is_idempotent_per_state(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -130,7 +163,9 @@ class ExecutionContractTests(unittest.TestCase):
         feat = {
             "raw": {}, "pct": {},
             "ctx": {"regime_1h": "RANGING", "btc_macro": "CHOP", "allowed_setups": [setup]},
-            "ts": "2026-01-01T00:00:00+00:00", "p0": 100.0,
+            "ts": "2026-01-01T00:00:00+00:00",
+            "decision_ts": "2026-01-01T00:00:00+00:00",
+            "feature_bar_ts": "2025-12-31T23:00:00+00:00", "p0": 100.0,
             "df_1h": None, "df_4h": None, "df_1d": None, "measures": {},
         }
         candidate = {"setup": setup, "dir": "long", "C": 0.4, "L": 0.5, "F": 0.5,
@@ -168,6 +203,30 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertEqual(rec["p_execution_prior"], 0.59)
         self.assertEqual(rec["p_execution"], rec["p_execution_prior"])
         self.assertEqual(rec["execution_plan"]["decision_id"], rec["decision_id"])
+
+    def test_five_minute_plan_includes_entry_interval_and_uses_hour_horizon(self):
+        plan = dict(self.plan, t_max=1, path_bar_minutes=5)
+        idx = pd.date_range("2026-01-01T00:05:00+00:00", periods=12, freq="5min")
+        candles = pd.DataFrame({"open": [100.0] * 12, "high": [100.0] * 12,
+                                "low": [98.9] + [100.0] * 11, "close": [99.0] * 12}, index=idx)
+        out = execution.evaluate_plan(plan, candles)
+        self.assertEqual(out["outcome"], "LOSS")
+        self.assertEqual(out["bars"], 1)
+
+    def test_shared_gate_replay_uses_persisted_execution_adjustment(self):
+        cand = {"setup": "BO", "dir": "long", "rr": 2.0, "p_execution_adjustment": 0.06}
+        pe = {"p_prior": 0.65, "p_cal": 0.65, "source": "prior", "floor": 0.58, "fire_rights": "live"}
+        with mock.patch.object(config, "WRF_SHADOW_SETUPS", set()), \
+             mock.patch.object(config, "WRF_FIRE_RIGHTS_ENABLED", False):
+            out = gates.replay_gate(cand, pe)
+        self.assertAlmostEqual(out["p_execution"], 0.59)
+        self.assertTrue(out["fire"])
+
+    def test_liquidation_data_unavailable_is_explicit_global_veto(self):
+        feat = {"ts": "2026-01-01T00:00:00+00:00"}
+        with mock.patch.object(config, "WRF_VETO_REQUIRE_LIQ_DATA", True):
+            out = veto.global_vetoes(feat, {"liquidations": {"available": False}})
+        self.assertIn("LIQ_DATA_UNAVAILABLE", out)
 
     def test_unavailable_notion_open_state_is_explicit(self):
         with mock.patch.object(notion_wrf, "enabled", return_value=False):

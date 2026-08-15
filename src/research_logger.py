@@ -405,3 +405,99 @@ def capture_paths(symbol: str, df_1h: pd.DataFrame) -> int:
     for fname in files[-2:]:                      # 당월+전월이면 충분(72h≪한달)
         total += _label_file(os.path.join(sym_dir, fname), df_1h, horizon)
     return total
+
+
+# ════════════════════════════════════════════════════════════════════
+# Canonical execution path — decision-time 5m OHLC replay
+# ════════════════════════════════════════════════════════════════════
+
+def _execution_start(ts) -> pd.Timestamp:
+    """Return the 5m bar containing an entry decision, in UTC."""
+    stamp = pd.Timestamp(ts)
+    stamp = stamp.tz_localize(timezone.utc) if stamp.tzinfo is None else stamp.tz_convert(timezone.utc)
+    return stamp.floor("5min")
+
+
+def _label_execution_file(path: str, df_5m: pd.DataFrame) -> int:
+    """Attach/update candidate-level 5m paths from the true decision timestamp.
+
+    A v5 canonical trade uses ``entry_ts`` plus 5m OHLC, rather than the
+    snapshot's 1H start timestamp.  The first 5m bar is included when its
+    opening timestamp contains the decision instant; this preserves the path
+    immediately after an :05 paper entry.
+    """
+    if not os.path.exists(path):
+        return 0
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rows = [json.loads(line) for line in fh if line.strip()]
+    except Exception as e:
+        logger.warning(f"[Research] execution path 파일 읽기 실패: {e}")
+        return 0
+
+    updated = 0
+    for row in rows:
+        dirty = False
+        for candidate in row.get("candidates") or []:
+            plan = candidate.get("execution_plan") or {}
+            if plan.get("path_timeframe") != "5m":
+                continue
+            entry_ts = plan.get("entry_ts") or plan.get("decision_ts")
+            entry = plan.get("entry")
+            if not entry_ts or not entry:
+                continue
+            max_bars = int(plan.get("t_max", 0) or 0) * 12
+            if max_bars <= 0:
+                continue
+            old = candidate.get("execution_path") or {}
+            if old.get("complete") or old.get("expired"):
+                continue
+            start = _execution_start(entry_ts)
+            later = df_5m[df_5m.index >= start]
+            if later.empty:
+                continue
+            gap_min = (later.index[0] - start).total_seconds() / 60.0
+            if gap_min > 5:
+                candidate["execution_path"] = {
+                    "n": 0, "o": [], "c": [], "h": [], "l": [],
+                    "timeframe": "5m", "bar_minutes": 5,
+                    "expired": True, "complete": False,
+                }
+                dirty = True
+                continue
+            avail = min(len(later), max_bars)
+            if avail <= int(old.get("n", -1)):
+                continue
+            new_path = _compute_path(float(entry), later.iloc[:avail])
+            if new_path is None:
+                continue
+            new_path.update({
+                "timeframe": "5m", "bar_minutes": 5,
+                "entry_ts": pd.Timestamp(entry_ts).isoformat(),
+                "start_bar_ts": later.index[0].isoformat(),
+                "complete": bool(avail >= max_bars),
+                "captured_at": pd.Timestamp.now(tz=timezone.utc).isoformat(),
+            })
+            candidate["execution_path"] = new_path
+            dirty = True
+        updated += int(dirty)
+
+    if updated:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        os.replace(tmp, path)
+        logger.info(f"[Research] ⏱️ canonical 5m execution path {updated}건 — {os.path.basename(path)}")
+    return updated
+
+
+def capture_execution_paths(symbol: str, df_5m: pd.DataFrame) -> int:
+    """Fill v5 candidate-level 5m paths for current and previous monthly files."""
+    if df_5m is None or len(df_5m) == 0:
+        return 0
+    sym_dir = os.path.join(_base_dir(), _sym_slug(symbol))
+    if not os.path.isdir(sym_dir):
+        return 0
+    return sum(_label_execution_file(os.path.join(sym_dir, fname), df_5m)
+               for fname in sorted(f for f in os.listdir(sym_dir) if f.endswith(".jsonl"))[-2:])

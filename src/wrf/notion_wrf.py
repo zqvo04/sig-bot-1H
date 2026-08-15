@@ -388,7 +388,8 @@ def _eval_signal_trailing(direction, entry, sl, trail_dist, t_max, candles, sign
     return None  # 미성숙
 
 
-def _eval_canonical_signal(direction, entry, tp, sl, t_max, candles, signaled_dt, trail_dist=None):
+def _eval_canonical_signal(direction, entry, tp, sl, t_max, candles, signaled_dt,
+                           trail_dist=None, path_bar_minutes: int = 60):
     """Evaluate the exact absolute paper plan used by both ledger and labels."""
     if not all([direction, entry, tp, sl, signaled_dt]):
         return None
@@ -397,11 +398,20 @@ def _eval_canonical_signal(direction, entry, tp, sl, t_max, candles, signaled_dt
         sdt = pd.Timestamp(signaled_dt)
         if sdt.tzinfo is None:
             sdt = sdt.tz_localize(timezone.utc)
-        fut = candles[candles.index > sdt]
+        # For 5m canonical paths include the bar containing the decision time;
+        # by score time that bar is closed and covers the formerly skipped :05~:10 path.
+        if path_bar_minutes == 5:
+            start = sdt.floor("5min")
+            fut = candles[candles.index >= start]
+        else:
+            fut = candles[candles.index > sdt]
         plan = {
             "dir": str(direction).lower(), "entry": float(entry), "tp": float(tp), "sl": float(sl),
             "r_dist": abs(float(entry) - float(sl)), "rr": abs(float(tp) - float(entry)) / abs(float(entry) - float(sl)),
             "t_max": int(t_max), "trail_dist": float(trail_dist) if trail_dist else None,
+            "decision_ts": sdt.isoformat(), "entry_ts": sdt.isoformat(),
+            "path_timeframe": "5m" if path_bar_minutes == 5 else "1h",
+            "path_bar_minutes": int(path_bar_minutes),
         }
         out = execution.evaluate_plan(plan, fut)
         if out is None:
@@ -416,13 +426,15 @@ def _eval_canonical_signal(direction, entry, tp, sl, t_max, candles, signaled_dt
         return None
 
 
-def evaluate_open_signals(symbol: str, df_1h) -> int:
-    """OPEN 신호를 캔들로 판정 → Status/Exit Reason/MFE/MAE/Bars/Resolved 갱신."""
+def evaluate_open_signals(symbol: str, df_1h, execution_5m=None) -> int:
+    """Resolve OPEN paper signals from canonical 5m entry paths when available."""
     if not enabled():
         return 0
     try:
         db = ensure_signals_db()
-        if not db or df_1h is None or len(df_1h) == 0:
+        use_5m = execution_5m is not None and len(execution_5m) > 0
+        candles = execution_5m if use_5m else df_1h
+        if not db or candles is None or len(candles) == 0:
             return 0
         res = _request("POST", f"/databases/{db}/query", {
             "filter": {"and": [
@@ -447,7 +459,8 @@ def evaluate_open_signals(symbol: str, df_1h) -> int:
                 sdt = sdt.tz_localize(timezone.utc)
             # immutable 절대 execution plan으로 평가한다. 이 경로는 labels.py의
             # execution.evaluate_plan_path와 동일하며 future open으로 TP/SL을 재배치하지 않는다.
-            out = _eval_canonical_signal(direction, entry, tp, sl, t_max, df_1h, sdt, trail_dist=trail_dist)
+            out = _eval_canonical_signal(direction, entry, tp, sl, t_max, candles, sdt,
+                                         trail_dist=trail_dist, path_bar_minutes=5 if use_5m else 60)
             if not out:
                 continue
             patched = _request("PATCH", f"/pages/{page['id']}", {"properties": {
@@ -458,14 +471,14 @@ def evaluate_open_signals(symbol: str, df_1h) -> int:
             if patched:
                 decision_id = _get_txt(p, "Decision ID")
                 if decision_id:
-                    decision_logger.record_decision_event({
-                        "decision_id": decision_id, "decision_ts": sdt.isoformat(), "symbol": symbol,
-                        "setup": _get_sel(p, "Setup"), "dir": str(direction).lower(),
-                        "entry": entry, "tp": tp, "sl": sl, "r_dist": abs(entry - sl),
-                        "rr": abs(tp - entry) / abs(entry - sl), "t_max": int(t_max),
-                        "trail_dist": trail_dist,
-                    }, "CLOSED", reason=out["reason"],
-                    extra={"status": out["status"], "r_multiple": out["r_mult"], "exit_price": out["exit_price"]})
+                    original_plan = decision_logger.load_decision_plan(symbol, sdt.isoformat(), decision_id)
+                    if original_plan is None:
+                        logger.error(f"[NotionWRF] immutable plan 부재 — CLOSED 원장 기록 보류: {decision_id}")
+                    else:
+                        decision_logger.record_decision_event(
+                            original_plan, "CLOSED", reason=out["reason"],
+                            extra={"status": out["status"], "r_multiple": out["r_mult"],
+                                   "exit_price": out["exit_price"], "resolved_at": out["rdt"]})
                 updated += 1
         if updated:
             logger.info(f"[NotionWRF] ✅ 신호 판정 {symbol}: {updated}건")

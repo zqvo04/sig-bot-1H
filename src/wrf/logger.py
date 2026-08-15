@@ -193,3 +193,35 @@ def capture_paths(symbol: str, df_1h: "pd.DataFrame") -> int:
     except Exception as e:  # pragma: no cover
         logger.warning(f"[wrf.logger] 경로 캡처 실패: {e}")
         return 0
+
+
+def capture_execution_paths(symbol: str, df_5m: "pd.DataFrame") -> int:
+    """Capture candidate-specific 5m paths from the immutable entry timestamp."""
+    if not enabled():
+        return 0
+    try:
+        return research_logger.capture_execution_paths(symbol, df_5m)
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[wrf.logger] canonical execution path 캡처 실패: {e}")
+        return 0
+
+
+def load_decision_plan(symbol: str, decision_ts: str, decision_id: str) -> dict | None:
+    """Load the immutable plan from its original append-only decision event."""
+    try:
+        path = _decision_ledger_file(symbol, decision_ts)
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("decision_id") == decision_id:
+                    plan = event.get("execution_plan")
+                    if isinstance(plan, dict):
+                        return plan
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[wrf.logger] decision plan 조회 실패: {e}")
+    return None

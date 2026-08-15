@@ -19,7 +19,7 @@ import traceback
 sys.path.insert(0, os.path.dirname(__file__))
 
 import config
-from data_pipeline import create_exchange, collect, collect_ohlcv
+from data_pipeline import create_exchange, collect, collect_execution_ohlcv, collect_ohlcv
 from analysis_engine import run_full_analysis
 from notification import send_message, send_error_alert
 
@@ -85,6 +85,9 @@ def run_signal(symbol: str, exchange) -> None:
     """signal 모드: 한 심볼 전체 파이프라인. 엔진 본체는 try/except 격리."""
     collected = collect(exchange, symbol)
     ohlcv = collected.get("ohlcv", {})
+    # Signal features remain 1H; exact paper execution is replayed from the
+    # true decision timestamp on 5m OHLC.
+    execution_5m = collect_execution_ohlcv(exchange, symbol)
     ticker = collected.get("ticker") or {}
     if not ticker.get("available"):
         # OKX 티커 단발 실패(타임아웃)로 전체 파이프라인을 버리지 않는다. 티커의 유일
@@ -119,10 +122,11 @@ def run_signal(symbol: str, exchange) -> None:
         row = wrf_schema.build_row(out)
         wrf_logger.record_snapshot(row)
         wrf_logger.capture_paths(symbol, ohlcv.get("1h"))
+        wrf_logger.capture_execution_paths(symbol, execution_5m)
 
         # Notion 미러 + OPEN 신호 판정
         notion_wrf.log_snapshot(out)
-        notion_wrf.evaluate_open_signals(symbol, ohlcv.get("1h"))
+        notion_wrf.evaluate_open_signals(symbol, ohlcv.get("1h"), execution_5m=execution_5m)
 
         # 발사(페이퍼): Notion 기록 + (ALERT 시) 알림 — 밴드반전 포함 원트랙.
         # [중복 발사 차단] 한 코인이 이미 OPEN이면 같은 방향 추가 신호 금지(반대는 허용).
@@ -165,10 +169,12 @@ def run_score(symbol: str, exchange) -> None:
     """score 모드: 성숙 경로 채움 + 신호판정 + 스냅샷 라벨 백필."""
     ohlcv = collect_ohlcv(exchange, symbol)
     df_1h = ohlcv.get("1h")
+    execution_5m = collect_execution_ohlcv(exchange, symbol)
     try:
         n = wrf_logger.capture_paths(symbol, df_1h)
-        logger.info(f"[score] {symbol} 경로 캡처 {n}건")
-        notion_wrf.evaluate_open_signals(symbol, df_1h)
+        n_exec = wrf_logger.capture_execution_paths(symbol, execution_5m)
+        logger.info(f"[score] {symbol} 1H 경로 {n}건 · canonical 5m execution path {n_exec}건")
+        notion_wrf.evaluate_open_signals(symbol, df_1h, execution_5m=execution_5m)
         _backfill_snapshot_labels(symbol)
     except Exception as e:
         logger.error(f"[score] {symbol} 실패(격리): {e}\n{traceback.format_exc()}")

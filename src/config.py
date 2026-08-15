@@ -1239,3 +1239,15 @@ NOTION_SNAPSHOTS_DB_ID = (os.getenv("NOTION_SNAPSHOTS_DB_ID")
                           or "530210d9989a43f39dcd89cc8a72eb07")
 NOTION_SIGNALS_DB_TITLE = "1H Signal Log"
 NOTION_SNAPSHOTS_DB_TITLE = "1H Research Snapshots"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Canonical v5 execution timing / safety data contract
+# ══════════════════════════════════════════════════════════════════════
+# v5 separates actual decision/entry time from the 1H feature-bar timestamp
+# and replays paper execution on 5m OHLC from entry_ts onward.
+WRF_SCHEMA_VERSION = _wrf_i("WRF_SCHEMA_VERSION", 5)
+WRF_EXEC_PATH_5M_LIMIT = _wrf_i("WRF_EXEC_PATH_5M_LIMIT", 1000)
+# A failed liquidation feed is not evidence that no cascade exists.  Disable
+# only for explicitly documented research replays, never for paper operation.
+WRF_VETO_REQUIRE_LIQ_DATA = os.getenv("WRF_VETO_REQUIRE_LIQ_DATA", "true").lower() not in ("0", "false", "no", "")

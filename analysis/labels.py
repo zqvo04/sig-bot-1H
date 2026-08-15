@@ -306,11 +306,16 @@ def candidate_dataset(rows: list, sl_priority: bool = True):
             long = c.get("dir") == "long"
             sl_frac = abs(entry - sl) / entry
             tp_frac = abs(tp - entry) / entry
-            # v4는 decision time에 확정된 절대 execution_plan을 그대로 재생한다.
-            # 기존 v3 행만 하위호환 legacy rebasing 라벨을 사용하며 성과 집계에서
-            # canonical v4와 혼합하면 안 된다.
+            # v5 uses the candidate-level 5m path beginning at the true
+            # entry timestamp. A missing v5 execution path remains unlabelled;
+            # falling back to the snapshot's 1H path would reintroduce the
+            # decision-time gap this schema version is designed to remove.
             plan = c.get("execution_plan")
-            if isinstance(plan, dict):
+            if isinstance(plan, dict) and plan.get("path_timeframe") == "5m":
+                execution_path = c.get("execution_path") or {}
+                tb = (_canonical_tb(plan, execution_path, plan.get("entry"))
+                      if execution_path.get("c") else None)
+            elif isinstance(plan, dict):
                 tb = _canonical_tb(plan, path, r.get("p0"))
             else:
                 td = c.get("trail_dist")
@@ -332,6 +337,7 @@ def candidate_dataset(rows: list, sl_priority: bool = True):
                 "p_prior": c.get("p_prior"), "p_cal": c.get("p_cal"),
                 "p_execution_prior": c.get("p_execution_prior"),
                 "p_execution_cal": c.get("p_execution_cal"),
+                "p_execution_adjustment": c.get("p_execution_adjustment"),
                 "p_cal_source": c.get("p_cal_source"),
                 "decision_id": c.get("decision_id"),
                 "execution_semantics": r.get("execution_semantics", "legacy_v3"),
@@ -345,6 +351,7 @@ def candidate_dataset(rows: list, sl_priority: bool = True):
                 "exret_24h": ex24, "class": cls,
                 "mfe": mfe, "mae": mae, "path_eff": peff,
                 "path_complete": bool(path.get("complete")),
+                "execution_path_complete": bool((c.get("execution_path") or {}).get("complete")),
             })
     df = pd.DataFrame(recs)
     if not df.empty:

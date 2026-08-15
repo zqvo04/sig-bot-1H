@@ -29,6 +29,12 @@ def global_vetoes(feat: dict, collected: dict) -> list:
             v.append("DATA_STALE")
     except Exception:
         v.append("DATA_STALE")
+    # ② 청산 데이터 가용성 — cascade 보호를 요구하는 운용 모드에서는
+    # API 실패를 '청산 0건'으로 해석하지 않는다. 이 사유는 schema/ledger에도 보존된다.
+    liq = (collected or {}).get("liquidations") or {}
+    if (getattr(config, "WRF_VETO_REQUIRE_LIQ_DATA", True)
+            and not bool(liq.get("available", False))):
+        v.append("LIQ_DATA_UNAVAILABLE")
     # ① 스프레드 폭발
     try:
         micro = (collected or {}).get("microstructure") or {}
@@ -66,6 +72,8 @@ def directional_vetoes(candidate: dict, feat: dict, collected: dict) -> list:
     # ② 진입 정면 대량청산 캐스케이드
     try:
         liq = (collected or {}).get("liquidations") or {}
+        if not bool(liq.get("available", False)):
+            return v
         thr = getattr(config, "WRF_VETO_LIQ_CASCADE", 5)
         # 롱 진입 정면 = 롱청산 캐스케이드(하방 가속)
         cnt = liq.get("long_liq_count" if long else "short_liq_count", 0) or 0

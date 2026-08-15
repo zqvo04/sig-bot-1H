@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from . import calibration, detectors, execution, features, levels, veto
+from . import calibration, detectors, execution, features, gates, levels, veto
 from .btc_macro import classify_btc_macro
 
 logger = logging.getLogger(__name__)
@@ -102,59 +102,17 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
     for c in cands:
         try:
             lv = levels.compute_levels(c, feat)
-            # [Phase 2] prior·보정 동시 평가(그림자 A/B). p_hat는 스위치 반영값.
+            # Prior/calibration, execution geometry and fire gating are shared with audit replay.
             pe = calibration.evaluate(c, feat["ctx"], table)
-            p_hat, source, floor = pe["p_hat"], pe["source"], pe["floor"]
-            # BO near-SL 타이트니스는 모델 확률과 실행 확률을 혼동하지 않도록
-            # prior·calibrated 양쪽에 같은 geometry transform으로 적용한다. p_hat는
-            # 실제 발사 확률(p_execution)이며 A/B는 아래 두 실행 확률을 비교해야 한다.
-            p_exec_prior = float(pe["p_prior"])
-            p_exec_cal = float(pe["p_cal"])
-            if (c["setup"] == "BO" and getattr(config, "WRF_BO_SL_NEAR", False)
-                    and "box_hi" in c and "box_lo" in c):
-                box_h = abs(float(c["box_hi"]) - float(c["box_lo"]))
-                if box_h > 0:
-                    tight = lv["r_dist"] / box_h
-                    ref = getattr(config, "WRF_BO_SL_TIGHT_REF", 0.60)
-                    penalty = getattr(config, "WRF_BO_SL_TIGHT_PEN", 0.15) * max(0.0, ref - tight)
-                    p_exec_prior = max(0.0, p_exec_prior - penalty)
-                    p_exec_cal = max(0.0, p_exec_cal - penalty)
-            p_hat = p_exec_cal if source == "calibrated" else p_exec_prior
+            px = gates.execution_probability(c, lv, pe)
+            p_hat = px["p_execution"]
+            source = pe["source"]
             vetoes = veto.evaluate(c, feat, collected, global_v)
-            # EV/RR 안전제약은 확률 출처와 무관하게 적용한다. 보정은 확률을 바꿀 뿐
-            # 음의 기대값 거래를 통과시킬 권한이 없다.
-            if getattr(config, "WRF_EV_GATE", True):
-                ev = p_hat * lv["rr"] - (1.0 - p_hat)
-                rr_ok = (ev >= getattr(config, "WRF_EV_MIN", 0.15)
-                         and lv["rr"] >= getattr(config, "WRF_EV_RR_FLOOR", 1.0))
-            else:
-                rr_ok = lv["rr"] >= getattr(config, "WRF_MIN_RR", 1.5)
-            # [Phase A] 격리(quarantine): 발사조건과 무관한 발사권 통제(거버넌스 게이트).
-            #   SHADOW_SETUP — 미검증 셋업(WRF_SHADOW_SETUPS)  ·  FIRE_RIGHTS — 실현
-            #   승률 사후검정 강등 셀(테이블 발행). 격리돼도 기록·오프라인 채점은 계속.
-            quarantine = []
-            if c["setup"] in shadow_setups:
-                quarantine.append("SHADOW_SETUP")
-            if fire_rights_on and pe.get("fire_rights") == "shadow":
-                quarantine.append("FIRE_RIGHTS")
-            # [개선안1, docs/DIAGNOSTIC_2026-08_FPFN.md §4] 발사 임계 모드 — 기본
-            # "winrate"(무변경): P̂ ≥ 승률플로어. "ev": P̂ ≥ (1+EV_MIN)/(1+RR) 로 대체(RR과
-            # 정합된 임계 — prior 재적합으로 P̂ 스케일이 바뀌어도 자동 추종, 신규 파라미터
-            # 없음). Gate-In 미충족(반기 분할 모두 edge≥0 아님) 상태 — 기본 OFF, 검증 후
-            # 점등(5-I). ON 이어도 rr_ok(EV/RR 게이트)는 그대로 유지 — 임계만 교체한다.
-            if getattr(config, "WRF_FLOOR_MODE", "winrate") == "ev" and lv["rr"] > -1.0:
-                fire_floor = (1.0 + getattr(config, "WRF_EV_MIN", 0.15)) / (1.0 + lv["rr"])
-            else:
-                fire_floor = floor
-            fire = bool(p_hat >= fire_floor and not vetoes and rr_ok and not quarantine)
-            # [near-miss 섀도 밴드] 플로어만 못 넘은 '문턱탈락'(veto·RR은 통과) 후보 태깅.
-            # 발사엔 무영향 — 표본 굶주린 클래스(특히 숏)의 near-miss 기록용(오프라인 보정).
-            band_w = getattr(config, "WRF_SHADOW_BAND_WIDTH", 0.03)
-            shadow_band = bool(
-                getattr(config, "WRF_SHADOW_BAND", True)
-                and not fire and not vetoes and rr_ok
-                and (fire_floor - band_w) <= p_hat < fire_floor
-            )
+            gd = gates.gate_decision(c, lv, pe, p_hat, vetoes=vetoes)
+            fire_floor = gd["win_floor"]
+            fire = gd["fire"]
+            shadow_band = gd["shadow_band"]
+            quarantine = gd["quarantine"]
             size = _size_from_p(p_hat, fire_floor, source) if fire else 0.0
             rec = {
                 "setup": c["setup"], "dir": c["dir"], "precond": True,
@@ -163,19 +121,21 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
                 **({"trail_dist": lv["trail_dist"]} if "trail_dist" in lv else {}),
                 "p_hat": round(p_hat, 4), "p_execution": round(p_hat, 4), "p_source": source,
                 "p_prior": round(pe["p_prior"], 4), "p_cal": round(pe["p_cal"], 4),
-                "p_execution_prior": round(p_exec_prior, 4),
-                "p_execution_cal": round(p_exec_cal, 4),
+                "p_execution_prior": round(px["p_execution_prior"], 4),
+                "p_execution_cal": round(px["p_execution_cal"], 4),
+                "p_execution_adjustment": round(px["p_execution_adjustment"], 8),
                 "p_cal_source": pe["cal_source"],
                 "win_floor": round(fire_floor, 4),
                 "C": c["C"], "L": c["L"], "F": c["F"],
                 "confluence_n": c.get("confluence_n", 0),
-                "veto": vetoes, "size": size, "fire": fire,
+                "veto": gd["veto"], "size": size, "fire": fire,
                 "shadow_band": shadow_band,
                 "quarantine": quarantine,
                 "reason": c.get("reason", ""),
             }
             # execution_plan은 엔진·원장·오프라인 라벨러가 공유하는 불변 거래 정의다.
-            rec["execution_plan"] = execution.build_plan(symbol, feat["ts"], rec)
+            rec["execution_plan"] = execution.build_plan(symbol, feat["decision_ts"], rec,
+                                                            feature_bar_ts=feat["feature_bar_ts"])
             rec["decision_id"] = rec["execution_plan"]["decision_id"]
             enriched.append(rec)
             if fire:
@@ -204,7 +164,9 @@ def run_engine(symbol: str, measures: dict, ohlcv: dict, collected: dict,
 
     return {
         "symbol": symbol,
-        "ts": feat["ts"],
+        "ts": feat["decision_ts"],
+        "decision_ts": feat["decision_ts"],
+        "feature_bar_ts": feat["feature_bar_ts"],
         "p0": feat["p0"],
         "raw": feat["raw"],
         "pct": feat["pct"],

@@ -35,6 +35,7 @@ os.chdir(_ROOT)
 
 import config  # noqa: E402
 from wrf import calibration as cal  # noqa: E402
+from wrf import gates  # noqa: E402
 from build_dataset import load_snapshots  # noqa: E402
 import labels as lab  # noqa: E402
 
@@ -73,31 +74,27 @@ def rescore(d: pd.DataFrame) -> pd.DataFrame:
     shadow = getattr(config, "WRF_SHADOW_SETUPS", set())
     out = []
     for r in d.itertuples():
-        pe = cal.evaluate({"setup": r.setup, "dir": getattr(r, "dir"),
-                           "C": r.C, "L": r.L, "F": r.F},
+        candidate = {"setup": r.setup, "dir": getattr(r, "dir"),
+                     "C": r.C, "L": r.L, "F": r.F, "rr": r.rr,
+                     "p_execution_adjustment": getattr(r, "p_execution_adjustment", 0.0)}
+        pe = cal.evaluate(candidate,
                           {"regime_1h": r.regime_1h, "btc_macro": r.btc_macro}, table)
-        p, fl = pe["p_hat"], pe["floor"]
-        q = []
-        if r.setup in shadow:
-            q.append("SHADOW_SETUP")
-        if getattr(config, "WRF_FIRE_RIGHTS_ENABLED", True) and pe.get("fire_rights") == "shadow":
-            q.append("FIRE_RIGHTS")
-        ev = p * r.rr - (1.0 - p)
-        rr_ok = (ev >= getattr(config, "WRF_EV_MIN", 0.15)
-                 and r.rr >= getattr(config, "WRF_EV_RR_FLOOR", 0.85))
-        veto = r.veto_n > 0
-        if veto:
+        vetoes = ["STORED_VETO"] if r.veto_n > 0 else []
+        gd = gates.replay_gate(candidate, pe, vetoes=vetoes)
+        p, fl = gd["p_execution"], gd["win_floor"]
+        if gd["veto"]:
             reason = "VETO"
-        elif q:
-            reason = "격리:" + q[0]
+        elif gd["quarantine"]:
+            reason = "격리:" + gd["quarantine"][0]
         elif p < fl:
             reason = "FLOOR"
-        elif not rr_ok:
+        elif not gd["rr_ok"]:
             reason = "EV/RR"
         else:
             reason = "FIRE"
         out.append({"p_new": p, "floor_new": fl, "reason": reason,
-                    "fire_new": reason == "FIRE", "p_src": pe["source"]})
+                    "fire_new": gd["fire"], "p_src": pe["source"],
+                    "p_exec_adjustment": gd["p_execution_adjustment"]})
     return pd.concat([d, pd.DataFrame(out)], axis=1)
 
 

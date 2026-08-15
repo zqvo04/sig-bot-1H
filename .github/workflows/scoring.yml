@@ -42,14 +42,15 @@ jobs:
       - name: Commit path updates
         if: always()
         run: |
-          if [ -z "$(git status --porcelain data/research 2>/dev/null)" ]; then
-            echo "변경 없음 — 커밋 생략"; exit 0
+          if [ -z "$(git status --porcelain -- data/research data/decision_ledger 2>/dev/null)" ]; then
+            echo "research/decision ledger 변경 없음 — 커밋 생략"; exit 0
           fi
           git config user.name  "wrf-bot"
           git config user.email "actions@users.noreply.github.com"
           BRANCH="${GITHUB_REF_NAME}"
-          git add data/research
-          git commit -m "data(research): ${SINGLE_SYMBOL} 경로 채점 갱신 [skip ci]"
+          git add -A -- data/research
+          git add -A -- data/decision_ledger 2>/dev/null || true
+          git commit -m "data(research): ${SINGLE_SYMBOL} canonical 경로/ledger 채점 갱신 [skip ci]"
           for i in 1 2 3 4 5; do
             git fetch origin "$BRANCH" || true
             git rebase "origin/$BRANCH" || git rebase --abort || true

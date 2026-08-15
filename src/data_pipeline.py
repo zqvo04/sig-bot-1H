@@ -420,7 +420,10 @@ def collect(exchange: ccxt.okx, symbol: str) -> dict:
         "ls_ratio":         ls_ratio,
         "oi_change":        {"available": False},
         "taker_volume":     taker_volume,
-        "liquidations":     {},
+        # Keep the raw liquidation object on the exact key consumed by both
+        # analysis_engine and WRF LIQ_CASCADE veto. An unavailable feed remains
+        # explicit through ``available=False``; it is not silently a zero event.
+        "liquidations":     (micro or {}).get("liquidation") or {"available": False},
         "price":            price,
         "microstructure":   micro,
         # [v3.0]
@@ -454,3 +457,33 @@ def check_connection(exchange: ccxt.okx) -> bool:
     except Exception as e:
         logger.error(f"❌ OKX API 연결 실패: {e}")
         return False
+
+
+# ════════════════════════════════════════════════════════════════════
+# Canonical execution path (5m)
+# ════════════════════════════════════════════════════════════════════
+
+def collect_execution_ohlcv(exchange: ccxt.okx, symbol: str) -> pd.DataFrame:
+    """Fetch the 5m OHLC history used for paper-entry path replay.
+
+    Signal computation remains 1H. This series is only the execution evidence
+    after a true decision timestamp, so TP/SL during the remainder of the
+    current hourly bar cannot be silently skipped.
+    """
+    swap = _to_ccxt_swap(symbol)
+    limit = int(getattr(config, "WRF_EXEC_PATH_5M_LIMIT", 1000))
+    for attempt in range(config.MAX_RETRIES):
+        try:
+            df = _ohlcv_to_df(exchange.fetch_ohlcv(swap, "5m", limit=limit))
+            # CCXT includes the forming 5m candle. Paper evaluation may only
+            # consume completed bars; otherwise a future intrabar touch is known
+            # before the bar has actually closed.
+            return df.iloc[:-1].copy() if len(df) > 1 else pd.DataFrame()
+        except ccxt.RateLimitExceeded:
+            time.sleep(config.RETRY_DELAY_S * (attempt + 2))
+        except Exception as e:
+            if attempt >= config.MAX_RETRIES - 1:
+                logger.warning(f"  ❌ {symbol} [5m execution path] OHLCV 실패: {e}")
+            else:
+                time.sleep(config.RETRY_DELAY_S)
+    return pd.DataFrame()
