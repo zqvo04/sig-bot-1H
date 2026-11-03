@@ -133,7 +133,8 @@ def run_signal(symbol: str, exchange) -> None:
         #   ① 지속 OPEN(Notion 원장) ② 이번 실행에서 이미 발사한 방향(동일 시각 다중 셋업)
         # 둘 다 방향 단위로 격리한다. fired 는 P̂ 내림차순 → 같은 방향은 최고 P̂만 통과.
         fired_dirs = set()
-        for cand in out["fired"]:
+        # sunset: 인프라(스냅샷/경로/OPEN 채점)는 유지, 신규 발사만 차단.
+        for cand in (out["fired"] if config.WRF_SIGNAL_EMIT else []):
             d = cand["dir"]
             plan = cand.get("execution_plan") or {}
             # ENGINE_APPROVED는 detector/engine의 의사결정이며 이후 원장 결과와 분리해 남긴다.

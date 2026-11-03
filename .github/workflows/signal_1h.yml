@@ -38,7 +38,8 @@ jobs:
           SINGLE_SYMBOL:      ${{ matrix.symbol }}
           # 발사 시 텔레그램 알림 ON(기본 true). 저장소 Settings→Actions→Variables에
           # ALERT_ENABLED=false 를 두면 코드 변경 없이 즉시 다시 OFF(기록만) 가능.
-          ALERT_ENABLED:      ${{ vars.ALERT_ENABLED || 'true' }}
+          ALERT_ENABLED:      ${{ vars.ALERT_ENABLED || 'false' }}
+          WRF_SIGNAL_EMIT:    ${{ vars.WRF_SIGNAL_EMIT || 'false' }}
           NOTION_TOKEN:           ${{ secrets.NOTION_TOKEN }}
           NOTION_PARENT_PAGE_ID:  ${{ secrets.NOTION_PARENT_PAGE_ID }}
           NOTION_SIGNALS_DB_ID:   ${{ secrets.NOTION_SIGNALS_DB_ID }}
