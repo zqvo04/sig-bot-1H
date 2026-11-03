@@ -707,6 +707,11 @@ def _wrf_i(name: str, default: int) -> int:
 # ── 알림 게이트 (학습기간엔 OFF·기록만; 커버리지 충족 후 true) ──────────
 ALERT_ENABLED = os.getenv("ALERT_ENABLED", "true").lower() not in ("0", "false", "no", "")
 
+# ── 신호 발사 중단 (2026-11 시스템 평가 후 sunset) ─────────────────────
+# false: 수집·스냅샷·경로·원장 인프라만 유지, 신규 페이퍼 신호/알림은 발사하지 않는다.
+# 재개: WRF_SIGNAL_EMIT=true (사전등록된 재개 조건 충족 후에만).
+WRF_SIGNAL_EMIT = os.getenv("WRF_SIGNAL_EMIT", "false").lower() not in ("0", "false", "no", "")
+
 # ── 실질 튜닝 파라미터 (하드캡 최소화: 백분위 윈도·극단컷·플로어) ────────
 WRF_PCT_WINDOW     = _wrf_i("WRF_PCT_WINDOW", 200)    # 자기분포 백분위 윈도(1H 봉 수)
 WRF_VWAP_WINDOW    = _wrf_i("WRF_VWAP_WINDOW", 48)    # 롤링 VWAP 윈도(1H 봉 수)
